@@ -1,0 +1,6 @@
+id,email,domain,fname,lname,state,address,county,city,zip,website,ip
+1, Alice@example.com ,example.com,Alice,Stone,NY,1 Main St,Albany,Albany,12207,example.com,1.1.1.1
+2,bob@gmial.com,gmail.com,Bob,Jones,CA,2 Elm St,Orange,Irvine,92602,bobsite.com,2.2.2.2
+3,test@test.com,test.com,,,TX,3 Oak St,Travis,Austin,73301,,3.3.3.3
+4,alice@example.com,example.com,Alice,Stone,NY,1 Main St,Albany,Albany,12207,example.com,1.1.1.1
+5,noatsymbol.example.com,example.com,Chris,West,FL,4 Pine St,Miami-Dade,Miami,33101,,4.4.4.4

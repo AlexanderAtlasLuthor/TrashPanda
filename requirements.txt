@@ -1,0 +1,6 @@
+pandas
+openpyxl
+dnspython
+pyyaml
+tqdm
+python-dateutil

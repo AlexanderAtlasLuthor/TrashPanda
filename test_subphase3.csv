@@ -1,0 +1,9 @@
+email,fname,lname
+alice@example.com,Alice,Smith
+bob@@example.com,Bob,Jones
+@example.com,Invalid,Domain
+alice@,Incomplete,Email
+alice @example.com,Space,Email
+alice@example,No,Dot
+alice..smith@example.com,Double,Dots
+valid-email@my-domain.org,Valid,Email

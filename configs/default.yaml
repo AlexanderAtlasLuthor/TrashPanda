@@ -1,0 +1,13 @@
+chunk_size: 50000
+max_workers: 20
+high_confidence_threshold: 70
+review_threshold: 40
+fallback_to_a_record: true
+invalid_if_disposable: true
+dns_timeout_seconds: 4.0
+retry_dns_times: 1
+export_review_bucket: true
+keep_original_columns: true
+log_level: INFO
+staging_db_name: staging.sqlite3
+temp_dir_name: temp

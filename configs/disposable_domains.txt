@@ -1,0 +1,7 @@
+# Minimal starter list. Extend as needed.
+mailinator.com
+guerrillamail.com
+10minutemail.com
+temp-mail.org
+trashmail.com
+yopmail.com
