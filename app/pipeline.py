@@ -1,5 +1,5 @@
-"""Pipeline orchestration for Subphase 2-5: ingestion, normalization,
-email syntax validation, domain enrichment, and DNS enrichment."""
+"""Pipeline orchestration for Subphase 2-6: ingestion, normalization,
+email syntax validation, domain enrichment, DNS enrichment, and scoring."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from .normalizers import (
     normalize_headers,
     normalize_values,
 )
+from .scoring import apply_scoring_column
 from .typo_rules import build_typo_map
 from .validators import (
     validate_duplicate_columns,
@@ -28,7 +29,7 @@ from .validators import (
 
 
 class EmailCleaningPipeline:
-    """Ingestion pipeline through Subphase 5: DNS enrichment."""
+    """Ingestion pipeline through Subphase 6: scoring and preliminary bucket assignment."""
 
     def __init__(self, config: AppConfig, logger: logging.Logger) -> None:
         self.config = config
@@ -54,8 +55,13 @@ class EmailCleaningPipeline:
         )
         typo_map = build_typo_map(typo_map_path)
 
-        # One DNS cache shared across all files and chunks for the entire run.
         dns_cache = DnsCache()
+
+        # Run-level scoring accumulators.
+        run_hard_fails = 0
+        run_high_confidence = 0
+        run_review = 0
+        run_invalid = 0
 
         self.logger.info("Starting email cleaner ingestion run.")
         self.logger.info("Run directory: %s", active_run_context.run_dir)
@@ -136,6 +142,30 @@ class EmailCleaningPipeline:
                 a_fallback = int(normalized_chunk["has_a_record"].eq(True).sum())
                 dns_failures = int(normalized_chunk["domain_exists"].eq(False).sum())
 
+                # Subphase 6: Scoring and preliminary bucket assignment
+                normalized_chunk = apply_scoring_column(
+                    normalized_chunk,
+                    high_confidence_threshold=self.config.high_confidence_threshold,
+                    review_threshold=self.config.review_threshold,
+                )
+
+                chunk_hard_fails = int(normalized_chunk["hard_fail"].eq(True).sum())
+                chunk_high = int((normalized_chunk["preliminary_bucket"] == "high_confidence").sum())
+                chunk_review = int((normalized_chunk["preliminary_bucket"] == "review").sum())
+                chunk_invalid = int((normalized_chunk["preliminary_bucket"] == "invalid").sum())
+
+                scored_rows = normalized_chunk[normalized_chunk["hard_fail"].eq(False)]
+                chunk_avg_score = (
+                    round(scored_rows["score"].mean(), 1)
+                    if len(scored_rows) > 0
+                    else 0.0
+                )
+
+                run_hard_fails += chunk_hard_fails
+                run_high_confidence += chunk_high
+                run_review += chunk_review
+                run_invalid += chunk_invalid
+
                 metrics.rows_processed += chunk_context.row_count
                 metrics.chunks_processed += 1
                 total_rows += chunk_context.row_count
@@ -145,7 +175,8 @@ class EmailCleaningPipeline:
                     "Processed chunk %s from %s | rows=%s "
                     "valid_emails=%s invalid_emails=%s "
                     "derived_domains=%s typo_corrections=%s domain_mismatches=%s "
-                    "dns_new_queries=%s dns_cache_hits=%s mx_found=%s a_fallback=%s dns_failures=%s",
+                    "dns_new_queries=%s dns_cache_hits=%s mx_found=%s a_fallback=%s dns_failures=%s "
+                    "hard_fails=%s high_confidence=%s review=%s invalid=%s avg_score=%s",
                     chunk_context.chunk_index,
                     discovered_file.original_name,
                     chunk_context.row_count,
@@ -159,6 +190,11 @@ class EmailCleaningPipeline:
                     mx_found,
                     a_fallback,
                     dns_failures,
+                    chunk_hard_fails,
+                    chunk_high,
+                    chunk_review,
+                    chunk_invalid,
+                    chunk_avg_score,
                 )
 
             self.logger.info(
@@ -171,15 +207,20 @@ class EmailCleaningPipeline:
 
         self.logger.info(
             "Pipeline run complete | files=%s chunks=%s rows=%s "
-            "dns_total_queries=%s dns_total_cache_hits=%s",
+            "dns_total_queries=%s dns_total_cache_hits=%s "
+            "scoring_hard_fails=%s high_confidence=%s review=%s invalid=%s",
             len(discovered_files),
             total_chunks,
             total_rows,
             dns_cache.domains_queried,
             dns_cache.cache_hits,
+            run_hard_fails,
+            run_high_confidence,
+            run_review,
+            run_invalid,
         )
         return PipelineResult(
-            status="subphase_5_ready",
+            status="subphase_6_ready",
             input_mode=input_mode,
             run_id=active_run_context.run_id,
             run_dir=active_run_context.run_dir,

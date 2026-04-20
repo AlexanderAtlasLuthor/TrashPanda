@@ -348,7 +348,7 @@ class TestPipelineIntegration:
         pipeline = EmailCleaningPipeline(config=config, logger=logger)
         result = pipeline.run(input_file=str(csv_file), run_context=run_context)
         # Status advances with each subphase; Subphase 5 is the current head
-        assert result.status == "subphase_5_ready"
+        assert result.status == "subphase_6_ready"
 
     def test_pipeline_processes_all_rows(self, csv_file):
         import logging

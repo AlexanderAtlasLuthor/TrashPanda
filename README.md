@@ -38,10 +38,20 @@ Pipeline local para limpieza masiva de listas de emails. Procesa CSV/XLSX por ch
 - Metricas globales por run: `dns_total_queries`, `dns_total_cache_hits`
 - **Sin SMTP. Sin verificacion de inbox individual. Sin scoring. Sin decisiones finales.**
 
+### Subfase 6: Scoring y asignacion de bucket preliminar
+- Consume senales de subfases 3, 4 y 5; no genera nuevas consultas de red
+- Detecta **hard fails** (fuerzan score=0, bucket=invalid): sintaxis invalida, dominio ausente, NXDOMAIN confirmado
+- Calcula **score 0-100** con pesos fijos: `syntax_valid` +25, MX presente +50, solo A/AAAA +20; penalizaciones: timeout/no_nameservers/error -15, no_mx/no_mx_no_a -10, typo corrected -3, domain mismatch -5
+- Produce **score_reasons** como string separado por `|` en orden estable (sintaxis → mx/a → dns → typo → mismatch)
+- Asigna **preliminary_bucket**: `high_confidence` (score≥70), `review` (score≥40), `invalid` (resto); umbrales configurables
+- Columnas agregadas: `hard_fail`, `score`, `score_reasons`, `preliminary_bucket`
+- Metricas por chunk: `hard_fails`, `high_confidence`, `review`, `invalid`, `avg_score`
+- Metricas globales por run: `scoring_hard_fails`, `high_confidence`, `review`, `invalid`
+- **Sin SMTP. Sin deduplicacion. Sin export. Las decisiones finales se difieren a Subfase 7 (dedupe).**
+
 ### Pendiente (futuras subfases)
 - Deteccion de dominios desechables
 - Deteccion de patrones sospechosos
-- Scoring de calidad
 - Deduplicacion global
 - Export por buckets
 - Reportes finales JSON/CSV

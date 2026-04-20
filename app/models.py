@@ -89,6 +89,18 @@ class DnsEnrichmentMetrics:
 
 
 @dataclass(slots=True)
+class ScoringMetrics:
+    """Per-chunk scoring summary for Subphase 6."""
+
+    hard_fail_count: int = 0
+    high_confidence_count: int = 0
+    review_count: int = 0
+    invalid_count: int = 0
+    total_score: int = 0
+    rows_scored: int = 0
+
+
+@dataclass(slots=True)
 class PipelineResult:
     """Result returned by the ingestion pipeline."""
 
