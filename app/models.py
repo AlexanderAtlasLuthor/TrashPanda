@@ -78,6 +78,17 @@ class DomainEnrichmentMetrics:
 
 
 @dataclass(slots=True)
+class DnsEnrichmentMetrics:
+    """Per-chunk DNS enrichment summary for Subphase 5."""
+
+    new_queries: int = 0
+    cache_hits: int = 0
+    mx_found: int = 0
+    a_fallback_found: int = 0
+    dns_failures: int = 0
+
+
+@dataclass(slots=True)
 class PipelineResult:
     """Result returned by the ingestion pipeline."""
 

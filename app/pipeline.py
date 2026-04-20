@@ -1,4 +1,5 @@
-"""Pipeline orchestration for Subphase 2-4: ingestion, normalization, email syntax validation, and domain enrichment."""
+"""Pipeline orchestration for Subphase 2-5: ingestion, normalization,
+email syntax validation, domain enrichment, and DNS enrichment."""
 
 from __future__ import annotations
 
@@ -6,6 +7,7 @@ import logging
 from pathlib import Path
 
 from .config import AppConfig
+from .dns_utils import DnsCache, apply_dns_enrichment_column
 from .io_utils import build_run_context, discover_input_files, prepare_input_file, read_csv_in_chunks
 from .models import FileIngestionMetrics, PipelineResult, RunContext
 from .normalizers import (
@@ -25,14 +27,12 @@ from .validators import (
 )
 
 
-
 class EmailCleaningPipeline:
-    """Ingestion pipeline through Subphase 4: domain extraction, typo correction, and domain comparison."""
+    """Ingestion pipeline through Subphase 5: DNS enrichment."""
 
     def __init__(self, config: AppConfig, logger: logging.Logger) -> None:
         self.config = config
         self.logger = logger
-
 
     def run(
         self,
@@ -47,13 +47,15 @@ class EmailCleaningPipeline:
         input_mode = "input_dir" if input_dir else "input_file"
         discovered_files, ignored_files = discover_input_files(input_dir=input_dir, input_file=input_file)
 
-        # Load typo map once for all chunks
         typo_map_path = (
             self.config.paths.typo_map_path
             if self.config.paths is not None
             else Path(__file__).resolve().parent.parent / "configs" / "typo_map.csv"
         )
         typo_map = build_typo_map(typo_map_path)
+
+        # One DNS cache shared across all files and chunks for the entire run.
+        dns_cache = DnsCache()
 
         self.logger.info("Starting email cleaner ingestion run.")
         self.logger.info("Run directory: %s", active_run_context.run_dir)
@@ -104,8 +106,8 @@ class EmailCleaningPipeline:
 
                 # Subphase 3: Email syntax validation
                 normalized_chunk = validate_email_syntax_column(normalized_chunk)
-                valid_count = int((normalized_chunk["syntax_valid"] == True).sum())
-                invalid_count = int((normalized_chunk["syntax_valid"] == False).sum())
+                valid_count = int(normalized_chunk["syntax_valid"].eq(True).sum())
+                invalid_count = int(normalized_chunk["syntax_valid"].eq(False).sum())
 
                 # Subphase 4: Domain extraction, typo correction, domain comparison
                 normalized_chunk = extract_email_components(normalized_chunk)
@@ -113,8 +115,26 @@ class EmailCleaningPipeline:
                 normalized_chunk = compare_domain_with_input_column(normalized_chunk)
 
                 derived_count = int(normalized_chunk["domain_from_email"].notna().sum())
-                typo_count = int((normalized_chunk["typo_corrected"] == True).sum())
-                mismatch_count = int((normalized_chunk["domain_matches_input_column"] == False).sum())
+                typo_count = int(normalized_chunk["typo_corrected"].eq(True).sum())
+                mismatch_count = int(normalized_chunk["domain_matches_input_column"].eq(False).sum())
+
+                # Subphase 5: DNS/MX enrichment
+                queries_before = dns_cache.domains_queried
+                hits_before = dns_cache.cache_hits
+
+                normalized_chunk = apply_dns_enrichment_column(
+                    normalized_chunk,
+                    cache=dns_cache,
+                    timeout_seconds=self.config.dns_timeout_seconds,
+                    fallback_to_a_record=self.config.fallback_to_a_record,
+                    max_workers=self.config.max_workers,
+                )
+
+                new_queries = dns_cache.domains_queried - queries_before
+                new_hits = dns_cache.cache_hits - hits_before
+                mx_found = int(normalized_chunk["has_mx_record"].eq(True).sum())
+                a_fallback = int(normalized_chunk["has_a_record"].eq(True).sum())
+                dns_failures = int(normalized_chunk["domain_exists"].eq(False).sum())
 
                 metrics.rows_processed += chunk_context.row_count
                 metrics.chunks_processed += 1
@@ -122,8 +142,10 @@ class EmailCleaningPipeline:
                 total_chunks += 1
 
                 self.logger.info(
-                    "Processed chunk %s from %s | rows=%s valid_emails=%s invalid_emails=%s "
-                    "derived_domains=%s typo_corrections=%s domain_mismatches=%s",
+                    "Processed chunk %s from %s | rows=%s "
+                    "valid_emails=%s invalid_emails=%s "
+                    "derived_domains=%s typo_corrections=%s domain_mismatches=%s "
+                    "dns_new_queries=%s dns_cache_hits=%s mx_found=%s a_fallback=%s dns_failures=%s",
                     chunk_context.chunk_index,
                     discovered_file.original_name,
                     chunk_context.row_count,
@@ -132,6 +154,11 @@ class EmailCleaningPipeline:
                     derived_count,
                     typo_count,
                     mismatch_count,
+                    new_queries,
+                    new_hits,
+                    mx_found,
+                    a_fallback,
+                    dns_failures,
                 )
 
             self.logger.info(
@@ -143,13 +170,16 @@ class EmailCleaningPipeline:
             file_metrics.append(metrics)
 
         self.logger.info(
-            "Ingestion, email syntax validation, and domain enrichment finished | files=%s chunks=%s rows=%s",
+            "Pipeline run complete | files=%s chunks=%s rows=%s "
+            "dns_total_queries=%s dns_total_cache_hits=%s",
             len(discovered_files),
             total_chunks,
             total_rows,
+            dns_cache.domains_queried,
+            dns_cache.cache_hits,
         )
         return PipelineResult(
-            status="subphase_4_ready",
+            status="subphase_5_ready",
             input_mode=input_mode,
             run_id=active_run_context.run_id,
             run_dir=active_run_context.run_dir,

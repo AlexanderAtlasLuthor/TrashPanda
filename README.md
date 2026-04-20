@@ -26,8 +26,19 @@ Pipeline local para limpieza masiva de listas de emails. Procesa CSV/XLSX por ch
 - Aplica typo correction conservadora con mapa cerrado (`configs/typo_map.csv`); sin fuzzy matching
 - Columnas agregadas: `typo_corrected`, `typo_original_domain`, `corrected_domain`, `domain_matches_input_column`
 
+### Subfase 5: Validacion DNS/MX del dominio corregido
+- Consulta MX del `corrected_domain`; fallback a A/AAAA configurable
+- Cache en memoria por `corrected_domain`, compartido entre todos los chunks y archivos del run
+- Resolucion paralela de dominios nuevos via `ThreadPoolExecutor` (configurable con `max_workers`)
+- Solo filas con `syntax_valid=True` y `corrected_domain` no nulo son consultadas; el resto recibe `pd.NA`
+- Manejo explicito de: NXDOMAIN, NoAnswer, Timeout, NoNameservers, error generico
+- Columnas agregadas: `dns_check_performed`, `domain_exists`, `has_mx_record`, `has_a_record`, `dns_error`
+- Semantica de `domain_exists`: `True` solo si hay MX o A/AAAA util; NXDOMAIN y timeout producen `False`
+- Metricas por chunk: `dns_new_queries`, `dns_cache_hits`, `mx_found`, `a_fallback`, `dns_failures`
+- Metricas globales por run: `dns_total_queries`, `dns_total_cache_hits`
+- **Sin SMTP. Sin verificacion de inbox individual. Sin scoring. Sin decisiones finales.**
+
 ### Pendiente (futuras subfases)
-- DNS / MX lookup con cache
 - Deteccion de dominios desechables
 - Deteccion de patrones sospechosos
 - Scoring de calidad
