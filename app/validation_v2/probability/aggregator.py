@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+from .history_integration import apply_historical_adjustment
 from .model import DeliverabilityResult, DeliverabilitySignal
 
 
@@ -9,16 +12,31 @@ class DeliverabilityAggregator:
     def compute(
         self,
         signals: list[DeliverabilitySignal],
+        historical: Any = None,
     ) -> DeliverabilityResult:
         usable = [s for s in signals if s.weight > 0]
         if not usable:
             return DeliverabilityResult(0.0, 0.0, [])
 
         total_weight = sum(s.weight for s in usable)
-        probability = sum(_clamp(s.value) * s.weight for s in usable) / total_weight
-        probability = _clamp(probability)
-        confidence = _confidence(usable)
-        return DeliverabilityResult(probability, confidence, list(usable))
+        base_probability = (
+            sum(_clamp(s.value) * s.weight for s in usable) / total_weight
+        )
+        base_probability = _clamp(base_probability)
+        base_confidence = _confidence(usable)
+        probability, confidence, influence = apply_historical_adjustment(
+            base_probability=base_probability,
+            base_confidence=base_confidence,
+            historical=historical,
+        )
+        return DeliverabilityResult(
+            probability=probability,
+            confidence=confidence,
+            signals=list(usable),
+            base_probability=base_probability,
+            base_confidence=base_confidence,
+            historical_influence=influence,
+        )
 
 
 def _confidence(signals: list[DeliverabilitySignal]) -> float:

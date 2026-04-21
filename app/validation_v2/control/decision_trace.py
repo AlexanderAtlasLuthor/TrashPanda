@@ -32,6 +32,7 @@ from typing import Any
 # style assertions easy to read and refactor.
 STAGE_DOMAIN_INTELLIGENCE = "domain_intelligence"
 STAGE_PROVIDER_REPUTATION = "provider_reputation"
+STAGE_HISTORICAL_INTELLIGENCE = "historical_intelligence"
 STAGE_EXCLUSION = "exclusion"
 STAGE_CANDIDATE = "candidate_selection"
 STAGE_RATE_LIMIT = "rate_limit"
@@ -125,6 +126,7 @@ __all__ = [
     "ProbeDecisionTrace",
     "STAGE_DOMAIN_INTELLIGENCE",
     "STAGE_PROVIDER_REPUTATION",
+    "STAGE_HISTORICAL_INTELLIGENCE",
     "STAGE_EXCLUSION",
     "STAGE_CANDIDATE",
     "STAGE_RATE_LIMIT",

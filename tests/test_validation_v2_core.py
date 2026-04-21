@@ -432,7 +432,7 @@ class TestValidationEngineV2:
         assert "syntax_valid" in result.validation_reason_codes
         assert "domain_present" in result.validation_reason_codes
         assert result.provider_reputation is None
-        assert result.breakdown == {}
+        assert result.breakdown["historical_intelligence"]["history_cache_hit"] is False
 
     def test_intel_and_reputation_collected_into_breakdown(self) -> None:
         intel = _Intel()

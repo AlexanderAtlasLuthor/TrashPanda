@@ -65,6 +65,7 @@ from .control.decision_trace import (
     STAGE_DOMAIN_INTELLIGENCE,
     STAGE_EXCLUSION,
     STAGE_EXECUTION_POLICY,
+    STAGE_HISTORICAL_INTELLIGENCE,
     STAGE_PROVIDER_REPUTATION,
     STAGE_PROBABILITY,
     STAGE_RATE_LIMIT,
@@ -108,6 +109,9 @@ from .policy import ValidationPolicy
 from .request import ValidationRequest
 from .result import ValidationResult
 from .types import ReasonCode, SmtpProbeStatus, ValidationStatus
+from .history.read_service import HistoricalIntelligence, HistoricalIntelligenceService
+from .history.write_service import ReputationLearningService
+from .history.integration import retry_support
 from .network.smtp_classifier import (
     SMTP_STATUS_NOT_ATTEMPTED,
     SMTP_STATUS_UNCERTAIN,
@@ -207,6 +211,8 @@ class ValidationEngineV2:
         self.telemetry_sink: ControlTelemetrySink | None = None
         self.rate_limiter: RateLimiter | None = None
         self.execution_policy: NetworkExecutionPolicy | None = None
+        self.historical_intelligence_service: HistoricalIntelligenceService | None = None
+        self.reputation_learning_service: ReputationLearningService | None = None
 
     # ------------------------------------------------------------------
     # Read-only accessors (handy for tests / introspection)
@@ -276,11 +282,27 @@ class ValidationEngineV2:
         )
 
         provider_label = _pluck_provider_label(reputation)
-        breakdown = self._build_base_breakdown(intel, reputation)
+        provider_key = _pluck_provider_key(reputation)
+        historical, historical_reason = self._fetch_historical_intelligence(
+            request.domain,
+            provider_key,
+        )
+        trace.add_step(
+            stage=STAGE_HISTORICAL_INTELLIGENCE,
+            decision="fetched" if historical.history_cache_hit else "missing",
+            reason=historical_reason,
+            inputs={
+                "domain": request.domain,
+                "provider_key": provider_key,
+            },
+        )
+
+        breakdown = self._build_base_breakdown(intel, reputation, historical)
         base_metadata = _build_base_metadata(
             request=request,
             intel=intel,
             reputation=reputation,
+            historical=historical,
         )
 
         # -- 5. Exclusion ------------------------------------------------
@@ -307,13 +329,22 @@ class ValidationEngineV2:
                 domain=request.domain,
                 metadata={"reason": exclusion_reason},
             )
-            return self._build_excluded_result(
+            result = self._build_excluded_result(
                 request=request,
                 breakdown=breakdown,
                 metadata=base_metadata,
                 exclusion_reason=exclusion_reason,
                 trace=trace,
             )
+            self._record_historical_write(
+                request=request,
+                result=result,
+                trace=trace,
+                smtp_summary=None,
+                catch_all_summary=None,
+                historical=historical,
+            )
+            return result
 
         # -- 6. Candidate selection --------------------------------------
         candidate_accepted, candidate_reason = self._check_candidate(request)
@@ -340,13 +371,22 @@ class ValidationEngineV2:
                 domain=request.domain,
                 metadata={"reason": candidate_reason},
             )
-            return self._build_skipped_result(
+            result = self._build_skipped_result(
                 request=request,
                 breakdown=breakdown,
                 metadata=base_metadata,
                 candidate_reason=candidate_reason,
                 trace=trace,
             )
+            self._record_historical_write(
+                request=request,
+                result=result,
+                trace=trace,
+                smtp_summary=None,
+                catch_all_summary=None,
+                historical=historical,
+            )
+            return result
 
         # -- 7. Rate limit ------------------------------------------------
         rate_limit_blocked = False
@@ -413,6 +453,7 @@ class ValidationEngineV2:
             request=request,
             trace=trace,
             smtp_result=smtp_result,
+            historical=historical,
         )
         if retry_result is not None:
             smtp_result = retry_result
@@ -423,6 +464,7 @@ class ValidationEngineV2:
             trace=trace,
             smtp_result=smtp_result,
             smtp_classification=smtp_classification,
+            historical=historical,
         )
         signals = _build_deliverability_signals(
             request=request,
@@ -433,9 +475,28 @@ class ValidationEngineV2:
                 if smtp_classification is not None
                 else SMTP_STATUS_NOT_ATTEMPTED
             ),
-            catch_all=catch_all,
+            catch_all=_catch_all_for_probability(catch_all),
         )
-        probability_result = DeliverabilityAggregator().compute(signals)
+        probability_result = DeliverabilityAggregator().compute(
+            signals,
+            historical=historical.to_dict(),
+        )
+        historical_influence = dict(probability_result.historical_influence or {})
+        trace.add_step(
+            stage="probability_history_adjustment",
+            decision="applied" if historical_influence.get("applied") else "skipped",
+            reason=str(
+                historical_influence.get("reason", "no_history_or_low_confidence")
+            ),
+            inputs={
+                "base_probability": probability_result.base_probability,
+                "adjustment": historical_influence.get("adjustment", 0.0),
+                "base_confidence": probability_result.base_confidence,
+                "confidence_delta": historical_influence.get(
+                    "confidence_delta", 0.0
+                ),
+            },
+        )
         decision = ValidationDecisionPolicy().decide(
             probability_result.probability
         )
@@ -471,7 +532,18 @@ class ValidationEngineV2:
                 "confidence": catch_all.confidence,
                 "signals": dict(catch_all.signals),
             }
+            if "historical_catch_all_support" in catch_all.signals:
+                metadata["historical_catch_all_influence"] = catch_all.signals[
+                    "historical_catch_all_support"
+                ]
+        retry_steps = [s for s in trace.steps if s["stage"] == STAGE_SMTP_RETRY]
+        if retry_steps:
+            metadata["historical_retry_influence"] = retry_steps[-1]["inputs"].get(
+                "historical_retry_support"
+            )
+            metadata["historical_retry_recommended"] = bool(retry_attempted)
         metadata["action_recommendation"] = decision.action
+        metadata["historical_probability_influence"] = historical_influence
 
         smtp_status = (
             str(smtp_classification["smtp_status"])
@@ -523,6 +595,9 @@ class ValidationEngineV2:
             validation_breakdown={
                 "probability": probability_result.probability,
                 "confidence": probability_result.confidence,
+                "base_probability": probability_result.base_probability,
+                "base_confidence": probability_result.base_confidence,
+                "historical_influence": historical_influence,
                 "decision": {
                     "status": decision.status,
                     "action": decision.action,
@@ -530,6 +605,19 @@ class ValidationEngineV2:
                 "signals": [_signal_to_dict(s) for s in probability_result.signals],
                 "explanation": explanation,
             },
+        )
+        self._record_historical_write(
+            request=request,
+            result=result,
+            trace=trace,
+            smtp_summary=_smtp_learning_summary(
+                smtp_result=smtp_result,
+                smtp_classification=smtp_classification,
+                retry_attempted=retry_attempted,
+                retry_outcome=retry_outcome,
+            ),
+            catch_all_summary=_catch_all_learning_summary(catch_all),
+            historical=historical,
         )
         self._emit({"event": "skeleton_completed", "domain": request.domain})
         return result
@@ -691,6 +779,7 @@ class ValidationEngineV2:
         request: ValidationRequest,
         trace: ProbeDecisionTrace,
         smtp_result: SMTPProbeResult | None,
+        historical: HistoricalIntelligence,
     ) -> tuple[SMTPProbeResult | None, bool, str]:
         if smtp_result is None:
             return None, False, "none"
@@ -706,9 +795,24 @@ class ValidationEngineV2:
             )
             return None, False, "none"
 
-        decision = _evaluate_retry(self._retry_strategy, smtp_result)
+        historical_payload = historical.to_dict()
+        decision = _evaluate_retry(
+            self._retry_strategy,
+            smtp_result,
+            historical_payload,
+        )
         if not decision.should_retry:
-            self._add_retry_step(trace, "skipped", decision.reason, request)
+            self._add_retry_step(
+                trace,
+                "skipped",
+                decision.reason,
+                request,
+                extra_inputs={
+                    "historical_retry_support": _retry_support_for_trace(
+                        historical_payload
+                    )
+                },
+            )
             self._emit_event(
                 EVENT_SMTP_RETRY_SKIPPED,
                 domain=request.domain,
@@ -721,7 +825,12 @@ class ValidationEngineV2:
             "executed",
             decision.reason,
             request,
-            extra_inputs={"delay_ms": decision.delay_ms},
+            extra_inputs={
+                "delay_ms": decision.delay_ms,
+                "historical_retry_support": _retry_support_for_trace(
+                    historical_payload
+                ),
+            },
         )
         self._emit_event(
             EVENT_SMTP_RETRY_ATTEMPTED,
@@ -747,6 +856,7 @@ class ValidationEngineV2:
         trace: ProbeDecisionTrace,
         smtp_result: SMTPProbeResult | None,
         smtp_classification: dict[str, Any] | None,
+        historical: HistoricalIntelligence,
     ) -> CatchAllAssessment | None:
         if smtp_result is None or smtp_classification is None:
             return None
@@ -761,12 +871,21 @@ class ValidationEngineV2:
             return None
 
         try:
-            assessment = self._catch_all_analyzer.assess(
-                request.domain,
-                smtp_result,
-                smtp_classification,
-                _cache_from_domain_intel(self._domain_intel),
-            )
+            try:
+                assessment = self._catch_all_analyzer.assess(
+                    request.domain,
+                    smtp_result,
+                    smtp_classification,
+                    _cache_from_domain_intel(self._domain_intel),
+                    historical.to_dict(),
+                )
+            except TypeError:
+                assessment = self._catch_all_analyzer.assess(
+                    request.domain,
+                    smtp_result,
+                    smtp_classification,
+                    _cache_from_domain_intel(self._domain_intel),
+                )
             if isinstance(assessment, dict):
                 assessment = CatchAllAssessment(
                     classification=str(assessment.get("classification", "unknown")),
@@ -783,10 +902,13 @@ class ValidationEngineV2:
         trace.add_step(
             stage=STAGE_CATCH_ALL,
             decision="classified",
-            reason=assessment.classification,
+            reason=str(assessment.signals.get("reason", assessment.classification)),
             inputs={
                 "domain": request.domain,
                 "confidence": assessment.confidence,
+                "historical_catch_all_support": assessment.signals.get(
+                    "historical_catch_all_support"
+                ),
             },
         )
         self._emit_event(
@@ -849,12 +971,34 @@ class ValidationEngineV2:
     def _build_base_breakdown(
         intel: dict[str, Any] | None,
         reputation: dict[str, Any] | None,
+        historical: HistoricalIntelligence,
     ) -> dict[str, Any]:
         breakdown: dict[str, Any] = {}
         if intel is not None:
             breakdown["domain_intelligence"] = intel
         if reputation is not None:
             breakdown["provider_reputation"] = reputation
+        breakdown["historical_intelligence"] = {
+            "history_cache_hit": historical.history_cache_hit,
+            "domain": historical.domain,
+            "provider_key": historical.provider_key,
+            "domain_observation_count": historical.domain_observation_count,
+            "provider_observation_count": historical.provider_observation_count,
+            "historical_domain_reputation": (
+                historical.historical_domain_reputation
+            ),
+            "historical_provider_reputation": (
+                historical.historical_provider_reputation
+            ),
+            "historical_smtp_valid_rate": historical.historical_smtp_valid_rate,
+            "historical_smtp_invalid_rate": (
+                historical.historical_smtp_invalid_rate
+            ),
+            "historical_timeout_rate": historical.historical_timeout_rate,
+            "historical_catch_all_risk": historical.historical_catch_all_risk,
+            "domain_history_stale": historical.domain_history_stale,
+            "provider_history_stale": historical.provider_history_stale,
+        }
         return breakdown
 
     def _build_excluded_result(
@@ -1007,6 +1151,75 @@ class ValidationEngineV2:
             pass
 
 
+    def _fetch_historical_intelligence(
+        self, domain: str, provider_key: str | None
+    ) -> tuple[HistoricalIntelligence, str]:
+        if self.historical_intelligence_service is None:
+            historical = HistoricalIntelligenceService().fetch(
+                domain,
+                provider_key,
+            )
+            return historical, "service_unavailable"
+
+        historical = self.historical_intelligence_service.fetch(
+            domain,
+            provider_key,
+        )
+        return (
+            historical,
+            "cache_hit" if historical.history_cache_hit else "no_history",
+        )
+
+    def _record_historical_write(
+        self,
+        *,
+        request: ValidationRequest,
+        result: ValidationResult,
+        trace: ProbeDecisionTrace,
+        smtp_summary: dict[str, Any] | None,
+        catch_all_summary: dict[str, Any] | None,
+        historical: HistoricalIntelligence,
+    ) -> None:
+        if self.reputation_learning_service is None:
+            result.metadata["historical_write_recorded"] = False
+            trace.add_step(
+                stage="historical_write",
+                decision="skipped",
+                reason="service_unavailable",
+                inputs={"domain": request.domain},
+            )
+            result.decision_trace = trace.to_dict()
+            return
+
+        try:
+            self.reputation_learning_service.record_validation(
+                request=request,
+                result=result,
+                smtp_result=smtp_summary,
+                catch_all=catch_all_summary,
+                historical=historical.to_dict(),
+            )
+        except Exception:
+            result.metadata["historical_write_recorded"] = False
+            trace.add_step(
+                stage="historical_write",
+                decision="failed",
+                reason="learning_service_error",
+                inputs={"domain": request.domain},
+            )
+            result.decision_trace = trace.to_dict()
+            return
+
+        result.metadata["historical_write_recorded"] = True
+        trace.add_step(
+            stage="historical_write",
+            decision="recorded",
+            reason="learning_recorded",
+            inputs={"domain": request.domain},
+        )
+        result.decision_trace = trace.to_dict()
+
+
 # ---------------------------------------------------------------------------
 # Free helpers
 # ---------------------------------------------------------------------------
@@ -1017,6 +1230,15 @@ def _pluck_provider_label(reputation: dict[str, Any] | None) -> str | None:
         return None
     value = reputation.get("provider")
     return value if isinstance(value, str) else None
+
+
+def _pluck_provider_key(reputation: dict[str, Any] | None) -> str | None:
+    if not reputation:
+        return None
+    value = reputation.get("provider_key")
+    if isinstance(value, str) and value:
+        return value
+    return _pluck_provider_label(reputation)
 
 
 def _pluck_provider_label_from_breakdown(
@@ -1030,6 +1252,7 @@ def _build_base_metadata(
     request: ValidationRequest,
     intel: dict[str, Any] | None,
     reputation: dict[str, Any] | None,
+    historical: HistoricalIntelligence,
 ) -> dict[str, Any]:
     """Compose the compact per-request metadata summary.
 
@@ -1062,6 +1285,7 @@ def _build_base_metadata(
             metadata["trust_level"] = reputation["trust_level"]
         cache_hit = cache_hit or bool(reputation.get("cache_hit"))
     metadata["cache_hit"] = cache_hit
+    metadata["historical_intelligence"] = historical.to_dict()
     return metadata
 
 
@@ -1177,6 +1401,56 @@ def _signal_to_dict(signal: DeliverabilitySignal) -> dict[str, object]:
     }
 
 
+def _smtp_learning_summary(
+    *,
+    smtp_result: SMTPProbeResult | None,
+    smtp_classification: dict[str, Any] | None,
+    retry_attempted: bool,
+    retry_outcome: str,
+) -> dict[str, Any] | None:
+    if smtp_result is None and smtp_classification is None and not retry_attempted:
+        return None
+    return {
+        "smtp_status": (
+            str(smtp_classification["smtp_status"])
+            if smtp_classification is not None
+            else SMTP_STATUS_NOT_ATTEMPTED
+        ),
+        "smtp_code": smtp_result.code if smtp_result is not None else None,
+        "smtp_error_type": (
+            smtp_result.error_type if smtp_result is not None else None
+        ),
+        "retry_attempted": bool(retry_attempted),
+        "retry_outcome": retry_outcome,
+    }
+
+
+def _catch_all_learning_summary(
+    catch_all: CatchAllAssessment | None,
+) -> dict[str, Any] | None:
+    if catch_all is None:
+        return None
+    return {
+        "catch_all_status": catch_all.classification,
+        "confidence": catch_all.confidence,
+    }
+
+
+def _catch_all_for_probability(
+    catch_all: CatchAllAssessment | None,
+) -> CatchAllAssessment | None:
+    if catch_all is None:
+        return None
+    original = catch_all.signals.get("pre_history_classification")
+    if not isinstance(original, str):
+        return catch_all
+    return CatchAllAssessment(
+        classification=original,
+        confidence=float(catch_all.signals.get("pre_history_confidence") or 0.0),
+        signals=dict(catch_all.signals),
+    )
+
+
 def _clamp_float(value: Any) -> float:
     try:
         number = float(value)
@@ -1185,10 +1459,17 @@ def _clamp_float(value: Any) -> float:
     return max(0.0, min(1.0, number))
 
 
-def _evaluate_retry(strategy: RetryStrategy, result: SMTPProbeResult) -> RetryDecision:
+def _evaluate_retry(
+    strategy: RetryStrategy,
+    result: SMTPProbeResult,
+    historical: dict[str, Any] | None = None,
+) -> RetryDecision:
     evaluate = getattr(strategy, "evaluate", None)
     if callable(evaluate):
-        decision = evaluate(result)
+        try:
+            decision = evaluate(result, historical)
+        except TypeError:
+            decision = evaluate(result)
         if isinstance(decision, RetryDecision):
             return decision
         return RetryDecision(
@@ -1205,6 +1486,7 @@ def _evaluate_retry(strategy: RetryStrategy, result: SMTPProbeResult) -> RetryDe
             "message": result.message,
             "latency_ms": result.latency_ms,
             "error_type": result.error_type,
+            "historical": historical or {},
         }
     )
     return RetryDecision(
@@ -1212,6 +1494,10 @@ def _evaluate_retry(strategy: RetryStrategy, result: SMTPProbeResult) -> RetryDe
         delay_ms=raw.get("delay_ms"),  # type: ignore[arg-type]
         reason=str(raw.get("reason", "not_retryable")),
     )
+
+
+def _retry_support_for_trace(historical: dict[str, Any]) -> dict[str, Any]:
+    return retry_support(historical)
 
 
 def _cache_from_domain_intel(domain_intel: Any) -> Any:

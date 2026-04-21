@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
+from ..history.integration import retry_support
 from ..interfaces import RetryStrategy
 from .smtp_result import SMTPProbeResult
 
@@ -23,11 +25,24 @@ class IntelligentRetryStrategy(RetryStrategy):
             raise ValueError("delay_ms must be >= 0")
         self.delay_ms = int(delay_ms)
 
-    def evaluate(self, result: SMTPProbeResult) -> RetryDecision:
+    def evaluate(
+        self,
+        result: SMTPProbeResult,
+        historical: dict[str, Any] | None = None,
+    ) -> RetryDecision:
+        support = retry_support(historical)
         if result.error_type in {"timeout", "connection_error"}:
+            if support["effect"] == "suppresses_retry":
+                return RetryDecision(False, None, support["reason"])
+            if support["effect"] == "supports_retry":
+                return RetryDecision(True, self.delay_ms, support["reason"])
             return RetryDecision(True, self.delay_ms, result.error_type)
 
         if result.code is not None and 400 <= result.code < 500:
+            if support["effect"] == "suppresses_retry":
+                return RetryDecision(False, None, support["reason"])
+            if support["effect"] == "supports_retry":
+                return RetryDecision(True, self.delay_ms, support["reason"])
             return RetryDecision(True, self.delay_ms, "temporary_4xx")
 
         if result.code == 250:
@@ -39,6 +54,7 @@ class IntelligentRetryStrategy(RetryStrategy):
         return RetryDecision(False, None, "not_retryable")
 
     def decide(self, probe_result: dict[str, object]) -> dict[str, object]:
+        historical = probe_result.get("historical")
         result = SMTPProbeResult(
             success=bool(probe_result.get("success")),
             code=probe_result.get("code"),  # type: ignore[arg-type]
@@ -46,7 +62,10 @@ class IntelligentRetryStrategy(RetryStrategy):
             latency_ms=probe_result.get("latency_ms"),  # type: ignore[arg-type]
             error_type=probe_result.get("error_type"),  # type: ignore[arg-type]
         )
-        decision = self.evaluate(result)
+        decision = self.evaluate(
+            result,
+            historical if isinstance(historical, dict) else None,
+        )
         return {
             "retry": decision.should_retry,
             "delay_ms": decision.delay_ms,

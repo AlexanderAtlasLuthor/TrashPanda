@@ -50,6 +50,7 @@ from app.validation_v2.control.decision_trace import (
     STAGE_DOMAIN_INTELLIGENCE,
     STAGE_EXCLUSION,
     STAGE_EXECUTION_POLICY,
+    STAGE_HISTORICAL_INTELLIGENCE,
     STAGE_PROVIDER_REPUTATION,
     STAGE_PROBABILITY,
     STAGE_RATE_LIMIT,
@@ -65,6 +66,8 @@ from app.validation_v2.services import (
 
 
 STAGE_CANDIDATE_SELECTION = "candidate_selection"
+STAGE_HISTORICAL_WRITE = "historical_write"
+STAGE_PROBABILITY_HISTORY_ADJUSTMENT = "probability_history_adjustment"
 
 
 class _ManualClock:
@@ -372,12 +375,15 @@ class TestDecisionTrace:
         assert _stages(result) == [
             STAGE_DOMAIN_INTELLIGENCE,
             STAGE_PROVIDER_REPUTATION,
+            STAGE_HISTORICAL_INTELLIGENCE,
             STAGE_EXCLUSION,
             STAGE_CANDIDATE_SELECTION,
             STAGE_RATE_LIMIT,
             STAGE_EXECUTION_POLICY,
             STAGE_SMTP_PROBE,
+            STAGE_PROBABILITY_HISTORY_ADJUSTMENT,
             STAGE_PROBABILITY,
+            STAGE_HISTORICAL_WRITE,
         ]
         _assert_trace_step_shape(result)
 
@@ -392,11 +398,15 @@ class TestDecisionTrace:
         assert _stages(result) == [
             STAGE_DOMAIN_INTELLIGENCE,
             STAGE_PROVIDER_REPUTATION,
+            STAGE_HISTORICAL_INTELLIGENCE,
             STAGE_EXCLUSION,
             STAGE_SMTP_PROBE,
+            STAGE_HISTORICAL_WRITE,
         ]
-        assert _trace_steps(result)[-2]["decision"] == "excluded"
-        assert _trace_steps(result)[-1]["decision"] == "skipped"
+        steps = _trace_steps(result)
+        stages = _stages(result)
+        assert steps[stages.index(STAGE_EXCLUSION)]["decision"] == "excluded"
+        assert steps[stages.index(STAGE_SMTP_PROBE)]["decision"] == "skipped"
 
     def test_skipped_trace_short_circuits_after_candidate_selection(self) -> None:
         engine = _wire_engine(
@@ -408,12 +418,16 @@ class TestDecisionTrace:
         assert _stages(result) == [
             STAGE_DOMAIN_INTELLIGENCE,
             STAGE_PROVIDER_REPUTATION,
+            STAGE_HISTORICAL_INTELLIGENCE,
             STAGE_EXCLUSION,
             STAGE_CANDIDATE_SELECTION,
             STAGE_SMTP_PROBE,
+            STAGE_HISTORICAL_WRITE,
         ]
-        assert _trace_steps(result)[-2]["decision"] == "rejected"
-        assert _trace_steps(result)[-1]["decision"] == "skipped"
+        steps = _trace_steps(result)
+        stages = _stages(result)
+        assert steps[stages.index(STAGE_CANDIDATE_SELECTION)]["decision"] == "rejected"
+        assert steps[stages.index(STAGE_SMTP_PROBE)]["decision"] == "skipped"
 
 
 class TestEngineIntegration:
@@ -493,11 +507,13 @@ class TestEngineIntegration:
             EVENT_VALIDATION_STARTED,
             EVENT_VALIDATION_BLOCKED_BY_POLICY,
         ]
-        assert _trace_steps(second)[-4]["stage"] == STAGE_RATE_LIMIT
-        assert _trace_steps(second)[-4]["decision"] == "blocked"
-        assert _trace_steps(second)[-2]["stage"] == STAGE_SMTP_PROBE
-        assert _trace_steps(second)[-2]["decision"] == "skipped"
-        assert _trace_steps(second)[-1]["stage"] == STAGE_PROBABILITY
+        stages = _stages(second)
+        assert stages[-1] == STAGE_HISTORICAL_WRITE
+        rate_step = _trace_steps(second)[stages.index(STAGE_RATE_LIMIT)]
+        smtp_step = _trace_steps(second)[stages.index(STAGE_SMTP_PROBE)]
+        assert rate_step["decision"] == "blocked"
+        assert smtp_step["decision"] == "skipped"
+        assert STAGE_PROBABILITY in stages
 
     def test_execution_decision_matches_network_policy(self) -> None:
         engine = _wire_engine(

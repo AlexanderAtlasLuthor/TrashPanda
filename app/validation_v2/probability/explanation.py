@@ -29,16 +29,25 @@ class ExplanationBuilder:
             if s.value <= 0.4
         ][:3]
         factors = [_signal_dict(s) for s in sorted(signals, key=lambda s: s.name)]
+        historical_influence = dict(result.historical_influence or {})
+        historical_text = ""
+        if historical_influence.get("applied"):
+            historical_text = (
+                " adjusted by historical reputation signals "
+                f"(adjustment={historical_influence.get('adjustment', 0.0):+.2f});"
+            )
         text = (
             f"Deliverability is {decision.status} "
             f"(p={result.probability:.2f}, confidence={result.confidence:.2f}); "
             f"recommended action: {decision.action}."
+            f"{historical_text}"
         )
         return {
             "top_positive_signals": positives,
             "top_negative_signals": negatives,
             "explanation_text": text,
             "contributing_factors": factors,
+            "historical_influence": historical_influence,
         }
 
 
