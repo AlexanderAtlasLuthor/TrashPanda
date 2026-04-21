@@ -587,7 +587,7 @@ class TestPipelineIntegration:
 
         pipeline = EmailCleaningPipeline(config=config, logger=logger)
         result = pipeline.run(input_file=str(csv_file), run_context=run_context)
-        assert result.status == "subphase_6_ready"
+        assert result.status == "subphase_7_ready"
 
     def test_pipeline_logs_derived_domains(self, csv_file, caplog):
         import dataclasses

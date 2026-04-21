@@ -450,7 +450,7 @@ class TestDnsPipelineIntegration:
     def test_pipeline_status_is_subphase_5_ready(self, csv_file):
         with patch("app.dns_utils.resolve_domain_dns", return_value=_MX_RESULT):
             result = self._run_pipeline(csv_file)
-        assert result.status == "subphase_6_ready"
+        assert result.status == "subphase_7_ready"
 
     def test_pipeline_total_rows_correct(self, csv_file):
         with patch("app.dns_utils.resolve_domain_dns", return_value=_MX_RESULT):

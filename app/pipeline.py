@@ -1,5 +1,6 @@
-"""Pipeline orchestration for Subphase 2-6: ingestion, normalization,
-email syntax validation, domain enrichment, DNS enrichment, and scoring."""
+"""Pipeline orchestration for Subphase 2-7: ingestion, normalization,
+email syntax validation, domain enrichment, DNS enrichment, scoring,
+and global deduplication."""
 
 from __future__ import annotations
 
@@ -7,6 +8,7 @@ import logging
 from pathlib import Path
 
 from .config import AppConfig
+from .dedupe import DedupeIndex, apply_completeness_column, apply_dedupe_columns, apply_email_normalized_column
 from .dns_utils import DnsCache, apply_dns_enrichment_column
 from .io_utils import build_run_context, discover_input_files, prepare_input_file, read_csv_in_chunks
 from .models import FileIngestionMetrics, PipelineResult, RunContext
@@ -29,7 +31,7 @@ from .validators import (
 
 
 class EmailCleaningPipeline:
-    """Ingestion pipeline through Subphase 6: scoring and preliminary bucket assignment."""
+    """Ingestion pipeline through Subphase 7: scoring and global deduplication."""
 
     def __init__(self, config: AppConfig, logger: logging.Logger) -> None:
         self.config = config
@@ -56,6 +58,7 @@ class EmailCleaningPipeline:
         typo_map = build_typo_map(typo_map_path)
 
         dns_cache = DnsCache()
+        dedupe_index = DedupeIndex()
 
         # Run-level scoring accumulators.
         run_hard_fails = 0
@@ -166,6 +169,19 @@ class EmailCleaningPipeline:
                 run_review += chunk_review
                 run_invalid += chunk_invalid
 
+                # Subphase 7: Global deduplication
+                canonicals_before = dedupe_index.new_canonicals
+                dupes_before = dedupe_index.duplicates_detected
+                replaced_before = dedupe_index.replaced_canonicals
+
+                normalized_chunk = apply_email_normalized_column(normalized_chunk)
+                normalized_chunk = apply_completeness_column(normalized_chunk)
+                normalized_chunk = apply_dedupe_columns(normalized_chunk, dedupe_index)
+
+                chunk_new_canonicals = dedupe_index.new_canonicals - canonicals_before
+                chunk_duplicates = dedupe_index.duplicates_detected - dupes_before
+                chunk_replaced = dedupe_index.replaced_canonicals - replaced_before
+
                 metrics.rows_processed += chunk_context.row_count
                 metrics.chunks_processed += 1
                 total_rows += chunk_context.row_count
@@ -176,7 +192,8 @@ class EmailCleaningPipeline:
                     "valid_emails=%s invalid_emails=%s "
                     "derived_domains=%s typo_corrections=%s domain_mismatches=%s "
                     "dns_new_queries=%s dns_cache_hits=%s mx_found=%s a_fallback=%s dns_failures=%s "
-                    "hard_fails=%s high_confidence=%s review=%s invalid=%s avg_score=%s",
+                    "hard_fails=%s high_confidence=%s review=%s invalid=%s avg_score=%s "
+                    "dedupe_new_canonicals=%s dedupe_duplicates=%s dedupe_replaced=%s dedupe_index_size=%s",
                     chunk_context.chunk_index,
                     discovered_file.original_name,
                     chunk_context.row_count,
@@ -195,6 +212,10 @@ class EmailCleaningPipeline:
                     chunk_review,
                     chunk_invalid,
                     chunk_avg_score,
+                    chunk_new_canonicals,
+                    chunk_duplicates,
+                    chunk_replaced,
+                    dedupe_index.index_size,
                 )
 
             self.logger.info(
@@ -208,7 +229,9 @@ class EmailCleaningPipeline:
         self.logger.info(
             "Pipeline run complete | files=%s chunks=%s rows=%s "
             "dns_total_queries=%s dns_total_cache_hits=%s "
-            "scoring_hard_fails=%s high_confidence=%s review=%s invalid=%s",
+            "scoring_hard_fails=%s high_confidence=%s review=%s invalid=%s "
+            "dedupe_total_canonicals=%s dedupe_total_duplicates=%s "
+            "dedupe_total_replaced=%s dedupe_index_size=%s",
             len(discovered_files),
             total_chunks,
             total_rows,
@@ -218,9 +241,13 @@ class EmailCleaningPipeline:
             run_high_confidence,
             run_review,
             run_invalid,
+            dedupe_index.new_canonicals,
+            dedupe_index.duplicates_detected,
+            dedupe_index.replaced_canonicals,
+            dedupe_index.index_size,
         )
         return PipelineResult(
-            status="subphase_6_ready",
+            status="subphase_7_ready",
             input_mode=input_mode,
             run_id=active_run_context.run_id,
             run_dir=active_run_context.run_dir,

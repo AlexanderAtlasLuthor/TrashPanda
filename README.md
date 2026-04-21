@@ -49,12 +49,32 @@ Pipeline local para limpieza masiva de listas de emails. Procesa CSV/XLSX por ch
 - Metricas globales por run: `scoring_hard_fails`, `high_confidence`, `review`, `invalid`
 - **Sin SMTP. Sin deduplicacion. Sin export. Las decisiones finales se difieren a Subfase 7 (dedupe).**
 
+### Subfase 7: Deduplicacion global por email
+- Clave de dedupe: `email_normalized` (columna explicita — email ya en minusculas y sin espacios desde Subfase 2)
+- Seleccion de fila canonica por jerarquía determinística de 4 reglas:
+  1. `hard_fail=False` gana contra `hard_fail=True`
+  2. Mayor `score` gana
+  3. Mayor `completeness_score` (columnas de negocio no nulas) gana
+  4. Primera ocurrencia en el stream (`global_ordinal` menor) gana — desempate estable
+- **Completitud** cuenta solo columnas de negocio: `email`, `domain`, `fname`, `lname`, `state`, `address`, `county`, `city`, `zip`, `website`, `ip`; ignora columnas tecnicas, de scoring y de DNS
+- `DedupeIndex` en memoria — global por corrida, sobrevive a todos los chunks y archivos
+- Cuando un challenger supera al canonico actual: el challenger toma el lugar y `replaced_canonicals` se incrementa; el canonico desplazado queda pendiente de correccion en Subfase 8
+- Columnas agregadas: `email_normalized`, `completeness_score`, `is_canonical`, `duplicate_flag`, `duplicate_reason`
+- `duplicate_reason` tokens: `duplicate_hard_fail_loser`, `duplicate_lower_score`, `duplicate_lower_completeness`, `duplicate_later_occurrence_tiebreak`
+- Si una fila es canonica: `duplicate_flag=False`, `is_canonical=True`, `duplicate_reason=None`
+- Si una fila perdio: `duplicate_flag=True`, `is_canonical=False`, `duplicate_reason` poblada
+- Metricas por chunk: `dedupe_new_canonicals`, `dedupe_duplicates`, `dedupe_replaced`, `dedupe_index_size`
+- Metricas globales por run: `dedupe_total_canonicals`, `dedupe_total_duplicates`, `dedupe_total_replaced`, `dedupe_index_size`
+- `is_canonical` es **provisional**: si una fila canonica es desplazada por un chunk posterior, su flag en el chunk original es stale; Subfase 8 aplica el estado final del indice antes de escribir outputs
+- La deduplicacion ocurre **antes** de la materializacion final — los buckets de export se asignan en Subfase 8
+- **Sin export. Sin SQLite. Sin reporting final. Sin recalculo de score. Sin decisiones definitivas.**
+
 ### Pendiente (futuras subfases)
 - Deteccion de dominios desechables
 - Deteccion de patrones sospechosos
-- Deduplicacion global
-- Export por buckets
-- Reportes finales JSON/CSV
+- Materializacion final: correccion retroactiva de is_canonical con estado final del DedupeIndex
+- Export por buckets: `clean_high_confidence.csv`, `review_medium_confidence.csv`, `removed_invalid.csv`
+- Reportes finales JSON/CSV con metricas de calidad y dedupe
 
 ---
 

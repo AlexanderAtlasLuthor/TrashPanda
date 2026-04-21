@@ -705,7 +705,7 @@ class TestScoringPipelineIntegration:
     def test_pipeline_status_is_subphase_6_ready(self, csv_file):
         with patch("app.dns_utils.resolve_domain_dns", return_value=_MX_DNS):
             result = self._run(csv_file)
-        assert result.status == "subphase_6_ready"
+        assert result.status == "subphase_7_ready"
 
     def test_pipeline_runs_without_error(self, csv_file):
         with patch("app.dns_utils.resolve_domain_dns", return_value=_MX_DNS):
@@ -744,7 +744,7 @@ class TestScoringPipelineIntegration:
     def test_pipeline_with_chunk_size_2_works(self, csv_file):
         with patch("app.dns_utils.resolve_domain_dns", return_value=_MX_DNS):
             result = self._run(csv_file, chunk_size=2)
-        assert result.status == "subphase_6_ready"
+        assert result.status == "subphase_7_ready"
 
 
 # ===========================================================================

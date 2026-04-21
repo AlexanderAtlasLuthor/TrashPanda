@@ -101,6 +101,16 @@ class ScoringMetrics:
 
 
 @dataclass(slots=True)
+class DedupeMetrics:
+    """Per-chunk and run-level deduplication summary for Subphase 7."""
+
+    new_canonicals: int = 0
+    duplicates_detected: int = 0
+    replaced_canonicals: int = 0
+    index_size: int = 0
+
+
+@dataclass(slots=True)
 class PipelineResult:
     """Result returned by the ingestion pipeline."""
 
