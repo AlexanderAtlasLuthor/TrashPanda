@@ -53,7 +53,7 @@ def _score(**overrides) -> ScoringResult:
     """Call score_row with safe defaults; override only what the test needs."""
     defaults = dict(
         syntax_valid=True,
-        corrected_domain="example.com",
+        corrected_domain="gmail.com",
         has_mx_record=True,
         has_a_record=False,
         domain_exists=True,
@@ -69,7 +69,7 @@ def _make_df(**col_values) -> pd.DataFrame:
     """Build a single-row DataFrame with scoring-relevant columns."""
     defaults = dict(
         syntax_valid=pd.array([True], dtype="boolean"),
-        corrected_domain=["example.com"],
+        corrected_domain=["gmail.com"],
         has_mx_record=pd.array([True], dtype="boolean"),
         has_a_record=pd.array([False], dtype="boolean"),
         domain_exists=pd.array([True], dtype="boolean"),
@@ -265,7 +265,7 @@ class TestScoreRowWeights:
     def test_syntax_valid_adds_points(self):
         r = score_row(
             syntax_valid=True,
-            corrected_domain="example.com",
+            corrected_domain="gmail.com",
             has_mx_record=False,
             has_a_record=False,
             domain_exists=False,
@@ -284,7 +284,7 @@ class TestScoreRowWeights:
         r_mx = _score(has_mx_record=True, has_a_record=False, domain_exists=True)
         r_none = score_row(
             syntax_valid=True,
-            corrected_domain="example.com",
+            corrected_domain="gmail.com",
             has_mx_record=False,
             has_a_record=False,
             domain_exists=False,
@@ -298,7 +298,7 @@ class TestScoreRowWeights:
         r_a = _score(has_mx_record=False, has_a_record=True, domain_exists=True)
         r_none = score_row(
             syntax_valid=True,
-            corrected_domain="example.com",
+            corrected_domain="gmail.com",
             has_mx_record=False,
             has_a_record=False,
             domain_exists=False,
@@ -329,7 +329,7 @@ class TestScoreRowWeights:
             r = _score(domain_exists=False, dns_error=err, has_mx_record=False, has_a_record=False)
             r_clean = score_row(
                 syntax_valid=True,
-                corrected_domain="example.com",
+                corrected_domain="gmail.com",
                 has_mx_record=False,
                 has_a_record=False,
                 domain_exists=False,
@@ -344,7 +344,7 @@ class TestScoreRowWeights:
             r = _score(domain_exists=False, dns_error=err, has_mx_record=False, has_a_record=False)
             r_clean = score_row(
                 syntax_valid=True,
-                corrected_domain="example.com",
+                corrected_domain="gmail.com",
                 has_mx_record=False,
                 has_a_record=False,
                 domain_exists=False,
@@ -361,7 +361,7 @@ class TestScoreRowWeights:
     def test_score_clamped_to_zero_minimum(self):
         r = score_row(
             syntax_valid=True,
-            corrected_domain="example.com",
+            corrected_domain="gmail.com",
             has_mx_record=False,
             has_a_record=False,
             domain_exists=False,
@@ -772,8 +772,10 @@ class TestNoFuturePhaseContamination:
         for term in ("smtplib", "aiosmtplib"):
             assert term not in self._src().lower()
 
-    def test_no_disposable_logic_in_scoring(self):
-        assert "disposable" not in self._src().lower()
+    def test_disposable_logic_in_scoring_is_intentional(self):
+        # Disposable domain detection was added in Phase 1 Data Quality Hardening.
+        # This test confirms the feature is present in the scoring module.
+        assert "disposable" in self._src().lower()
 
     def test_no_final_bucket_export_in_scoring(self):
         for term in ("clean_high_confidence", "removed_invalid", "review_medium"):

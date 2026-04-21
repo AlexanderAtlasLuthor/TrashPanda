@@ -11,7 +11,8 @@ Execution order assumed by downstream stages:
       ↳ adds dns_check_performed / domain_exists / has_mx_record /
               has_a_record / dns_error
     ScoringStage         (needs: all DNS + email-processing outputs)
-      ↳ adds hard_fail / score / score_reasons / preliminary_bucket
+      ↳ adds hard_fail / score / score_reasons / preliminary_bucket /
+              client_reason
     CompletenessStage    (needs: the business columns counted by
                           app.dedupe.BUSINESS_COLUMNS)
       ↳ adds completeness_score
@@ -25,12 +26,39 @@ Stage dependencies on ``PipelineContext``:
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 from ...dedupe import apply_completeness_column
 from ...dns_utils import apply_dns_enrichment_column
 from ...scoring import apply_scoring_column
 from ..context import PipelineContext
 from ..payload import ChunkPayload
 from ..stage import Stage
+
+
+def _load_disposable_domains(cfg: Any) -> frozenset[str]:
+    """Load the disposable domain set from config path.
+
+    Cached in ``context.extras["disposable_domains"]`` by ``ScoringStage``
+    so the file is read only once per pipeline run (not per chunk).
+    Returns an empty frozenset if the path is unset or unreadable.
+    """
+    try:
+        path: Path | None = (
+            cfg.paths.disposable_domains_path if cfg.paths is not None else None
+        )
+        if path is None or not path.exists():
+            return frozenset()
+        domains: set[str] = set()
+        with path.open(encoding="utf-8") as fh:
+            for line in fh:
+                domain = line.strip().lower()
+                if domain and not domain.startswith("#"):
+                    domains.add(domain)
+        return frozenset(domains)
+    except Exception:  # pragma: no cover – filesystem errors are non-fatal
+        return frozenset()
 
 
 class DNSEnrichmentStage(Stage):
@@ -67,11 +95,13 @@ class DNSEnrichmentStage(Stage):
 
 
 class ScoringStage(Stage):
-    """Compute hard-fail, score, reasons, and preliminary bucket per row.
+    """Compute hard-fail, score, reasons, bucket, and client_reason per row.
 
-    Thresholds are read from ``context.config`` (same values the inline
-    pipeline passed directly). Weights, penalty tables, and bucket rules
-    are entirely defined in ``app.scoring`` and are not touched here.
+    Thresholds are read from ``context.config``. The disposable domain set
+    is loaded once from the configured path and cached in
+    ``context.extras["disposable_domains"]`` for reuse across chunks.
+    Weights, penalty tables, and bucket rules are entirely defined in
+    ``app.scoring`` and are not touched here.
     """
 
     name = "scoring"
@@ -85,15 +115,22 @@ class ScoringStage(Stage):
         "typo_corrected",
         "domain_matches_input_column",
     )
-    produces = ("hard_fail", "score", "score_reasons", "preliminary_bucket")
+    produces = ("hard_fail", "score", "score_reasons", "preliminary_bucket", "client_reason")
 
     def run(self, payload: ChunkPayload, context: PipelineContext) -> ChunkPayload:
         cfg = context.config
+        # Load disposable domains once per run (cached in context.extras).
+        if "disposable_domains" not in context.extras:
+            context.extras["disposable_domains"] = _load_disposable_domains(cfg)
+        disposable_domains: frozenset[str] = context.extras["disposable_domains"]
+
         return payload.with_frame(
             apply_scoring_column(
                 payload.frame,
                 high_confidence_threshold=cfg.high_confidence_threshold,
                 review_threshold=cfg.review_threshold,
+                disposable_domains=disposable_domains,
+                invalid_if_disposable=getattr(cfg, "invalid_if_disposable", True),
             )
         )
 

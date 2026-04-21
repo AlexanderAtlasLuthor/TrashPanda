@@ -32,6 +32,7 @@ from .engine.stages import (
 )
 from .io_utils import build_run_context, discover_input_files, prepare_input_file, read_csv_in_chunks
 from .models import FileIngestionMetrics, MaterializationMetrics, PipelineResult, RunContext
+from .client_output import generate_client_outputs
 from .reporting import ReportingStats, generate_reports
 from .storage import StagingDB
 from .typo_rules import build_typo_map
@@ -486,6 +487,14 @@ class EmailCleaningPipeline:
                             group["duplicate_reasons"].append(dup_reason)
 
         generate_reports(stats, run_context.run_dir)
+
+        # Phase 2 - Client Output Layer: XLSX deliverables on top of the
+        # technical CSVs. Pure add-on; failures here must not break the
+        # pipeline run, so any unexpected error is logged and swallowed.
+        try:
+            generate_client_outputs(run_context.run_dir, logger=self.logger)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            self.logger.warning("Client output generation failed: %s", exc)
 
         self.logger.info(
             "Materialization complete | total=%s canonical=%s duplicates=%s "
