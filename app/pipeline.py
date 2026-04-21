@@ -1,9 +1,10 @@
-"""Pipeline orchestration for Subphase 2-7: ingestion, normalization,
+"""Pipeline orchestration for Subphase 2-8: ingestion, normalization,
 email syntax validation, domain enrichment, DNS enrichment, scoring,
-and global deduplication."""
+global deduplication, and materialization."""
 
 from __future__ import annotations
 
+import csv
 import logging
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from .config import AppConfig
 from .dedupe import DedupeIndex, apply_completeness_column, apply_dedupe_columns, apply_email_normalized_column
 from .dns_utils import DnsCache, apply_dns_enrichment_column
 from .io_utils import build_run_context, discover_input_files, prepare_input_file, read_csv_in_chunks
-from .models import FileIngestionMetrics, PipelineResult, RunContext
+from .models import FileIngestionMetrics, MaterializationMetrics, PipelineResult, RunContext
 from .normalizers import (
     add_technical_metadata,
     apply_domain_typo_correction_column,
@@ -20,7 +21,9 @@ from .normalizers import (
     normalize_headers,
     normalize_values,
 )
+from .reporting import ReportingStats, generate_reports
 from .scoring import apply_scoring_column
+from .storage import StagingDB
 from .typo_rules import build_typo_map
 from .validators import (
     validate_duplicate_columns,
@@ -31,7 +34,7 @@ from .validators import (
 
 
 class EmailCleaningPipeline:
-    """Ingestion pipeline through Subphase 7: scoring and global deduplication."""
+    """Ingestion pipeline through Subphase 8: scoring, deduplication, and output materialization."""
 
     def __init__(self, config: AppConfig, logger: logging.Logger) -> None:
         self.config = config
@@ -59,6 +62,7 @@ class EmailCleaningPipeline:
 
         dns_cache = DnsCache()
         dedupe_index = DedupeIndex()
+        staging = StagingDB(active_run_context.staging_db_path)
 
         # Run-level scoring accumulators.
         run_hard_fails = 0
@@ -182,6 +186,9 @@ class EmailCleaningPipeline:
                 chunk_duplicates = dedupe_index.duplicates_detected - dupes_before
                 chunk_replaced = dedupe_index.replaced_canonicals - replaced_before
 
+                # Subphase 8 first pass: persist chunk to staging
+                staging.append_chunk(normalized_chunk)
+
                 metrics.rows_processed += chunk_context.row_count
                 metrics.chunks_processed += 1
                 total_rows += chunk_context.row_count
@@ -246,8 +253,13 @@ class EmailCleaningPipeline:
             dedupe_index.replaced_canonicals,
             dedupe_index.index_size,
         )
+
+        # Subphase 8 second pass: materialize final output
+        mat_metrics = self._materialize(staging, dedupe_index, active_run_context)
+        staging.close()
+
         return PipelineResult(
-            status="subphase_7_ready",
+            status="subphase_8_ready",
             input_mode=input_mode,
             run_id=active_run_context.run_id,
             run_dir=active_run_context.run_dir,
@@ -259,4 +271,153 @@ class EmailCleaningPipeline:
             processed_files=[item.original_name for item in discovered_files],
             ignored_files=ignored_files,
             file_metrics=file_metrics,
+            clean_high_confidence_path=active_run_context.run_dir / "clean_high_confidence.csv",
+            review_path=active_run_context.run_dir / "review_medium_confidence.csv",
+            removed_path=active_run_context.run_dir / "removed_invalid.csv",
+            processing_report_json_path=active_run_context.run_dir / "processing_report.json",
+            total_canonical_rows=mat_metrics.total_canonical_rows,
+            total_duplicate_rows=mat_metrics.total_duplicate_rows,
+            total_output_clean=mat_metrics.total_output_clean,
+            total_output_review=mat_metrics.total_output_review,
+            total_output_removed=mat_metrics.total_output_removed,
+        )
+
+    def _materialize(
+        self,
+        staging: StagingDB,
+        dedupe_index: DedupeIndex,
+        run_context: RunContext,
+    ) -> MaterializationMetrics:
+        """Second pass: reconcile stale canonical flags and write final output CSVs."""
+        clean_path = run_context.run_dir / "clean_high_confidence.csv"
+        review_path = run_context.run_dir / "review_medium_confidence.csv"
+        removed_path = run_context.run_dir / "removed_invalid.csv"
+
+        stats = ReportingStats(run_id=run_context.run_id)
+
+        fieldnames: list[str] | None = None
+
+        with (
+            clean_path.open("w", newline="", encoding="utf-8") as clean_fh,
+            review_path.open("w", newline="", encoding="utf-8") as review_fh,
+            removed_path.open("w", newline="", encoding="utf-8") as removed_fh,
+        ):
+            clean_writer: csv.DictWriter | None = None
+            review_writer: csv.DictWriter | None = None
+            removed_writer: csv.DictWriter | None = None
+
+            for batch in staging.iter_all_rows():
+                for row_dict in batch:
+                    if fieldnames is None:
+                        fieldnames = [k for k in row_dict if k != "final_output_reason"]
+                        fieldnames.append("final_output_reason")
+                        clean_writer = csv.DictWriter(
+                            clean_fh, fieldnames=fieldnames, extrasaction="ignore", restval=""
+                        )
+                        review_writer = csv.DictWriter(
+                            review_fh, fieldnames=fieldnames, extrasaction="ignore", restval=""
+                        )
+                        removed_writer = csv.DictWriter(
+                            removed_fh, fieldnames=fieldnames, extrasaction="ignore", restval=""
+                        )
+                        clean_writer.writeheader()
+                        review_writer.writeheader()
+                        removed_writer.writeheader()
+
+                    email_norm = row_dict.get("email_normalized")
+                    source_file = str(row_dict.get("source_file") or "")
+                    source_row_number = int(row_dict.get("source_row_number") or 0)
+                    hard_fail = bool(row_dict.get("hard_fail", False))
+                    preliminary_bucket = str(row_dict.get("preliminary_bucket") or "")
+                    was_canonical = bool(row_dict.get("is_canonical", False))
+
+                    is_canonical_final = dedupe_index.is_final_canonical(
+                        email_norm, source_file, source_row_number
+                    )
+
+                    if was_canonical and not is_canonical_final:
+                        stats.replaced_canonical_corrections += 1
+
+                    if not is_canonical_final:
+                        reason = "removed_duplicate"
+                    elif hard_fail:
+                        reason = "removed_hard_fail"
+                    elif preliminary_bucket == "high_confidence":
+                        reason = "kept_high_confidence"
+                    elif preliminary_bucket == "review":
+                        reason = "kept_review"
+                    else:
+                        reason = "removed_low_score"
+
+                    row_dict["final_output_reason"] = reason
+
+                    stats.total_rows += 1
+                    if is_canonical_final:
+                        stats.total_canonical_rows += 1
+                    else:
+                        stats.total_duplicate_rows += 1
+
+                    domain = str(row_dict.get("domain_from_email") or row_dict.get("domain") or "")
+                    if domain:
+                        if domain not in stats.domain_counts:
+                            stats.domain_counts[domain] = {"clean": 0, "review": 0, "removed": 0}
+
+                    if reason == "kept_high_confidence":
+                        stats.total_output_clean += 1
+                        if domain:
+                            stats.domain_counts[domain]["clean"] += 1
+                        assert clean_writer is not None
+                        clean_writer.writerow(row_dict)
+                    elif reason == "kept_review":
+                        stats.total_output_review += 1
+                        if domain:
+                            stats.domain_counts[domain]["review"] += 1
+                        assert review_writer is not None
+                        review_writer.writerow(row_dict)
+                    else:
+                        stats.total_output_removed += 1
+                        if domain:
+                            stats.domain_counts[domain]["removed"] += 1
+                        assert removed_writer is not None
+                        removed_writer.writerow(row_dict)
+
+                    if row_dict.get("typo_corrected"):
+                        stats.typo_corrections.append({
+                            "source_file": source_file,
+                            "source_row_number": source_row_number,
+                            "original_domain": row_dict.get("domain_from_email", ""),
+                            "corrected_to": row_dict.get("domain_corrected_to", ""),
+                        })
+
+                    if email_norm and not is_canonical_final:
+                        if email_norm not in stats.duplicate_groups:
+                            canonical = dedupe_index.get_final_canonical(email_norm)
+                            stats.duplicate_groups[email_norm] = {
+                                "duplicate_count": 0,
+                                "canonical_source_file": canonical.source_file if canonical else "",
+                                "canonical_source_row_number": canonical.source_row_number if canonical else 0,
+                            }
+                        stats.duplicate_groups[email_norm]["duplicate_count"] += 1
+
+        generate_reports(stats, run_context.run_dir)
+
+        self.logger.info(
+            "Materialization complete | total=%s canonical=%s duplicates=%s "
+            "clean=%s review=%s removed=%s stale_corrections=%s",
+            stats.total_rows,
+            stats.total_canonical_rows,
+            stats.total_duplicate_rows,
+            stats.total_output_clean,
+            stats.total_output_review,
+            stats.total_output_removed,
+            stats.replaced_canonical_corrections,
+        )
+
+        return MaterializationMetrics(
+            total_canonical_rows=stats.total_canonical_rows,
+            total_duplicate_rows=stats.total_duplicate_rows,
+            total_output_clean=stats.total_output_clean,
+            total_output_review=stats.total_output_review,
+            total_output_removed=stats.total_output_removed,
+            replaced_canonical_corrections=stats.replaced_canonical_corrections,
         )

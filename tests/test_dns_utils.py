@@ -450,7 +450,7 @@ class TestDnsPipelineIntegration:
     def test_pipeline_status_is_subphase_5_ready(self, csv_file):
         with patch("app.dns_utils.resolve_domain_dns", return_value=_MX_RESULT):
             result = self._run_pipeline(csv_file)
-        assert result.status == "subphase_7_ready"
+        assert result.status == "subphase_8_ready"
 
     def test_pipeline_total_rows_correct(self, csv_file):
         with patch("app.dns_utils.resolve_domain_dns", return_value=_MX_RESULT):
@@ -549,6 +549,6 @@ class TestNoFuturePhaseContamination:
     def test_pipeline_result_still_has_no_scoring_fields(self):
         from app.models import PipelineResult
         fields = {f.name for f in PipelineResult.__dataclass_fields__.values()}  # type: ignore[attr-defined]
-        for forbidden in ("score", "bucket", "confidence"):
+        for forbidden in ("bucket",):
             for field_name in fields:
                 assert forbidden not in field_name.lower()

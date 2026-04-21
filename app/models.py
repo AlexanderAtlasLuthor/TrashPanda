@@ -111,6 +111,18 @@ class DedupeMetrics:
 
 
 @dataclass(slots=True)
+class MaterializationMetrics:
+    """Second-pass reconciliation and output stats for Subphase 8."""
+
+    total_canonical_rows: int = 0
+    total_duplicate_rows: int = 0
+    total_output_clean: int = 0
+    total_output_review: int = 0
+    total_output_removed: int = 0
+    replaced_canonical_corrections: int = 0
+
+
+@dataclass(slots=True)
 class PipelineResult:
     """Result returned by the ingestion pipeline."""
 
@@ -126,3 +138,12 @@ class PipelineResult:
     processed_files: list[str] = field(default_factory=list)
     ignored_files: list[str] = field(default_factory=list)
     file_metrics: list[FileIngestionMetrics] = field(default_factory=list)
+    clean_high_confidence_path: Path | None = None
+    review_path: Path | None = None
+    removed_path: Path | None = None
+    processing_report_json_path: Path | None = None
+    total_canonical_rows: int = 0
+    total_duplicate_rows: int = 0
+    total_output_clean: int = 0
+    total_output_review: int = 0
+    total_output_removed: int = 0

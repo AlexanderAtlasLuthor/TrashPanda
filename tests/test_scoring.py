@@ -705,7 +705,7 @@ class TestScoringPipelineIntegration:
     def test_pipeline_status_is_subphase_6_ready(self, csv_file):
         with patch("app.dns_utils.resolve_domain_dns", return_value=_MX_DNS):
             result = self._run(csv_file)
-        assert result.status == "subphase_7_ready"
+        assert result.status == "subphase_8_ready"
 
     def test_pipeline_runs_without_error(self, csv_file):
         with patch("app.dns_utils.resolve_domain_dns", return_value=_MX_DNS):
@@ -744,7 +744,7 @@ class TestScoringPipelineIntegration:
     def test_pipeline_with_chunk_size_2_works(self, csv_file):
         with patch("app.dns_utils.resolve_domain_dns", return_value=_MX_DNS):
             result = self._run(csv_file, chunk_size=2)
-        assert result.status == "subphase_7_ready"
+        assert result.status == "subphase_8_ready"
 
 
 # ===========================================================================
@@ -783,9 +783,9 @@ class TestNoFuturePhaseContamination:
         r = _score(has_mx_record=True)
         assert r.preliminary_bucket in ("high_confidence", "review", "invalid")
 
-    def test_pipeline_result_has_no_export_fields(self):
+    def test_pipeline_result_has_no_smtp_export_fields(self):
         from app.models import PipelineResult
         fields = {f.name for f in PipelineResult.__dataclass_fields__.values()}  # type: ignore[attr-defined]
-        for forbidden in ("export", "output_file", "clean_", "removed_"):
+        for forbidden in ("smtp", "output_file", "deliverable"):
             for field_name in fields:
                 assert forbidden not in field_name.lower()

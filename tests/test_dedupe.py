@@ -605,10 +605,10 @@ class TestDedupePipelineIntegration:
         pipeline = EmailCleaningPipeline(config=config, logger=logger)
         return pipeline.run(input_file=str(csv_file), run_context=run_context)
 
-    def test_pipeline_status_is_subphase_7_ready(self, csv_unique):
+    def test_pipeline_status_is_subphase_8_ready(self, csv_unique):
         with patch("app.dns_utils.resolve_domain_dns", return_value=_MX_DNS):
             result = self._run(csv_unique)
-        assert result.status == "subphase_7_ready"
+        assert result.status == "subphase_8_ready"
 
     def test_pipeline_runs_without_error(self, csv_with_dupes):
         with patch("app.dns_utils.resolve_domain_dns", return_value=_MX_DNS):
@@ -649,7 +649,7 @@ class TestDedupePipelineIntegration:
     def test_pipeline_with_chunk_size_1_works(self, csv_with_dupes):
         with patch("app.dns_utils.resolve_domain_dns", return_value=_MX_DNS):
             result = self._run(csv_with_dupes, chunk_size=1)
-        assert result.status == "subphase_7_ready"
+        assert result.status == "subphase_8_ready"
 
     def test_email_normalized_column_present_in_output(self, csv_unique, tmp_path):
         """Verify email_normalized is produced by running the pipeline on a chunk."""
@@ -705,10 +705,10 @@ class TestNoFuturePhaseContamination:
     def test_preliminary_bucket_not_set_by_dedupe(self):
         assert "preliminary_bucket" not in self._src()
 
-    def test_pipeline_result_has_no_export_fields(self):
+    def test_pipeline_result_has_no_smtp_fields(self):
         from app.models import PipelineResult
         fields = {f.name for f in PipelineResult.__dataclass_fields__.values()}  # type: ignore[attr-defined]
-        for forbidden in ("export", "output_file", "clean_", "removed_", "duplicate_summary"):
+        for forbidden in ("smtp", "verify_email", "deliverable"):
             for field_name in fields:
                 assert forbidden not in field_name.lower()
 

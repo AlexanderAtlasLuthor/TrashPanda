@@ -176,6 +176,29 @@ class DedupeIndex:
         """Number of unique email_normalized values in the index."""
         return len(self._store)
 
+    @property
+    def last_ordinal_assigned(self) -> int:
+        """The ordinal assigned by the most recent process_row() call."""
+        return self._ordinal - 1
+
+    def get_final_canonical(self, email_normalized: str) -> CanonicalEntry | None:
+        """Return the final canonical entry for an email, or None if not in index."""
+        return self._store.get(email_normalized)
+
+    def is_final_canonical(
+        self,
+        email_normalized: str | None,
+        source_file: str,
+        source_row_number: int,
+    ) -> bool:
+        """Return True if this row is the definitive final canonical for its email group."""
+        if not email_normalized:
+            return True
+        if email_normalized not in self._store:
+            return True
+        entry = self._store[email_normalized]
+        return entry.source_file == source_file and entry.source_row_number == source_row_number
+
     def _next_ordinal(self) -> int:
         n = self._ordinal
         self._ordinal += 1
@@ -320,6 +343,7 @@ def apply_dedupe_columns(
     is_canonical_list: list[bool] = []
     duplicate_flag_list: list[bool] = []
     duplicate_reason_list: list[str | None] = []
+    global_ordinal_list: list[int] = []
 
     for idx in result.index:
         # email_normalized
@@ -377,9 +401,11 @@ def apply_dedupe_columns(
         is_canonical_list.append(is_can)
         duplicate_flag_list.append(dup_flag)
         duplicate_reason_list.append(dup_reason)
+        global_ordinal_list.append(dedupe_index.last_ordinal_assigned)
 
     result["is_canonical"] = pd.array(is_canonical_list, dtype="boolean")
     result["duplicate_flag"] = pd.array(duplicate_flag_list, dtype="boolean")
     result["duplicate_reason"] = duplicate_reason_list
+    result["global_ordinal"] = global_ordinal_list
 
     return result

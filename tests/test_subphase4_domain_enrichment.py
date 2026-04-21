@@ -587,7 +587,7 @@ class TestPipelineIntegration:
 
         pipeline = EmailCleaningPipeline(config=config, logger=logger)
         result = pipeline.run(input_file=str(csv_file), run_context=run_context)
-        assert result.status == "subphase_7_ready"
+        assert result.status == "subphase_8_ready"
 
     def test_pipeline_logs_derived_domains(self, csv_file, caplog):
         import dataclasses
@@ -830,6 +830,6 @@ class TestNoFuturePhaseContamination:
     def test_pipeline_result_has_no_scoring_fields(self):
         from app.models import PipelineResult
         fields = {f.name for f in PipelineResult.__dataclass_fields__.values()}  # type: ignore[attr-defined]
-        for forbidden in ["score", "bucket", "confidence"]:
+        for forbidden in ["bucket"]:
             for field in fields:
                 assert forbidden not in field.lower(), f"Scoring field found: {field}"
