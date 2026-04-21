@@ -13,23 +13,21 @@ from .dedupe import DedupeIndex, apply_completeness_column, apply_dedupe_columns
 from .dns_utils import DnsCache, apply_dns_enrichment_column
 from .engine import ChunkPayload, PipelineContext, PipelineEngine
 from .engine.stages import (
+    DomainComparisonStage,
+    DomainExtractionStage,
+    EmailSyntaxValidationStage,
     HeaderNormalizationStage,
     StructuralValidationStage,
     TechnicalMetadataStage,
+    TypoCorrectionStage,
     ValueNormalizationStage,
 )
 from .io_utils import build_run_context, discover_input_files, prepare_input_file, read_csv_in_chunks
 from .models import FileIngestionMetrics, MaterializationMetrics, PipelineResult, RunContext
-from .normalizers import (
-    apply_domain_typo_correction_column,
-    compare_domain_with_input_column,
-    extract_email_components,
-)
 from .reporting import ReportingStats, generate_reports
 from .scoring import apply_scoring_column
 from .storage import StagingDB
 from .typo_rules import build_typo_map
-from .validators import validate_email_syntax_column
 
 
 class EmailCleaningPipeline:
@@ -63,9 +61,10 @@ class EmailCleaningPipeline:
         dedupe_index = DedupeIndex()
         staging = StagingDB(active_run_context.staging_db_path)
 
-        # Engine-driven portion of the chunk flow (Subphase 2 of the engine
-        # refactor). Only the first four preprocessing steps are driven by
-        # the engine today; the remaining subphases 3–8 stay inline below.
+        # Engine-driven portion of the chunk flow. After Subphase 3 of the
+        # engine refactor the engine owns preprocessing AND the core email
+        # processing (syntax → domain extraction → typo correction →
+        # domain comparison). The remaining subphases 5–8 stay inline.
         pipeline_context = PipelineContext(
             config=self.config,
             logger=self.logger,
@@ -75,12 +74,16 @@ class EmailCleaningPipeline:
             dedupe_index=dedupe_index,
             staging=staging,
         )
-        preprocess_engine = PipelineEngine(
+        chunk_engine = PipelineEngine(
             stages=[
                 HeaderNormalizationStage(),
                 StructuralValidationStage(),
                 ValueNormalizationStage(),
                 TechnicalMetadataStage(),
+                EmailSyntaxValidationStage(),
+                DomainExtractionStage(),
+                TypoCorrectionStage(),
+                DomainComparisonStage(),
             ],
             logger=self.logger,
         )
@@ -122,11 +125,9 @@ class EmailCleaningPipeline:
 
             first_chunk = True
             for raw_chunk, chunk_context in read_csv_in_chunks(prepared_file.processing_csv_path, self.config.chunk_size):
-                # Subphase 2 (engine refactor): the first four preprocessing
-                # steps — header normalization, first-chunk-only structural
-                # validation, value normalization, technical metadata — are
-                # executed by the PipelineEngine. The remaining chunk logic
-                # continues inline below, unchanged.
+                # Subphases 2 (preprocessing) and 3-4 (email syntax, domain
+                # extraction, typo correction, domain comparison) are driven
+                # by the PipelineEngine. Subphases 5-8 continue inline below.
                 payload = ChunkPayload(
                     frame=raw_chunk,
                     chunk_index=chunk_context.chunk_index,
@@ -138,20 +139,15 @@ class EmailCleaningPipeline:
                         "chunk_context": chunk_context,
                     },
                 )
-                payload = preprocess_engine.run(payload, pipeline_context)
+                payload = chunk_engine.run(payload, pipeline_context)
                 normalized_chunk = payload.frame
                 first_chunk = False
 
-                # Subphase 3: Email syntax validation
-                normalized_chunk = validate_email_syntax_column(normalized_chunk)
+                # Per-chunk aggregate counts derived from columns produced
+                # by the engine stages above. Identical to the values the
+                # previous inline code computed.
                 valid_count = int(normalized_chunk["syntax_valid"].eq(True).sum())
                 invalid_count = int(normalized_chunk["syntax_valid"].eq(False).sum())
-
-                # Subphase 4: Domain extraction, typo correction, domain comparison
-                normalized_chunk = extract_email_components(normalized_chunk)
-                normalized_chunk = apply_domain_typo_correction_column(normalized_chunk, typo_map)
-                normalized_chunk = compare_domain_with_input_column(normalized_chunk)
-
                 derived_count = int(normalized_chunk["domain_from_email"].notna().sum())
                 typo_count = int(normalized_chunk["typo_corrected"].eq(True).sum())
                 mismatch_count = int(normalized_chunk["domain_matches_input_column"].eq(False).sum())

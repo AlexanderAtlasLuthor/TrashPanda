@@ -1,11 +1,19 @@
 """Concrete stage implementations layered on top of the engine primitives.
 
-Each submodule groups stages by their phase in the pipeline. For Subphase 2
-of the engine refactor, only the preprocessing stages have been migrated.
+Stages are grouped by phase:
+
+  * ``preprocess``       — Subphase 2 (header/value normalization, metadata)
+  * ``email_processing`` — Subphases 3 and 4 (syntax, domain, typo, compare)
 """
 
 from __future__ import annotations
 
+from .email_processing import (
+    DomainComparisonStage,
+    DomainExtractionStage,
+    EmailSyntaxValidationStage,
+    TypoCorrectionStage,
+)
 from .preprocess import (
     HeaderNormalizationStage,
     StructuralValidationStage,
@@ -14,8 +22,14 @@ from .preprocess import (
 )
 
 __all__ = [
+    # Preprocessing
     "HeaderNormalizationStage",
     "StructuralValidationStage",
     "TechnicalMetadataStage",
     "ValueNormalizationStage",
+    # Email processing
+    "EmailSyntaxValidationStage",
+    "DomainExtractionStage",
+    "TypoCorrectionStage",
+    "DomainComparisonStage",
 ]
