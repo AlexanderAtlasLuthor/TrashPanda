@@ -11,26 +11,25 @@ from pathlib import Path
 from .config import AppConfig
 from .dedupe import DedupeIndex, apply_completeness_column, apply_dedupe_columns, apply_email_normalized_column
 from .dns_utils import DnsCache, apply_dns_enrichment_column
+from .engine import ChunkPayload, PipelineContext, PipelineEngine
+from .engine.stages import (
+    HeaderNormalizationStage,
+    StructuralValidationStage,
+    TechnicalMetadataStage,
+    ValueNormalizationStage,
+)
 from .io_utils import build_run_context, discover_input_files, prepare_input_file, read_csv_in_chunks
 from .models import FileIngestionMetrics, MaterializationMetrics, PipelineResult, RunContext
 from .normalizers import (
-    add_technical_metadata,
     apply_domain_typo_correction_column,
     compare_domain_with_input_column,
     extract_email_components,
-    normalize_headers,
-    normalize_values,
 )
 from .reporting import ReportingStats, generate_reports
 from .scoring import apply_scoring_column
 from .storage import StagingDB
 from .typo_rules import build_typo_map
-from .validators import (
-    validate_duplicate_columns,
-    validate_email_syntax_column,
-    validate_required_columns,
-    validate_reserved_columns,
-)
+from .validators import validate_email_syntax_column
 
 
 class EmailCleaningPipeline:
@@ -63,6 +62,28 @@ class EmailCleaningPipeline:
         dns_cache = DnsCache()
         dedupe_index = DedupeIndex()
         staging = StagingDB(active_run_context.staging_db_path)
+
+        # Engine-driven portion of the chunk flow (Subphase 2 of the engine
+        # refactor). Only the first four preprocessing steps are driven by
+        # the engine today; the remaining subphases 3–8 stay inline below.
+        pipeline_context = PipelineContext(
+            config=self.config,
+            logger=self.logger,
+            run_context=active_run_context,
+            typo_map=typo_map,
+            dns_cache=dns_cache,
+            dedupe_index=dedupe_index,
+            staging=staging,
+        )
+        preprocess_engine = PipelineEngine(
+            stages=[
+                HeaderNormalizationStage(),
+                StructuralValidationStage(),
+                ValueNormalizationStage(),
+                TechnicalMetadataStage(),
+            ],
+            logger=self.logger,
+        )
 
         # Run-level scoring accumulators.
         run_hard_fails = 0
@@ -101,21 +122,25 @@ class EmailCleaningPipeline:
 
             first_chunk = True
             for raw_chunk, chunk_context in read_csv_in_chunks(prepared_file.processing_csv_path, self.config.chunk_size):
-                normalized_chunk = normalize_headers(raw_chunk)
-
-                if first_chunk:
-                    validate_duplicate_columns(normalized_chunk.columns)
-                    validate_reserved_columns(normalized_chunk.columns)
-                    validate_required_columns(normalized_chunk.columns)
-                    metrics.normalized_columns = normalized_chunk.columns.tolist()
-                    first_chunk = False
-
-                normalized_chunk = normalize_values(normalized_chunk)
-                normalized_chunk = add_technical_metadata(
-                    normalized_chunk,
-                    input_file=discovered_file,
-                    chunk_context=chunk_context,
+                # Subphase 2 (engine refactor): the first four preprocessing
+                # steps — header normalization, first-chunk-only structural
+                # validation, value normalization, technical metadata — are
+                # executed by the PipelineEngine. The remaining chunk logic
+                # continues inline below, unchanged.
+                payload = ChunkPayload(
+                    frame=raw_chunk,
+                    chunk_index=chunk_context.chunk_index,
+                    source_file=discovered_file.original_name,
+                    metadata={
+                        "is_first_chunk": first_chunk,
+                        "file_metrics": metrics,
+                        "input_file": discovered_file,
+                        "chunk_context": chunk_context,
+                    },
                 )
+                payload = preprocess_engine.run(payload, pipeline_context)
+                normalized_chunk = payload.frame
+                first_chunk = False
 
                 # Subphase 3: Email syntax validation
                 normalized_chunk = validate_email_syntax_column(normalized_chunk)
