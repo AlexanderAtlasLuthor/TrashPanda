@@ -116,22 +116,6 @@ export function UploadDropzone() {
           onDragLeave={onDragLeave}
           aria-label="Upload CSV or XLSX file"
         >
-          <svg
-            className={styles.mascot}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-          >
-            <path d="M3 6h18" />
-            <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-            <path d="M19 6l-1.2 14.1a2 2 0 0 1-2 1.9H8.2a2 2 0 0 1-2-1.9L5 6" />
-            <path d="M10 11v6" />
-            <path d="M14 11v6" />
-          </svg>
           <div className={styles.text}>
             <div className={styles.title}>
               FEED THE <span className={styles.hl}>PANDA</span>
@@ -163,12 +147,12 @@ export function UploadDropzone() {
         </div>
       ) : (
         <div className={styles.fileCard}>
-          <div className={styles.fileIcon}>
-            {file.name.toLowerCase().endsWith(".xlsx") ? "XLSX" : "CSV"}
-          </div>
           <div className={styles.fileInfo}>
             <div className={styles.fileName}>{file.name}</div>
             <div className={styles.fileSize}>
+              <span className={styles.fileBadge}>
+                {file.name.toLowerCase().endsWith(".xlsx") ? "XLSX" : "CSV"}
+              </span>
               {formatBytes(file.size)} · ready to ingest
             </div>
           </div>

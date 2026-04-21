@@ -6,10 +6,12 @@
  * Keep this file server-only (used only from route handlers under app/api).
  */
 
-import type { JobResult } from "./types";
+import type { JobList, JobLogs, JobResult } from "./types";
 import {
   createMockJob,
   getMockJob,
+  getMockJobList,
+  getMockJobLogs,
   mockArtifactResponse,
 } from "./mock-adapter";
 
@@ -108,6 +110,45 @@ export async function adapterGetArtifact(
       "content-disposition": `attachment; filename="${artifact.filename}"`,
     },
   });
+}
+
+export async function adapterGetJobLogs(
+  jobId: string,
+  limit: number,
+): Promise<JobLogs> {
+  if (useProxy) {
+    const res = await fetch(
+      `${backendUrl}/jobs/${encodeURIComponent(jobId)}/logs?limit=${limit}`,
+      { cache: "no-store" },
+    );
+    if (res.status === 404) return { job_id: jobId, lines: [] };
+    if (!res.ok) throw new Error(`Backend error (${res.status})`);
+    return (await res.json()) as JobLogs;
+  }
+  return getMockJobLogs(jobId, limit);
+}
+
+export async function adapterGetArtifactZip(jobId: string): Promise<Response> {
+  if (useProxy) {
+    return fetch(
+      `${backendUrl}/jobs/${encodeURIComponent(jobId)}/artifacts/zip`,
+    );
+  }
+  return new Response(
+    JSON.stringify({ message: "ZIP download requires the Python backend." }),
+    { status: 501, headers: { "content-type": "application/json" } },
+  );
+}
+
+export async function adapterGetJobList(limit: number): Promise<JobList> {
+  if (useProxy) {
+    const res = await fetch(`${backendUrl}/jobs?limit=${limit}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`Backend error (${res.status})`);
+    return (await res.json()) as JobList;
+  }
+  return getMockJobList(limit);
 }
 
 export const adapterMode = useProxy ? "proxy" : "mock";

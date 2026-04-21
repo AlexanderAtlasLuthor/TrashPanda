@@ -192,6 +192,76 @@
   fill: none;
 }
 
+/* ── ZIP download bar ────────────────────────────────────────────────── */
+
+.zipBar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  background: var(--bg-deep);
+  border: 1px solid rgba(142, 255, 58, 0.25);
+  border-radius: 3px;
+  margin-bottom: 4px;
+}
+
+.zipMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.zipLabel {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-high);
+  letter-spacing: 0.3px;
+}
+
+.zipDesc {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-low);
+  letter-spacing: 0.3px;
+}
+
+.zipBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 20px;
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--bg-void);
+  background: var(--neon);
+  border: none;
+  border-radius: 3px;
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+  box-shadow: 0 0 16px rgba(142, 255, 58, 0.2);
+  transition: box-shadow 0.2s ease, opacity 0.2s ease;
+}
+
+.zipBtn:hover {
+  box-shadow: 0 0 28px rgba(142, 255, 58, 0.45);
+  opacity: 0.92;
+}
+
+.zipBtn svg {
+  width: 13px;
+  height: 13px;
+  stroke: var(--bg-void);
+  stroke-width: 2.5;
+  fill: none;
+  flex-shrink: 0;
+}
+
 .technical {
   margin-top: 18px;
   padding-top: 18px;

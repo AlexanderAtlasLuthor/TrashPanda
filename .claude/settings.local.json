@@ -4,7 +4,10 @@
       "Bash(unzip -q trashpanda-next.zip)",
       "Read(//c/c/Users/ceo/OneDrive/Desktop/**)",
       "Bash(npm install *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(python -m pytest tests/test_http_api.py -v)",
+      "Bash(npx tsc *)",
+      "Bash(python -m pytest tests/test_http_api.py -q)"
     ]
   }
 }

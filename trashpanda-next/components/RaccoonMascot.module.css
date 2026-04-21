@@ -1,0 +1,36 @@
+/* ── Mouth variants — only idle shown by default ───────────────────── */
+
+.mouthIdle    { }
+.mouthOpen    { display: none; }
+.mouthHappy   { display: none; }
+.mouthWorried { display: none; }
+
+.whisker {
+  opacity: 0.55;
+  stroke-width: 1.4;
+}
+
+/* ── HOVER ─────────────────────────────────────────────────────────── */
+
+.hover .mouthIdle { display: none; }
+.hover .mouthOpen { display: block; }
+
+/* ── READY ─────────────────────────────────────────────────────────── */
+
+.ready .mouthIdle { display: none; }
+.ready .mouthOpen { display: block; }
+
+/* ── PROCESSING ────────────────────────────────────────────────────── */
+
+.processing .mouthIdle { display: none; }
+.processing .mouthOpen { display: block; }
+
+/* ── HAPPY ─────────────────────────────────────────────────────────── */
+
+.happy .mouthIdle  { display: none; }
+.happy .mouthHappy { display: block; }
+
+/* ── WORRIED ───────────────────────────────────────────────────────── */
+
+.worried .mouthIdle    { display: none; }
+.worried .mouthWorried { display: block; }

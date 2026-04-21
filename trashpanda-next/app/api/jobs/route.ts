@@ -1,7 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
-import { adapterStartJob } from "@/lib/backend-adapter";
+import { adapterGetJobList, adapterStartJob } from "@/lib/backend-adapter";
 
 export const runtime = "nodejs";
+
+export async function GET(req: NextRequest) {
+  try {
+    const url = new URL(req.url);
+    const raw = parseInt(url.searchParams.get("limit") ?? "20", 10);
+    const limit = isNaN(raw) ? 20 : Math.min(Math.max(1, raw), 100);
+    const list = await adapterGetJobList(limit);
+    return NextResponse.json(list);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unexpected error.";
+    return NextResponse.json({ message }, { status: 500 });
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {

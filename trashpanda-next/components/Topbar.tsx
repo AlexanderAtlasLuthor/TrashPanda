@@ -3,11 +3,19 @@
 import styles from "./Topbar.module.css";
 import { useShell } from "./AppShell";
 
+interface MetaItem {
+  label: string;
+  value: string;
+  accent?: boolean;
+  danger?: boolean;
+}
+
 interface TopbarProps {
   breadcrumb: string[];
   title: string;
   titleSlice?: string;
-  meta?: Array<{ label: string; value: string; accent?: boolean }>;
+  subtitle?: string;
+  meta?: MetaItem[];
 }
 
 /**
@@ -18,6 +26,7 @@ export function Topbar({
   breadcrumb,
   title,
   titleSlice,
+  subtitle,
   meta,
 }: TopbarProps) {
   const { toggleSidebar } = useShell();
@@ -56,6 +65,9 @@ export function Topbar({
             {titleSlice && <span className={styles.slice}>{titleSlice}</span>}
             {after}
           </h1>
+          {subtitle && (
+            <p className={styles.subtitle}>{subtitle}</p>
+          )}
         </div>
       </div>
 
@@ -64,7 +76,12 @@ export function Topbar({
           {meta.map((m, i) => (
             <div key={i}>
               <span className={styles.metaLabel}>{m.label}</span>{" "}
-              <span className={m.accent ? styles.metaVal : undefined}>
+              <span
+                className={[
+                  m.accent && styles.metaVal,
+                  m.danger && styles.metaDanger,
+                ].filter(Boolean).join(" ") || undefined}
+              >
                 {m.value}
               </span>
             </div>

@@ -46,6 +46,9 @@ export function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname();
   const isConsole = pathname === "/";
   const isResults = pathname?.startsWith("/results");
+  const isLeadDiscovery = pathname?.startsWith("/lead-discovery");
+  const isDomainAudit = pathname?.startsWith("/domain-audit");
+  const isPipelines = pathname?.startsWith("/pipelines");
 
   return (
     <>
@@ -61,7 +64,6 @@ export function Sidebar({ open, onClose }: SidebarProps) {
           .join(" ")}
       >
         <div className={styles.brand}>
-          {/* Using <img> with public-path logo; no Next/Image to avoid remote-loader ceremony. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/trashpanda-logo.png"
@@ -106,8 +108,9 @@ export function Sidebar({ open, onClose }: SidebarProps) {
         <div className={styles.section}>
           <div className={styles.sectionLabel}>// Tools</div>
           <NavLink
+            href="/lead-discovery"
+            active={isLeadDiscovery}
             label="Lead Discovery"
-            disabled
             icon={
               <svg viewBox="0 0 24 24">
                 <path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7z" />
@@ -115,8 +118,9 @@ export function Sidebar({ open, onClose }: SidebarProps) {
             }
           />
           <NavLink
+            href="/domain-audit"
+            active={isDomainAudit}
             label="Domain Audit"
-            disabled
             icon={
               <svg viewBox="0 0 24 24">
                 <circle cx="11" cy="11" r="7" />
@@ -125,8 +129,9 @@ export function Sidebar({ open, onClose }: SidebarProps) {
             }
           />
           <NavLink
+            href="/pipelines"
+            active={isPipelines}
             label="Pipelines"
-            disabled
             icon={
               <svg viewBox="0 0 24 24">
                 <circle cx="12" cy="12" r="9" />

@@ -1,0 +1,161 @@
+import type { JobSummary } from "@/lib/types";
+import styles from "./ClassificationBreakdown.module.css";
+
+interface Props {
+  summary: JobSummary | null | undefined;
+}
+
+type Tone = "ok" | "warn" | "bad";
+
+interface ReasonItem {
+  label: string;
+  detail?: string;
+  count?: number | null;
+}
+
+interface CardProps {
+  tone: Tone;
+  title: string;
+  count: number | null | undefined;
+  sectionLabel: string;
+  reasons: ReasonItem[];
+}
+
+function fmt(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+function CardIcon({ tone }: { tone: Tone }) {
+  if (tone === "ok") {
+    return (
+      <svg viewBox="0 0 14 14" aria-hidden>
+        <polyline points="1.5 7.5 5.5 11.5 12.5 2.5" />
+      </svg>
+    );
+  }
+  if (tone === "warn") {
+    return (
+      <svg viewBox="0 0 14 14" aria-hidden>
+        <path d="M7 1.5L13 12.5H1Z" />
+        <line x1="7" y1="5.5" x2="7" y2="8.5" />
+        <circle cx="7" cy="10.5" r="0.7" fill="currentColor" stroke="none" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 14 14" aria-hidden>
+      <line x1="2" y1="2" x2="12" y2="12" />
+      <line x1="12" y1="2" x2="2" y2="12" />
+    </svg>
+  );
+}
+
+function CategoryCard({ tone, title, count, sectionLabel, reasons }: CardProps) {
+  return (
+    <div className={`${styles.card} ${styles[tone]}`}>
+      <div className={styles.cardHeader}>
+        <div className={styles.cardTitleRow}>
+          <span className={styles.cardIcon}>
+            <CardIcon tone={tone} />
+          </span>
+          <span className={styles.cardTitle}>{title}</span>
+          {count != null && (
+            <span className={styles.cardCount}>{fmt(count)}</span>
+          )}
+        </div>
+      </div>
+
+      <div className={styles.cardBody}>
+        <div className={styles.sectionLabel}>{sectionLabel}</div>
+        <ul className={styles.reasons}>
+          {reasons.map((r, i) => (
+            <li key={i} className={styles.reason}>
+              <div className={styles.reasonLeft}>
+                <span className={`${styles.bullet} ${styles[`bullet_${tone}`]}`} />
+                <div>
+                  <div className={styles.reasonLabel}>{r.label}</div>
+                  {r.detail && (
+                    <div className={styles.reasonDetail}>{r.detail}</div>
+                  )}
+                </div>
+              </div>
+              {r.count != null && r.count > 0 && (
+                <span className={styles.reasonCount}>{fmt(r.count)}</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+export function ClassificationBreakdown({ summary }: Props) {
+  if (!summary) return null;
+
+  return (
+    <div className={styles.wrapper}>
+      <div className={styles.sectionHeading}>// Why each email was classified</div>
+      <div className={styles.grid}>
+        <CategoryCard
+          tone="ok"
+          title="Ready to send"
+          count={summary.total_valid}
+          sectionLabel="What was verified"
+          reasons={[
+            { label: "Valid email syntax and format" },
+            { label: "Domain exists and accepts email" },
+            { label: "No risk signals detected" },
+          ]}
+        />
+        <CategoryCard
+          tone="warn"
+          title="Needs attention"
+          count={summary.total_review}
+          sectionLabel="Common reasons"
+          reasons={[
+            {
+              label: "Catch-all domain",
+              detail: "Server accepts any address — can't confirm delivery",
+            },
+            {
+              label: "No SMTP confirmation",
+              detail: "Mailbox couldn't be verified at send time",
+            },
+            {
+              label: "Role-based address",
+              detail: "Shared inboxes like info@, admin@, support@",
+              count: summary.role_based_emails,
+            },
+          ]}
+        />
+        <CategoryCard
+          tone="bad"
+          title="Do not use"
+          count={summary.total_invalid_or_bounce_risk}
+          sectionLabel="Why these were flagged"
+          reasons={[
+            {
+              label: "Invalid or non-existent domain",
+              detail: "DNS lookup returned no valid mail server",
+            },
+            {
+              label: "Disposable address",
+              detail: "Temporary throwaway service detected",
+              count: summary.disposable_emails,
+            },
+            {
+              label: "Fake or placeholder",
+              detail: "Patterns like test@test.com, noreply@, etc.",
+              count: summary.placeholder_or_fake_emails,
+            },
+            {
+              label: "SMTP rejected",
+              detail: "Mail server explicitly rejected the address",
+            },
+          ]}
+        />
+      </div>
+    </div>
+  );
+}

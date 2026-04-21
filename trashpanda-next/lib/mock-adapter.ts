@@ -6,7 +6,7 @@
  * proxy directly. This file is only used in dev.
  */
 
-import type { JobResult } from "./types";
+import type { JobList, JobLogs, JobResult } from "./types";
 
 interface StoredJob {
   result: JobResult;
@@ -18,6 +18,63 @@ interface StoredJob {
 // within the same Node process. Not safe for multi-instance production,
 // but this adapter is only a dev stub.
 const jobs = new Map<string, StoredJob>();
+
+function msAgo(days: number): number {
+  return Date.now() - days * 24 * 60 * 60 * 1000;
+}
+
+const _SEED: Array<{
+  id: string;
+  filename: string;
+  status: "completed" | "failed";
+  daysAgo: number;
+  rows?: number;
+}> = [
+  { id: "job_hist_001", filename: "newsletter_Q1_2025.csv",  status: "completed", daysAgo: 3,  rows: 48200  },
+  { id: "job_hist_002", filename: "crm_export_march.xlsx",   status: "completed", daysAgo: 7,  rows: 12840  },
+  { id: "job_hist_003", filename: "leads_WY_dataset.csv",    status: "failed",    daysAgo: 14                },
+  { id: "job_hist_004", filename: "contacts_batch_12.csv",   status: "completed", daysAgo: 30, rows: 91500  },
+];
+
+for (const seed of _SEED) {
+  const startMs = msAgo(seed.daysAgo);
+  const startedAt = new Date(startMs).toISOString();
+  const finishedAt = new Date(startMs + 29_700).toISOString();
+  jobs.set(seed.id, {
+    createdAt: startMs,
+    result: {
+      job_id: seed.id,
+      status: seed.status,
+      input_filename: seed.filename,
+      run_dir: `/runs/${seed.id}`,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      summary: seed.status === "completed" && seed.rows ? {
+        total_input_rows: seed.rows,
+        total_valid: Math.floor(seed.rows * 0.65),
+        total_review: Math.floor(seed.rows * 0.08),
+        total_invalid_or_bounce_risk: Math.floor(seed.rows * 0.27),
+        duplicates_removed: Math.floor(seed.rows * 0.06),
+        typo_corrections: Math.floor(seed.rows * 0.035),
+      } : null,
+      artifacts: seed.status === "completed" ? {
+        run_dir: `/runs/${seed.id}`,
+        client_outputs: {
+          valid_emails: "valid_emails.xlsx",
+          review_emails: "review_emails.xlsx",
+          invalid_or_bounce_risk: "invalid_or_bounce_risk.xlsx",
+          summary_report: "summary_report.xlsx",
+        },
+        technical_csvs: undefined,
+        reports: undefined,
+      } : null,
+      error: seed.status === "failed" ? {
+        error_type: "ParseError",
+        message: "Could not determine email column from uploaded file.",
+      } : null,
+    },
+  });
+}
 
 function genId(): string {
   // readable, short, no external deps
@@ -139,6 +196,71 @@ function hashString(s: string): number {
     h = (h * 31 + s.charCodeAt(i)) | 0;
   }
   return Math.abs(h);
+}
+
+const _MOCK_LOG_SEQUENCE = [
+  "2024-01-01 00:00:00 | INFO | [TIMING] Pipeline START",
+  "2024-01-01 00:00:00 | INFO | Starting email cleaner ingestion run.",
+  "2024-01-01 00:00:00 | INFO | Discovered supported files: 1",
+  "2024-01-01 00:00:00 | INFO | Loaded typo map with 2184 entries.",
+  "2024-01-01 00:00:00 | INFO | Processing input.csv",
+  "2024-01-01 00:00:01 | INFO | [TIMING] stage=HeaderNormalizationStage chunk=0 rows=50000 elapsed=0.012s",
+  "2024-01-01 00:00:01 | INFO | [TIMING] stage=EmailSyntaxValidationStage chunk=0 rows=50000 elapsed=0.341s",
+  "2024-01-01 00:00:01 | INFO | [TIMING] stage=TypoCorrectionStage chunk=0 rows=50000 elapsed=0.082s",
+  "2024-01-01 00:00:02 | INFO | [TIMING] stage=DNSEnrichmentStage chunk=0 rows=50000 elapsed=14.231s",
+  "2024-01-01 00:00:16 | INFO | [TIMING] stage=ScoringStage chunk=0 rows=50000 elapsed=0.421s",
+  "2024-01-01 00:00:16 | INFO | [TIMING] stage=DedupeStage chunk=0 rows=50000 elapsed=0.218s",
+  "2024-01-01 00:00:17 | INFO | [TIMING] stage=StagingPersistenceStage chunk=0 rows=50000 elapsed=1.123s",
+  "2024-01-01 00:00:17 | INFO | [TIMING] chunk=0 rows=50000 elapsed=18.4s dns_new=4821 dns_cached=0",
+  "2024-01-01 00:00:17 | INFO | Processed chunk 0 from input.csv | rows=50000 valid_emails=44312",
+  "2024-01-01 00:00:18 | INFO | [TIMING] stage=DNSEnrichmentStage chunk=1 rows=50000 elapsed=5.812s",
+  "2024-01-01 00:00:24 | INFO | [TIMING] stage=StagingPersistenceStage chunk=1 rows=50000 elapsed=1.089s",
+  "2024-01-01 00:00:24 | INFO | [TIMING] chunk=1 rows=50000 elapsed=8.2s dns_new=312 dns_cached=4509",
+  "2024-01-01 00:00:24 | INFO | [TIMING] chunk=2 rows=14398 elapsed=3.1s dns_new=48 dns_cached=5085",
+  "2024-01-01 00:00:24 | INFO | Pipeline run complete | files=1 chunks=3 rows=114398",
+  "2024-01-01 00:00:24 | INFO | [TIMING] Materialize START",
+  "2024-01-01 00:00:24 | INFO | [TIMING] Materialize iter_rows START (staging→CSV)",
+  "2024-01-01 00:00:27 | INFO | [TIMING] Materialize iter_rows DONE elapsed=3.2s rows=114398",
+  "2024-01-01 00:00:27 | INFO | [TIMING] Materialize reports DONE elapsed=0.4s",
+  "2024-01-01 00:00:27 | INFO | [TIMING] Materialize xlsx START",
+  "2024-01-01 00:00:31 | INFO | [TIMING] Materialize xlsx DONE elapsed=4.1s",
+  "2024-01-01 00:00:31 | INFO | [TIMING] Materialize DONE elapsed=7.7s",
+  "2024-01-01 00:00:31 | INFO | [TIMING] Pipeline DONE elapsed=29.7s",
+];
+
+/**
+ * Return mock log lines that progressively reveal over the simulated run lifetime.
+ * Lines are revealed proportionally based on elapsed time so the panel looks alive.
+ */
+export function getMockJobLogs(jobId: string, limit: number): JobLogs {
+  const stored = jobs.get(jobId);
+  if (!stored) return { job_id: jobId, lines: [] };
+
+  const ageMs = Date.now() - stored.createdAt;
+  // Reveal all lines over 12 seconds of simulated run time.
+  const fraction = Math.min(1, ageMs / 12000);
+  const count = Math.max(0, Math.floor(_MOCK_LOG_SEQUENCE.length * fraction));
+  const lines = _MOCK_LOG_SEQUENCE.slice(0, count).slice(-limit);
+  return { job_id: jobId, lines };
+}
+
+export function getMockJobList(limit: number): JobList {
+  const sortedIds = Array.from(jobs.entries())
+    .sort((a, b) => b[1].createdAt - a[1].createdAt)
+    .slice(0, limit)
+    .map(([id]) => id);
+
+  const items = sortedIds
+    .map((id) => getMockJob(id))
+    .filter((r): r is JobResult => r !== null)
+    .map((r) => ({
+      job_id: r.job_id,
+      input_filename: r.input_filename,
+      status: r.status,
+      started_at: r.started_at,
+      finished_at: r.finished_at,
+    }));
+  return { jobs: items };
 }
 
 /**

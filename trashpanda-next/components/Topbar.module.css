@@ -59,6 +59,18 @@
   color: var(--neon);
 }
 
+.metaDanger {
+  color: var(--danger);
+}
+
+.subtitle {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-mid);
+  letter-spacing: 0.4px;
+  margin-top: 5px;
+}
+
 .mobileToggle {
   display: none;
   width: 40px;

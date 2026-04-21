@@ -123,6 +123,43 @@ def test_get_job_not_found_returns_json_error(client: TestClient) -> None:
     assert payload["error"]["details"]["job_id"] == "job_missing"
 
 
+def test_get_logs_unknown_job_returns_404(client: TestClient) -> None:
+    response = client.get("/jobs/job_ghost/logs")
+
+    assert response.status_code == 404
+    payload = response.json()
+    assert payload["error"]["error_type"] == "job_not_found"
+    assert payload["error"]["details"]["job_id"] == "job_ghost"
+
+
+def test_get_logs_queued_job_returns_empty_or_lines(client: TestClient) -> None:
+    """A freshly created job may not have a log file yet; endpoint must not 500."""
+    payload = _start_sample_job(client)
+    job_id = payload["job_id"]
+
+    response = client.get(f"/jobs/{job_id}/logs")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["job_id"] == job_id
+    assert isinstance(data["lines"], list)
+
+
+def test_get_logs_completed_job_has_lines(client: TestClient) -> None:
+    started = _start_sample_job(client)
+    payload = _wait_for_terminal_job(client, started["job_id"])
+    assert payload["status"] == JobStatus.COMPLETED
+
+    response = client.get(f"/jobs/{started['job_id']}/logs?limit=50")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["job_id"] == started["job_id"]
+    assert len(data["lines"]) > 0
+    joined = " ".join(data["lines"])
+    assert "Pipeline" in joined or "TIMING" in joined or "INFO" in joined
+
+
 def test_get_artifact_not_found_returns_json_error(client: TestClient) -> None:
     started = _start_sample_job(client)
     payload = _wait_for_terminal_job(client, started["job_id"])

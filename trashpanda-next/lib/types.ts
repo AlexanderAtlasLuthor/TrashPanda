@@ -45,6 +45,23 @@ export interface JobResult {
   finished_at?: string | null;
 }
 
+export interface JobLogs {
+  job_id: string;
+  lines: string[];
+}
+
+export interface JobListItem {
+  job_id: string;
+  input_filename?: string | null;
+  status: JobStatus;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface JobList {
+  jobs: JobListItem[];
+}
+
 /**
  * Known client output filenames the backend is guaranteed to produce on success.
  * Keys match artifact keys the backend returns; labels are UI-friendly.
@@ -59,22 +76,22 @@ export const CLIENT_OUTPUT_MANIFEST: ReadonlyArray<{
   {
     key: "valid_emails",
     filename: "valid_emails.xlsx",
-    label: "Valid emails",
-    description: "Deliverable records, ready to send.",
+    label: "Ready to send",
+    description: "Safe to use in your campaigns.",
     severity: "ok",
   },
   {
     key: "review_emails",
     filename: "review_emails.xlsx",
-    label: "Review queue",
-    description: "Catch-all domains, low-signal records, manual check.",
+    label: "Needs attention",
+    description: "May require manual review before sending.",
     severity: "warn",
   },
   {
     key: "invalid_or_bounce_risk",
     filename: "invalid_or_bounce_risk.xlsx",
-    label: "Invalid / bounce risk",
-    description: "Hard bounces, disposable, NXDOMAIN, malformed.",
+    label: "Do not use",
+    description: "High risk of bounce or invalid address.",
     severity: "bad",
   },
   {

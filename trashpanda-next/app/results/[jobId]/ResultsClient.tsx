@@ -1,21 +1,39 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { getJob, ApiError } from "@/lib/api";
+import { getJob, getJobLogs, ApiError } from "@/lib/api";
 import type { JobResult } from "@/lib/types";
 import { Topbar } from "@/components/Topbar";
 import { JobStatusPanel } from "@/components/JobStatusPanel";
+import { LiveLogsPanel } from "@/components/LiveLogsPanel";
 import {
   MetricsCards,
   SecondaryMetrics,
 } from "@/components/MetricsCards";
 import { DownloadArtifacts } from "@/components/DownloadArtifacts";
+import { ExecutiveSummary } from "@/components/ExecutiveSummary";
+import { ClassificationBreakdown } from "@/components/ClassificationBreakdown";
 import { ErrorState } from "@/components/ErrorState";
 
 const POLL_INTERVAL_MS = 2000;
+const LOG_LIMIT = 25;
 
 function shouldPoll(job: JobResult | null): boolean {
   return job?.status === "queued" || job?.status === "running";
+}
+
+function formatDuration(
+  start: string | null | undefined,
+  end: string | null | undefined,
+): string | null {
+  if (!start || !end) return null;
+  const ms = new Date(end).getTime() - new Date(start).getTime();
+  if (isNaN(ms) || ms <= 0) return null;
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  if (m === 0) return `${s}s`;
+  return `${m}m ${s % 60}s`;
 }
 
 interface ResultsClientProps {
@@ -27,25 +45,25 @@ interface ResultsClientProps {
  * Polls /api/jobs/:jobId every 2s. Stops as soon as status is terminal
  * (completed / failed) or when the component unmounts.
  *
+ * Log lines are fetched in the same poll cycle via Promise.all — no second
+ * timer, no extra effect, no risk of the multiple-polling bug.
+ *
  * Renders one of three UIs based on status:
- *   queued | running  -> JobStatusPanel (pipeline visual + hints)
+ *   queued | running  -> JobStatusPanel + LiveLogsPanel
  *   completed         -> MetricsCards + SecondaryMetrics + DownloadArtifacts
- *   failed            -> ErrorState
+ *   failed            -> ErrorState + LiveLogsPanel (last lines for debugging)
  *   null              -> 404 copy
  */
 export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
   const [job, setJob] = useState<JobResult | null>(initialJob);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [logLines, setLogLines] = useState<string[]>([]);
   const jobRef = useRef<JobResult | null>(initialJob);
 
-  // Keep jobRef in sync with job without re-triggering the polling effect.
   useEffect(() => {
     jobRef.current = job;
   }, [job]);
 
-  // Single polling effect. Depends ONLY on jobId so it never tears down
-  // due to prop/state churn. Guarantees at most one in-flight request
-  // and at most one scheduled timer at any moment.
   useEffect(() => {
     let cancelled = false;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -61,15 +79,23 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
       if (jobRef.current && !shouldPoll(jobRef.current)) return;
 
       try {
-        const next = await getJob(jobId);
+        const [next, logsData] = await Promise.all([
+          getJob(jobId),
+          getJobLogs(jobId, LOG_LIMIT).catch(() => null),
+        ]);
         if (cancelled) return;
 
         jobRef.current = next;
         setJob(next);
+        if (logsData) setLogLines(logsData.lines);
         setFetchError(null);
 
         if (shouldPoll(next)) {
           schedule(POLL_INTERVAL_MS);
+        } else {
+          getJobLogs(jobId, LOG_LIMIT)
+            .then((ld) => { if (!cancelled) setLogLines(ld.lines); })
+            .catch(() => undefined);
         }
       } catch (err) {
         if (cancelled) return;
@@ -87,7 +113,6 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
       }
     };
 
-    // Kick off polling only if we don't already have a terminal job.
     if (!jobRef.current || shouldPoll(jobRef.current)) {
       schedule(POLL_INTERVAL_MS);
     }
@@ -101,7 +126,7 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
     };
   }, [jobId]);
 
-  // 404 / not found
+  // ── 404 ──────────────────────────────────────────────────────────────────
   if (!job) {
     return (
       <>
@@ -126,24 +151,39 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
     );
   }
 
-  // Build topbar meta from whatever we have
-  const meta: Array<{ label: string; value: string; accent?: boolean }> = [
-    { label: "JOB", value: jobId.slice(0, 14) + (jobId.length > 14 ? "…" : "") },
+  // ── Shared topbar data ────────────────────────────────────────────────────
+  const duration =
+    job.status === "completed"
+      ? formatDuration(job.started_at, job.finished_at)
+      : null;
+
+  const meta = [
+    ...(job.input_filename
+      ? [{ label: "FILE", value: job.input_filename }]
+      : []),
+    {
+      label: "JOB",
+      value: jobId.slice(0, 14) + (jobId.length > 14 ? "…" : ""),
+    },
     {
       label: "STATUS",
       value: job.status.toUpperCase(),
-      accent: job.status === "completed",
+      accent: job.status === "completed" || job.status === "running",
+      danger: job.status === "failed",
     },
+    ...(duration
+      ? [{ label: "DURATION", value: duration, accent: true }]
+      : []),
   ];
-  if (job.input_filename) {
-    meta.unshift({ label: "FILE", value: job.input_filename });
-  }
 
-  const titleByStatus: Record<JobResult["status"], { title: string; crumb: string }> = {
-    queued: { title: "JOB/QUEUED", crumb: "QUEUED" },
-    running: { title: "JOB/RUNNING", crumb: "RUNNING" },
-    completed: { title: "JOB/RESULTS", crumb: "RESULTS" },
-    failed: { title: "JOB/FAILED", crumb: "FAILED" },
+  const titleByStatus: Record<
+    JobResult["status"],
+    { title: string; crumb: string }
+  > = {
+    queued:    { title: "JOB/QUEUED",   crumb: "QUEUED"    },
+    running:   { title: "JOB/RUNNING",  crumb: "RUNNING"   },
+    completed: { title: "JOB/RESULTS",  crumb: "RESULTS"   },
+    failed:    { title: "JOB/FAILED",   crumb: "FAILED"    },
   };
   const { title, crumb } = titleByStatus[job.status];
 
@@ -154,6 +194,7 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
           breadcrumb={["WORKSPACE", crumb]}
           title={title}
           titleSlice="/"
+          subtitle={job.input_filename ?? undefined}
           meta={meta}
         />
       </div>
@@ -176,12 +217,26 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
         </div>
       )}
 
+      {/* ── FAILED ── */}
       {job.status === "failed" ? (
-        <div className="fade-up">
-          <ErrorState error={job.error} jobId={jobId} />
-        </div>
+        <>
+          <div className="fade-up">
+            <ErrorState error={job.error} jobId={jobId} />
+          </div>
+          <div className="fade-up">
+            <LiveLogsPanel lines={logLines} status={job.status} />
+          </div>
+          <div className="fade-up">
+            <ProcessAnotherButton />
+          </div>
+        </>
+
+      /* ── COMPLETED ── */
       ) : job.status === "completed" ? (
         <>
+          <div className="fade-up">
+            <ExecutiveSummary summary={job.summary} />
+          </div>
           <div className="fade-up">
             <MetricsCards summary={job.summary} />
           </div>
@@ -189,13 +244,31 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
             <SecondaryMetrics summary={job.summary} />
           </div>
           <div className="fade-up">
+            <ClassificationBreakdown summary={job.summary} />
+          </div>
+          <div className="fade-up">
             <DownloadArtifacts jobId={jobId} artifacts={job.artifacts} />
           </div>
+          <div className="fade-up">
+            <LiveLogsPanel
+              lines={logLines}
+              status={job.status}
+              defaultCollapsed
+            />
+          </div>
+          <div className="fade-up">
+            <ProcessAnotherButton />
+          </div>
         </>
+
+      /* ── QUEUED / RUNNING ── */
       ) : (
         <>
           <div className="fade-up">
             <JobStatusPanel result={job} />
+          </div>
+          <div className="fade-up">
+            <LiveLogsPanel lines={logLines} status={job.status} />
           </div>
           <div className="fade-up">
             <MetricsCards summary={null} />
@@ -203,5 +276,51 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
         </>
       )}
     </>
+  );
+}
+
+// ── "Process another file" CTA ───────────────────────────────────────────────
+
+function ProcessAnotherButton() {
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "flex-start",
+        marginBottom: 28,
+      }}
+    >
+      <Link
+        href="/"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "10px 22px",
+          fontFamily: "var(--font-display)",
+          fontSize: 13,
+          letterSpacing: "1px",
+          textTransform: "uppercase",
+          color: "var(--bg-void)",
+          background: "var(--neon)",
+          border: "none",
+          borderRadius: 3,
+          textDecoration: "none",
+          cursor: "pointer",
+          boxShadow: "0 0 20px rgba(142, 255, 58, 0.25)",
+          transition: "box-shadow 0.2s ease, opacity 0.2s ease",
+        }}
+        onMouseEnter={(e) => {
+          (e.currentTarget as HTMLElement).style.boxShadow =
+            "0 0 32px rgba(142, 255, 58, 0.5)";
+        }}
+        onMouseLeave={(e) => {
+          (e.currentTarget as HTMLElement).style.boxShadow =
+            "0 0 20px rgba(142, 255, 58, 0.25)";
+        }}
+      >
+        ↩ Process another file
+      </Link>
+    </div>
   );
 }

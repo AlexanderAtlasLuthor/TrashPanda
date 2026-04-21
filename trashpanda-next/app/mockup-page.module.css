@@ -1,0 +1,550 @@
+/* ── Development badge ────────────────────────────────────────────── */
+
+.devBanner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 18px;
+  background: rgba(95, 180, 255, 0.05);
+  border: 1px solid rgba(95, 180, 255, 0.2);
+  border-left: 3px solid var(--info);
+  border-radius: 3px;
+  margin-bottom: 28px;
+}
+
+.devDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--info);
+  box-shadow: 0 0 10px var(--info);
+  flex-shrink: 0;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.devText {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--info);
+  letter-spacing: 1px;
+  flex: 1;
+}
+
+.devRelease {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-low);
+  letter-spacing: 0.8px;
+  padding: 2px 8px;
+  border: 1px solid var(--ink-ghost);
+  border-radius: 2px;
+}
+
+/* ── Module hero ──────────────────────────────────────────────────── */
+
+.hero {
+  margin-bottom: 28px;
+}
+
+.heroDesc {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-mid);
+  line-height: 1.7;
+  max-width: 640px;
+  letter-spacing: 0.3px;
+}
+
+/* ── Stats row ────────────────────────────────────────────────────── */
+
+.statsRow {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--stroke-steel);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 28px;
+}
+
+.stat {
+  background: var(--bg-panel);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: background 0.15s;
+}
+
+.stat:hover {
+  background: var(--bg-elevated);
+}
+
+.statValue {
+  font-family: var(--font-display);
+  font-size: 22px;
+  letter-spacing: 0.5px;
+  color: var(--ink-high);
+  line-height: 1;
+}
+
+.statValue.accent  { color: var(--neon); }
+.statValue.info    { color: var(--info); }
+.statValue.warn    { color: var(--warn); }
+.statValue.muted   { color: var(--ink-mid); }
+
+.statLabel {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  color: var(--ink-low);
+  text-transform: uppercase;
+}
+
+/* ── Section headings ─────────────────────────────────────────────── */
+
+.sectionHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.sectionHead::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  background: var(--neon);
+  transform: rotate(45deg);
+  flex-shrink: 0;
+}
+
+.sectionTitle {
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 1px;
+  color: var(--ink-high);
+  text-transform: uppercase;
+}
+
+/* ── Feature cards grid ───────────────────────────────────────────── */
+
+.featureGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.featureGrid.cols3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.featureCard {
+  background: var(--bg-panel);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.2s, background 0.2s;
+  position: relative;
+  overflow: hidden;
+}
+
+.featureCard:hover {
+  border-color: rgba(95, 180, 255, 0.3);
+  background: var(--bg-panel-2);
+}
+
+.featureCard::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--info), transparent);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.featureCard:hover::before {
+  opacity: 1;
+}
+
+.cardIcon {
+  width: 32px;
+  height: 32px;
+  padding: 7px;
+  background: rgba(95, 180, 255, 0.08);
+  border: 1px solid rgba(95, 180, 255, 0.2);
+  border-radius: 3px;
+  stroke: var(--info);
+  stroke-width: 2;
+  fill: none;
+}
+
+.cardTitle {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-high);
+  letter-spacing: 0.3px;
+}
+
+.cardDesc {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-mid);
+  line-height: 1.6;
+  letter-spacing: 0.2px;
+}
+
+.cardBadge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: var(--ink-low);
+  padding: 2px 6px;
+  border: 1px solid var(--ink-ghost);
+  border-radius: 2px;
+  align-self: flex-start;
+  margin-top: auto;
+}
+
+/* ── Input area (disabled) ────────────────────────────────────────── */
+
+.inputArea {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 28px;
+  align-items: center;
+}
+
+.fakeInput {
+  flex: 1;
+  background: var(--bg-deep);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 3px;
+  padding: 11px 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-ghost);
+  letter-spacing: 0.3px;
+  cursor: not-allowed;
+}
+
+.disabledBtn {
+  padding: 11px 22px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 3px;
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: var(--ink-ghost);
+  text-transform: uppercase;
+  cursor: not-allowed;
+  white-space: nowrap;
+}
+
+/* ── Empty state ──────────────────────────────────────────────────── */
+
+.emptyState {
+  background: var(--bg-panel);
+  border: 1px dashed var(--stroke-steel);
+  border-radius: 4px;
+  padding: 40px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.emptyIcon {
+  width: 40px;
+  height: 40px;
+  stroke: var(--ink-ghost);
+  stroke-width: 1.5;
+  fill: none;
+  margin-bottom: 4px;
+}
+
+.emptyTitle {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-mid);
+  letter-spacing: 0.5px;
+}
+
+.emptyDesc {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-low);
+  line-height: 1.6;
+  max-width: 380px;
+}
+
+/* ── Check row (for audit results) ───────────────────────────────── */
+
+.checkGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--stroke-steel);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 28px;
+}
+
+.checkRow {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 16px;
+  padding: 13px 18px;
+  background: var(--bg-panel);
+  transition: background 0.15s;
+}
+
+.checkRow:hover {
+  background: var(--bg-panel-2);
+}
+
+.checkName {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-high);
+  letter-spacing: 0.3px;
+}
+
+.checkSub {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-low);
+  margin-top: 2px;
+}
+
+.checkValue {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  color: var(--ink-mid);
+  text-align: right;
+}
+
+.pill {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  padding: 3px 10px;
+  border-radius: 2px;
+  text-transform: uppercase;
+}
+
+.pill.pass {
+  color: var(--neon);
+  background: rgba(142, 255, 58, 0.08);
+  border: 1px solid rgba(142, 255, 58, 0.3);
+}
+
+.pill.warn {
+  color: var(--warn);
+  background: rgba(255, 184, 58, 0.08);
+  border: 1px solid rgba(255, 184, 58, 0.3);
+}
+
+.pill.fail {
+  color: var(--danger);
+  background: rgba(255, 58, 92, 0.08);
+  border: 1px solid rgba(255, 58, 92, 0.3);
+}
+
+.pill.info {
+  color: var(--info);
+  background: rgba(95, 180, 255, 0.08);
+  border: 1px solid rgba(95, 180, 255, 0.3);
+}
+
+.pill.muted {
+  color: var(--ink-low);
+  background: transparent;
+  border: 1px solid var(--ink-ghost);
+}
+
+/* ── Pipeline list ────────────────────────────────────────────────── */
+
+.pipelineListHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.pipelineList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 28px;
+}
+
+.pipelineCard {
+  background: var(--bg-panel);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  padding: 16px 20px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+  opacity: 0.6;
+  transition: opacity 0.2s, border-color 0.2s;
+}
+
+.pipelineCard:hover {
+  opacity: 0.8;
+  border-color: rgba(95, 180, 255, 0.25);
+}
+
+.pipelineName {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-high);
+  letter-spacing: 0.3px;
+  margin-bottom: 4px;
+}
+
+.pipelineMeta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-low);
+  letter-spacing: 0.5px;
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.pipelineActions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.iconBtn {
+  width: 28px;
+  height: 28px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: not-allowed;
+}
+
+.iconBtn svg {
+  width: 13px;
+  height: 13px;
+  stroke: var(--ink-low);
+  stroke-width: 2;
+  fill: none;
+}
+
+/* ── Score ring (audit) ───────────────────────────────────────────── */
+
+.scorePanel {
+  background: var(--bg-panel);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  padding: 24px;
+  display: flex;
+  gap: 28px;
+  align-items: center;
+  margin-bottom: 28px;
+}
+
+.scoreRing {
+  width: 90px;
+  height: 90px;
+  flex-shrink: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scoreRing svg {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-90deg);
+}
+
+.scoreNumber {
+  font-family: var(--font-display);
+  font-size: 26px;
+  color: var(--warn);
+  line-height: 1;
+  position: relative;
+  z-index: 1;
+}
+
+.scoreMeta {
+  flex: 1;
+}
+
+.scoreTitle {
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 1px;
+  color: var(--ink-high);
+  margin-bottom: 6px;
+}
+
+.scoreDesc {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-mid);
+  line-height: 1.6;
+}
+
+/* ── Responsive ───────────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  .statsRow {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .featureGrid,
+  .featureGrid.cols3 {
+    grid-template-columns: 1fr;
+  }
+  .scorePanel {
+    flex-direction: column;
+    text-align: center;
+  }
+}
+
+@media (max-width: 600px) {
+  .statsRow {
+    grid-template-columns: 1fr 1fr;
+  }
+  .checkRow {
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+  }
+  .checkValue {
+    display: none;
+  }
+  .pipelineCard {
+    grid-template-columns: 1fr;
+  }
+}

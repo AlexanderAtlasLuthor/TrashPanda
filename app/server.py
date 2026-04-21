@@ -7,9 +7,11 @@ uploads, in-memory job state, JSON responses, and artifact downloads.
 
 from __future__ import annotations
 
+import io
 import shutil
 import threading
 import uuid
+import zipfile
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -26,7 +28,7 @@ from fastapi import (
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from .api_boundary import (
     JobError,
@@ -133,6 +135,15 @@ class InMemoryJobStore:
                 started_at=started_at,
                 finished_at=datetime.now(),
             )
+
+    def list(self, limit: int = 20) -> list[JobResult]:
+        with self._lock:
+            jobs = sorted(
+                self._jobs.values(),
+                key=lambda j: j.started_at if j.started_at else datetime.min,
+                reverse=True,
+            )
+        return [deepcopy(j) for j in jobs[:limit]]
 
     def clear(self) -> None:
         with self._lock:
@@ -274,6 +285,24 @@ def _run_job(
     JOB_STORE.set_result(result)
 
 
+@app.get("/jobs")
+def list_jobs(limit: int = 20) -> dict[str, Any]:
+    safe_limit = max(1, min(limit, 100))
+    items = JOB_STORE.list(safe_limit)
+    return {
+        "jobs": [
+            {
+                "job_id": j.job_id,
+                "input_filename": j.input_filename,
+                "status": j.status.value,
+                "started_at": j.started_at.isoformat() if j.started_at else None,
+                "finished_at": j.finished_at.isoformat() if j.finished_at else None,
+            }
+            for j in items
+        ]
+    }
+
+
 @app.post("/jobs", status_code=201)
 async def create_job(
     background_tasks: BackgroundTasks,
@@ -347,6 +376,52 @@ def _artifact_path(result: JobResult, key: str) -> Path | None:
     return path
 
 
+def _build_zip(root: Path) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for file_path in sorted(root.rglob("*")):
+            if file_path.is_file():
+                zf.write(file_path, arcname=str(file_path.relative_to(root)))
+    return buf.getvalue()
+
+
+def _tail_log(path: Path, n: int) -> list[str]:
+    """Return the last *n* non-empty lines of *path*, or [] on any I/O error."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            all_lines = fh.readlines()
+        return [ln.rstrip("\n") for ln in all_lines[-n:] if ln.strip()]
+    except OSError:
+        return []
+
+
+@app.get("/jobs/{job_id}/logs")
+def get_job_logs(job_id: str, limit: int = 20) -> dict[str, Any]:
+    result = JOB_STORE.get(job_id)
+    if result is None:
+        _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
+
+    job_output_dir = RUNTIME_ROOT / "jobs" / job_id
+    if not job_output_dir.is_dir():
+        return {"job_id": job_id, "lines": []}
+
+    # Glob for the run sub-directory (name is non-deterministic at job start time).
+    candidates = sorted(
+        job_output_dir.glob("*/logs/run.log"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        return {"job_id": job_id, "lines": []}
+
+    log_path = candidates[0]
+    if not _is_under(log_path, job_output_dir):
+        return {"job_id": job_id, "lines": []}
+
+    safe_limit = max(1, min(limit, 200))
+    return {"job_id": job_id, "lines": _tail_log(log_path, safe_limit)}
+
+
 def _media_type_for(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix == ".csv":
@@ -356,6 +431,44 @@ def _media_type_for(path: Path) -> str:
     if suffix == ".xlsx":
         return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     return "application/octet-stream"
+
+
+@app.get("/jobs/{job_id}/artifacts/zip")
+def get_artifacts_zip(job_id: str) -> Response:
+    result = JOB_STORE.get(job_id)
+    if result is None:
+        _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
+    if result.status != JobStatus.COMPLETED:
+        _raise_http_error(
+            409,
+            "job_not_completed",
+            "ZIP download is only available for completed jobs.",
+            {"status": result.status.value},
+        )
+
+    job_output_dir = RUNTIME_ROOT / "jobs" / job_id
+    if not job_output_dir.is_dir():
+        _raise_http_error(404, "no_artifacts", "No output directory found.", {"job_id": job_id})
+
+    run_dirs = sorted(
+        [d for d in job_output_dir.iterdir() if d.is_dir()],
+        key=lambda d: d.stat().st_mtime,
+        reverse=True,
+    )
+    if not run_dirs:
+        _raise_http_error(404, "no_artifacts", "No run directory found.", {"job_id": job_id})
+
+    run_dir = run_dirs[0]
+    if not _is_under(run_dir, job_output_dir):
+        _raise_http_error(403, "forbidden", "Path traversal detected.", {})
+
+    zip_bytes = _build_zip(run_dir)
+    safe_id = job_id.replace("/", "_").replace("..", "_")
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="trashpanda_results_{safe_id}.zip"'},
+    )
 
 
 @app.get("/jobs/{job_id}/artifacts/{key}")

@@ -1,0 +1,239 @@
+.panel {
+  position: relative;
+  padding: 24px 28px;
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 28px;
+}
+
+/* colored left accent bar */
+.panel::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+}
+
+.ok {
+  background: linear-gradient(
+    135deg,
+    rgba(142, 255, 58, 0.05) 0%,
+    var(--bg-panel) 55%
+  );
+  border-color: rgba(142, 255, 58, 0.22);
+}
+.ok::before {
+  background: var(--neon);
+  box-shadow: 0 0 18px var(--neon-glow);
+}
+
+.warn {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 184, 58, 0.05) 0%,
+    var(--bg-panel) 55%
+  );
+  border-color: rgba(255, 184, 58, 0.22);
+}
+.warn::before {
+  background: var(--warn);
+  box-shadow: 0 0 18px rgba(255, 184, 58, 0.35);
+}
+
+.bad {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 58, 92, 0.05) 0%,
+    var(--bg-panel) 55%
+  );
+  border-color: rgba(255, 58, 92, 0.22);
+}
+.bad::before {
+  background: var(--danger);
+  box-shadow: 0 0 18px rgba(255, 58, 92, 0.35);
+}
+
+/* ── Top row ─────────────────────────────────────────────────────── */
+
+.top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.headlineRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.statusIcon {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.ok .statusIcon {
+  background: rgba(142, 255, 58, 0.12);
+  color: var(--neon);
+}
+.warn .statusIcon {
+  background: rgba(255, 184, 58, 0.12);
+  color: var(--warn);
+}
+.bad .statusIcon {
+  background: rgba(255, 58, 92, 0.12);
+  color: var(--danger);
+}
+
+.statusIcon svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.headline {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: 0.4px;
+  color: var(--ink-high);
+  margin: 0;
+  line-height: 1.2;
+}
+
+.totalBadge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--ink-low);
+  padding: 4px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--stroke);
+  border-radius: 2px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+/* ── Metrics row ─────────────────────────────────────────────────── */
+
+.metricsRow {
+  display: flex;
+  margin-bottom: 14px;
+}
+
+.metric {
+  flex: 1;
+  padding: 16px 22px;
+  background: var(--bg-deep);
+  border: 1px solid var(--stroke-steel);
+}
+
+.metric + .metric {
+  border-left: none;
+}
+
+.metric:first-child {
+  border-radius: 3px 0 0 3px;
+}
+
+.metric:last-child {
+  border-radius: 0 3px 3px 0;
+}
+
+.metric:only-child {
+  border-radius: 3px;
+}
+
+.metricValue {
+  font-family: var(--font-display);
+  font-size: 34px;
+  font-weight: 400;
+  letter-spacing: -0.5px;
+  line-height: 1;
+  margin-bottom: 6px;
+}
+
+.metricLabel {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--ink-low);
+}
+
+/* ── Deliverability estimate bar ─────────────────────────────────── */
+
+.estimateBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--bg-deep);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 3px;
+}
+
+.estimateText {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-mid);
+  letter-spacing: 0.3px;
+}
+
+.estimateValue {
+  font-family: var(--font-display);
+  font-size: 18px;
+  letter-spacing: 0.5px;
+  color: var(--neon);
+  white-space: nowrap;
+}
+
+/* ── Responsive ──────────────────────────────────────────────────── */
+
+@media (max-width: 720px) {
+  .panel {
+    padding: 18px 20px;
+  }
+  .headline {
+    font-size: 17px;
+  }
+  .top {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .totalBadge {
+    align-self: flex-start;
+  }
+  .metricsRow {
+    flex-direction: column;
+    gap: 0;
+  }
+  .metric {
+    border-radius: 0 !important;
+    border: 1px solid var(--stroke-steel);
+  }
+  .metric + .metric {
+    border-left: 1px solid var(--stroke-steel);
+    border-top: none;
+  }
+  .metricValue {
+    font-size: 26px;
+  }
+}

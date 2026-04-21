@@ -13,9 +13,10 @@ interface MetricProps {
   severity?: Severity;
   delta?: string;
   small?: boolean;
+  tooltip?: string;
 }
 
-function Metric({ label, value, severity = "neutral", delta, small }: MetricProps) {
+function Metric({ label, value, severity = "neutral", delta, small, tooltip }: MetricProps) {
   const severityClass =
     severity === "ok"
       ? styles.ok
@@ -39,6 +40,11 @@ function Metric({ label, value, severity = "neutral", delta, small }: MetricProp
     >
       <div className={[styles.label, small && styles.labelSmall].filter(Boolean).join(" ")}>
         // {label}
+        {tooltip && (
+          <span className={styles.tip} data-tip={tooltip} aria-label={tooltip}>
+            ⓘ
+          </span>
+        )}
       </div>
       <div
         className={
@@ -71,23 +77,41 @@ export function MetricsCards({ summary }: MetricsCardsProps) {
 
   const validPct =
     total && valid !== null && valid !== undefined
-      ? ((valid / total) * 100).toFixed(1) + "% of total"
+      ? ((valid / total) * 100).toFixed(1) + "% of your list"
       : undefined;
   const reviewPct =
     total && review !== null && review !== undefined
-      ? ((review / total) * 100).toFixed(1) + "% needs review"
+      ? ((review / total) * 100).toFixed(1) + "% of your list"
       : undefined;
   const invalidPct =
     total && invalid !== null && invalid !== undefined
-      ? ((invalid / total) * 100).toFixed(1) + "% flagged"
+      ? ((invalid / total) * 100).toFixed(1) + "% high-risk"
       : undefined;
 
   return (
     <div className={styles.metrics}>
-      <Metric label="Total rows" value={total} delta="ingested" />
-      <Metric label="Valid / deliverable" value={valid} severity="ok" delta={validPct} />
-      <Metric label="Recoverable" value={review} severity="warn" delta={reviewPct} />
-      <Metric label="Purged" value={invalid} severity="bad" delta={invalidPct} />
+      <Metric label="Emails scanned" value={total} />
+      <Metric
+        label="Ready to send"
+        value={valid}
+        severity="ok"
+        delta={validPct}
+        tooltip="Safe to use in campaigns"
+      />
+      <Metric
+        label="Needs attention"
+        value={review}
+        severity="warn"
+        delta={reviewPct}
+        tooltip="May require manual review before sending"
+      />
+      <Metric
+        label="Do not use"
+        value={invalid}
+        severity="bad"
+        delta={invalidPct}
+        tooltip="High risk of bounce or invalid address"
+      />
     </div>
   );
 }
@@ -99,11 +123,41 @@ export function MetricsCards({ summary }: MetricsCardsProps) {
 export function SecondaryMetrics({ summary }: MetricsCardsProps) {
   return (
     <div className={styles.metricsSecondary}>
-      <Metric small label="Duplicates removed" value={summary?.duplicates_removed} severity="info" />
-      <Metric small label="Typo corrections" value={summary?.typo_corrections} severity="ok" />
-      <Metric small label="Disposable" value={summary?.disposable_emails} severity="bad" />
-      <Metric small label="Placeholder / fake" value={summary?.placeholder_or_fake_emails} severity="bad" />
-      <Metric small label="Role-based" value={summary?.role_based_emails} severity="warn" />
+      <Metric
+        small
+        label="Duplicates removed"
+        value={summary?.duplicates_removed}
+        severity="info"
+        tooltip="Exact and near-duplicate addresses removed"
+      />
+      <Metric
+        small
+        label="Typo corrections"
+        value={summary?.typo_corrections}
+        severity="ok"
+        tooltip="Domain typos auto-corrected (e.g. gmial → gmail)"
+      />
+      <Metric
+        small
+        label="Disposable"
+        value={summary?.disposable_emails}
+        severity="bad"
+        tooltip="Temporary or throwaway email addresses"
+      />
+      <Metric
+        small
+        label="Fake or placeholder"
+        value={summary?.placeholder_or_fake_emails}
+        severity="bad"
+        tooltip="Addresses like test@test.com, noreply@, etc."
+      />
+      <Metric
+        small
+        label="Role-based"
+        value={summary?.role_based_emails}
+        severity="warn"
+        tooltip="Shared inboxes like info@, admin@, support@"
+      />
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import { Topbar } from "@/components/Topbar";
 import { UploadDropzone } from "@/components/UploadDropzone";
-import { MetricsCards } from "@/components/MetricsCards";
+import { RecentJobs } from "@/components/RecentJobs";
 
 export default function ConsolePage() {
   return (
@@ -20,7 +20,7 @@ export default function ConsolePage() {
         <UploadDropzone />
       </div>
       <div className="fade-up">
-        <MetricsCards summary={null} />
+        <RecentJobs />
       </div>
     </>
   );

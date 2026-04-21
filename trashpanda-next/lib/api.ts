@@ -13,7 +13,7 @@
  * No UI code needs to change.
  */
 
-import type { JobResult } from "./types";
+import type { JobList, JobLogs, JobResult } from "./types";
 
 export interface UploadResponse {
   job_id: string;
@@ -81,10 +81,40 @@ export async function getJob(jobId: string): Promise<JobResult> {
 }
 
 /**
+ * Fetch the last N log lines for a job. Non-fatal: callers should catch.
+ *
+ * Backend contract:
+ *   GET /api/jobs/:jobId/logs?limit=N -> JobLogs
+ */
+export async function getJobLogs(jobId: string, limit = 20): Promise<JobLogs> {
+  const res = await fetch(
+    `/api/jobs/${encodeURIComponent(jobId)}/logs?limit=${limit}`,
+    { cache: "no-store" },
+  );
+  return handleResponse<JobLogs>(res);
+}
+
+/**
+ * Fetch the list of recent jobs (most-recent first).
+ *
+ * Backend contract:
+ *   GET /api/jobs?limit=N -> JobList
+ */
+export async function getJobList(limit = 20): Promise<JobList> {
+  const res = await fetch(`/api/jobs?limit=${limit}`, { cache: "no-store" });
+  return handleResponse<JobList>(res);
+}
+
+/**
  * Resolve an artifact key to a URL the browser can download.
  * The route handler decides whether to stream from local disk, signed URL,
  * or proxy from the Python service.
  */
 export function artifactDownloadUrl(jobId: string, key: string): string {
   return `/api/jobs/${encodeURIComponent(jobId)}/artifacts/${encodeURIComponent(key)}`;
+}
+
+/** URL that streams a ZIP of all artifacts for a completed job. */
+export function artifactZipUrl(jobId: string): string {
+  return `/api/jobs/${encodeURIComponent(jobId)}/artifacts/zip`;
 }

@@ -1,6 +1,6 @@
 import type { JobArtifacts } from "@/lib/types";
 import { CLIENT_OUTPUT_MANIFEST } from "@/lib/types";
-import { artifactDownloadUrl } from "@/lib/api";
+import { artifactDownloadUrl, artifactZipUrl } from "@/lib/api";
 import styles from "./DownloadArtifacts.module.css";
 
 interface DownloadArtifactsProps {
@@ -33,6 +33,28 @@ export function DownloadArtifacts({ jobId, artifacts }: DownloadArtifactsProps) 
       </div>
 
       <div className={styles.body}>
+        {/* ZIP download — full-width bar above individual files */}
+        <div className={styles.zipBar}>
+          <div className={styles.zipMeta}>
+            <div className={styles.zipLabel}>All results</div>
+            <div className={styles.zipDesc}>
+              Client outputs · technical CSVs · reports · logs
+            </div>
+          </div>
+          <a
+            href={artifactZipUrl(jobId)}
+            className={styles.zipBtn}
+            download={`trashpanda_results_${jobId}.zip`}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden>
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            Download all (.zip)
+          </a>
+        </div>
+
         {CLIENT_OUTPUT_MANIFEST.map((item) => {
           const filename = clientOutputs[item.key] ?? item.filename;
           const available = !!clientOutputs[item.key];
