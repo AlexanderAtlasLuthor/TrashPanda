@@ -301,3 +301,38 @@ Every run produces, under the run directory:
 - Client XLSX deliverables: `valid_emails.xlsx`,
   `review_emails.xlsx`, `invalid_or_bounce_risk.xlsx`,
   `summary_report.xlsx`.
+
+---
+
+## Local HTTP API (Phase 7)
+
+The FastAPI wrapper lives in `app/server.py` and delegates processing to
+`app.api_boundary.run_cleaning_job(...)`.
+
+Install HTTP dependencies if needed:
+
+```bash
+pip install -r requirements.txt
+```
+
+Run the local backend:
+
+```bash
+uvicorn app.server:app --reload --port 8000
+```
+
+Endpoints:
+
+- `POST /jobs` with multipart field `file` (`.csv` or `.xlsx`)
+- `GET /jobs/{job_id}`
+- `GET /jobs/{job_id}/artifacts/{key}`
+
+Jobs are tracked in memory and executed with FastAPI background tasks.
+Runtime files are written under `runtime/uploads/{job_id}` and
+`runtime/jobs/{job_id}`.
+
+To connect the Next.js frontend, set:
+
+```bash
+TRASHPANDA_BACKEND_URL=http://localhost:8000
+```

@@ -4,3 +4,7 @@ dnspython
 pyyaml
 tqdm
 python-dateutil
+fastapi
+uvicorn
+python-multipart
+httpx

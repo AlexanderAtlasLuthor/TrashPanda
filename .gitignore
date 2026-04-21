@@ -20,6 +20,7 @@ vendor_site/
 
 # Pipeline output
 output/
+runtime/
 
 # Logs
 logs/
