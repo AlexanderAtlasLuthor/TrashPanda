@@ -1,0 +1,243 @@
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 28px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--stroke-steel);
+  background: var(--bg-deep);
+}
+
+.title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 1px;
+  color: var(--ink-high);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.title::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  background: var(--neon);
+  box-shadow: 0 0 8px var(--neon);
+  transform: rotate(45deg);
+}
+
+.badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  padding: 3px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--stroke);
+  color: var(--neon);
+  text-transform: uppercase;
+}
+
+.body {
+  padding: 20px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  background: var(--bg-deep);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 3px;
+  transition: all 0.15s ease;
+  text-decoration: none;
+  color: inherit;
+  position: relative;
+}
+
+.item:hover {
+  background: var(--bg-panel-2);
+  border-color: var(--stroke-strong);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 3px;
+  background: var(--steel-blue);
+}
+
+.item.ok::before {
+  background: var(--neon);
+  box-shadow: 0 0 12px var(--neon-glow);
+}
+.item.warn::before {
+  background: var(--warn);
+}
+.item.bad::before {
+  background: var(--danger);
+}
+.item.info::before {
+  background: var(--info);
+}
+
+.itemDisabled {
+  opacity: 0.35;
+  pointer-events: none;
+  cursor: not-allowed;
+}
+
+.icon {
+  width: 40px;
+  height: 40px;
+  border: 1px solid;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.item.ok .icon {
+  color: var(--neon);
+  border-color: rgba(142, 255, 58, 0.4);
+  background: rgba(142, 255, 58, 0.06);
+}
+.item.warn .icon {
+  color: var(--warn);
+  border-color: rgba(255, 184, 58, 0.4);
+  background: rgba(255, 184, 58, 0.06);
+}
+.item.bad .icon {
+  color: var(--danger);
+  border-color: rgba(255, 58, 92, 0.4);
+  background: rgba(255, 58, 92, 0.06);
+}
+.item.info .icon {
+  color: var(--info);
+  border-color: rgba(95, 180, 255, 0.4);
+  background: rgba(95, 180, 255, 0.06);
+}
+
+.info {
+  min-width: 0;
+}
+
+.label {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--ink-high);
+  letter-spacing: 0.3px;
+}
+
+.filename {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-mid);
+  margin-top: 3px;
+  word-break: break-all;
+}
+
+.description {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-low);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+.arrow {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--stroke-steel);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-mid);
+  transition: all 0.15s ease;
+}
+
+.item:hover .arrow {
+  color: var(--neon);
+  border-color: var(--neon);
+  background: rgba(142, 255, 58, 0.06);
+}
+
+.arrow svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+}
+
+.technical {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--stroke-steel);
+}
+
+.techLabel {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--ink-low);
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.techList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.techItem {
+  padding: 8px 12px;
+  background: var(--bg-deep);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-mid);
+  text-decoration: none;
+  transition: all 0.15s ease;
+}
+
+.techItem:hover {
+  color: var(--neon);
+  border-color: var(--neon);
+  background: var(--bg-panel-2);
+}
+
+@media (max-width: 720px) {
+  .body {
+    grid-template-columns: 1fr;
+    padding: 16px;
+  }
+  .item {
+    padding: 12px;
+    gap: 10px;
+  }
+}

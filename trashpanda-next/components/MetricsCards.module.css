@@ -1,0 +1,139 @@
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.metricsSecondary {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.metric {
+  position: relative;
+  background: var(--bg-panel);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 3px;
+  padding: 20px 22px;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.metricSmall {
+  padding: 14px 16px;
+}
+
+.metric::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 3px;
+  height: 100%;
+  background: var(--steel-blue);
+}
+
+.ok::before {
+  background: var(--neon);
+  box-shadow: 0 0 20px var(--neon-glow);
+}
+
+.warn::before {
+  background: var(--warn);
+  box-shadow: 0 0 20px var(--warn-glow);
+}
+
+.bad::before {
+  background: var(--danger);
+  box-shadow: 0 0 20px var(--danger-glow);
+}
+
+.info::before {
+  background: var(--info);
+  box-shadow: 0 0 20px var(--info-glow);
+}
+
+.metric:hover {
+  background: var(--bg-panel-2);
+  border-color: var(--stroke-strong);
+  transform: translateY(-2px);
+}
+
+.label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--ink-low);
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.labelSmall {
+  font-size: 9px;
+  margin-bottom: 6px;
+}
+
+.value {
+  font-family: var(--font-display);
+  font-size: 32px;
+  line-height: 1;
+  color: var(--ink-high);
+  letter-spacing: 0.5px;
+}
+
+.valueSmall {
+  font-size: 22px;
+}
+
+.ok .value {
+  color: var(--neon);
+  text-shadow: 0 0 16px var(--neon-glow);
+}
+.warn .value {
+  color: var(--warn);
+}
+.bad .value {
+  color: var(--danger);
+}
+.info .value {
+  color: var(--info);
+}
+
+.delta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-mid);
+  margin-top: 8px;
+  letter-spacing: 0.3px;
+}
+
+.emptyValue {
+  color: var(--ink-ghost);
+  font-family: var(--font-display);
+  font-size: 32px;
+  line-height: 1;
+}
+
+@media (max-width: 1100px) {
+  .metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .metricsSecondary {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .metrics {
+    grid-template-columns: 1fr;
+  }
+  .metricsSecondary {
+    grid-template-columns: 1fr 1fr;
+  }
+  .value {
+    font-size: 24px;
+  }
+}
