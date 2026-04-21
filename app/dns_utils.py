@@ -233,14 +233,13 @@ def apply_dns_enrichment_column(
         return result
 
     eligible_mask = result["syntax_valid"].eq(True) & result["corrected_domain"].notna()
-    eligible_indices = result.index[eligible_mask].tolist()
 
-    if not eligible_indices:
+    if not eligible_mask.any():
         for col in ("dns_check_performed", "domain_exists", "has_mx_record", "has_a_record"):
             result[col] = result[col].astype("boolean")
         return result
 
-    all_domains: set[str] = {result.loc[idx, "corrected_domain"] for idx in eligible_indices}
+    all_domains: set[str] = set(result.loc[eligible_mask, "corrected_domain"].dropna().unique())
     new_domains: set[str] = {d for d in all_domains if d not in cache}
 
     # Domain-level cache hit accounting.
@@ -251,17 +250,31 @@ def apply_dns_enrichment_column(
         for domain, dns_result in new_results.items():
             cache.set(domain, dns_result)
 
-    # Map per-domain results back to every eligible row.
-    for idx in eligible_indices:
-        domain = result.loc[idx, "corrected_domain"]
-        dns_result = cache.get(domain)
-        if dns_result is None:
-            continue
-        result.loc[idx, "dns_check_performed"] = dns_result.dns_check_performed
-        result.loc[idx, "domain_exists"] = dns_result.domain_exists
-        result.loc[idx, "has_mx_record"] = dns_result.has_mx_record
-        result.loc[idx, "has_a_record"] = dns_result.has_a_record
-        result.loc[idx, "dns_error"] = dns_result.dns_error
+    # Build domain → attribute mappings from cache, then map vectorized.
+    # Replaces O(N) per-row loc assignments with O(unique_domains) dict
+    # build + O(N) Series.map — ~10-50x faster on large chunks.
+    domain_to_result: dict[str, DnsResult] = {}
+    for domain in all_domains:
+        r = cache.get(domain)
+        if r is not None:
+            domain_to_result[domain] = r
+
+    eligible_domain_series = result.loc[eligible_mask, "corrected_domain"]
+    result.loc[eligible_mask, "dns_check_performed"] = eligible_domain_series.map(
+        {d: r.dns_check_performed for d, r in domain_to_result.items()}
+    )
+    result.loc[eligible_mask, "domain_exists"] = eligible_domain_series.map(
+        {d: r.domain_exists for d, r in domain_to_result.items()}
+    )
+    result.loc[eligible_mask, "has_mx_record"] = eligible_domain_series.map(
+        {d: r.has_mx_record for d, r in domain_to_result.items()}
+    )
+    result.loc[eligible_mask, "has_a_record"] = eligible_domain_series.map(
+        {d: r.has_a_record for d, r in domain_to_result.items()}
+    )
+    result.loc[eligible_mask, "dns_error"] = eligible_domain_series.map(
+        {d: r.dns_error for d, r in domain_to_result.items()}
+    )
 
     for col in ("dns_check_performed", "domain_exists", "has_mx_record", "has_a_record"):
         result[col] = result[col].astype("boolean")

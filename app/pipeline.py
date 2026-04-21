@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import time
 from pathlib import Path
 
 from .config import AppConfig
@@ -122,6 +123,8 @@ class EmailCleaningPipeline:
         run_review = 0
         run_invalid = 0
 
+        t0_run = time.perf_counter()
+        self.logger.info("[TIMING] Pipeline START")
         self.logger.info("Starting email cleaner ingestion run.")
         self.logger.info("Run directory: %s", active_run_context.run_dir)
         self.logger.info("Input mode: %s", input_mode)
@@ -184,7 +187,9 @@ class EmailCleaningPipeline:
                 dupes_before = dedupe_index.duplicates_detected
                 replaced_before = dedupe_index.replaced_canonicals
 
+                t0_chunk = time.perf_counter()
                 payload = chunk_engine.run(payload, pipeline_context)
+                chunk_elapsed = time.perf_counter() - t0_chunk
                 normalized_chunk = payload.frame
                 first_chunk = False
 
@@ -232,6 +237,14 @@ class EmailCleaningPipeline:
                 total_rows += chunk_context.row_count
                 total_chunks += 1
 
+                self.logger.info(
+                    "[TIMING] chunk=%s rows=%s elapsed=%.3fs dns_new=%s dns_cached=%s",
+                    chunk_context.chunk_index,
+                    chunk_context.row_count,
+                    chunk_elapsed,
+                    new_queries,
+                    new_hits,
+                )
                 self.logger.info(
                     "Processed chunk %s from %s | rows=%s "
                     "valid_emails=%s invalid_emails=%s "
@@ -293,7 +306,11 @@ class EmailCleaningPipeline:
         )
 
         # Subphase 8 second pass: materialize final output
+        t0_mat = time.perf_counter()
+        self.logger.info("[TIMING] Materialize START")
         mat_metrics = self._materialize(staging, dedupe_index, active_run_context)
+        self.logger.info("[TIMING] Materialize DONE elapsed=%.3fs", time.perf_counter() - t0_mat)
+        self.logger.info("[TIMING] Pipeline DONE elapsed=%.3fs", time.perf_counter() - t0_run)
         staging.close()
 
         return PipelineResult(
@@ -336,6 +353,8 @@ class EmailCleaningPipeline:
 
         fieldnames: list[str] | None = None
 
+        t0_iter = time.perf_counter()
+        self.logger.info("[TIMING] Materialize iter_rows START (staging→CSV)")
         with (
             clean_path.open("w", newline="", encoding="utf-8") as clean_fh,
             review_path.open("w", newline="", encoding="utf-8") as review_fh,
@@ -490,15 +509,26 @@ class EmailCleaningPipeline:
                         if dup_reason and dup_reason not in group["duplicate_reasons"]:
                             group["duplicate_reasons"].append(dup_reason)
 
+        self.logger.info(
+            "[TIMING] Materialize iter_rows DONE elapsed=%.3fs rows=%s",
+            time.perf_counter() - t0_iter,
+            stats.total_rows,
+        )
+
+        t0_reports = time.perf_counter()
         generate_reports(stats, run_context.run_dir)
+        self.logger.info("[TIMING] Materialize reports DONE elapsed=%.3fs", time.perf_counter() - t0_reports)
 
         # Phase 2 - Client Output Layer: XLSX deliverables on top of the
         # technical CSVs. Pure add-on; failures here must not break the
         # pipeline run, so any unexpected error is logged and swallowed.
+        t0_xlsx = time.perf_counter()
+        self.logger.info("[TIMING] Materialize xlsx START")
         try:
             generate_client_outputs(run_context.run_dir, logger=self.logger)
         except Exception as exc:  # pragma: no cover - defensive guard
             self.logger.warning("Client output generation failed: %s", exc)
+        self.logger.info("[TIMING] Materialize xlsx DONE elapsed=%.3fs", time.perf_counter() - t0_xlsx)
 
         self.logger.info(
             "Materialization complete | total=%s canonical=%s duplicates=%s "

@@ -73,8 +73,10 @@ class StagingDB:
     def append_chunk(self, chunk: pd.DataFrame) -> None:
         """Persist all rows in *chunk* to staging."""
         rows: list[tuple] = []
-        for _, row in chunk.iterrows():
-            row_dict: dict[str, Any] = {col: _to_native(row[col]) for col in chunk.columns}
+        # to_dict("records") is ~10-50x faster than iterrows() because it
+        # avoids creating a pandas Series object per row.
+        for raw_row in chunk.to_dict("records"):
+            row_dict: dict[str, Any] = {col: _to_native(v) for col, v in raw_row.items()}
 
             rows.append((
                 str(row_dict.get("source_file") or ""),

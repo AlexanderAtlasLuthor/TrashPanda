@@ -8,6 +8,7 @@ other business concern. All domain logic belongs in Stage subclasses.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Iterable
 
 from .context import PipelineContext
@@ -50,10 +51,18 @@ class PipelineEngine:
         for stage in self._stages:
             stage_name = stage.name or stage.__class__.__name__
             self._logger.debug("Stage start: %s", stage_name)
+            t0 = time.perf_counter()
             try:
                 current = stage.run(current, context)
             except Exception:
                 self._logger.exception("Stage failed: %s", stage_name)
                 raise
-            self._logger.debug("Stage complete: %s", stage_name)
+            elapsed = time.perf_counter() - t0
+            self._logger.info(
+                "[TIMING] stage=%s chunk=%s rows=%s elapsed=%.3fs",
+                stage_name,
+                current.chunk_index,
+                len(current.frame),
+                elapsed,
+            )
         return current
