@@ -22,7 +22,7 @@ from .evaluators import (
     SyntaxSignalEvaluator,
     TypoCorrectionSignalEvaluator,
 )
-from .profile import ScoringProfile
+from .profile import ScoringProfile, build_default_profile
 from .signal import ScoringSignal
 
 __all__ = [
@@ -32,6 +32,7 @@ __all__ = [
     "SignalEvaluator",
     "ScoringProfile",
     "ScoringEngineV2",
+    "build_default_profile",
     # First-wave evaluators
     "SyntaxSignalEvaluator",
     "DomainPresenceSignalEvaluator",

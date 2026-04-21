@@ -282,22 +282,22 @@ class TestScoringEngineV2:
         out = engine.evaluate_row({"email": "x@y.com"})
         assert [s.reason_code for s in out.signals] == ["a"]
 
-    def test_skeleton_leaves_numeric_fields_as_placeholders(self):
-        """The skeleton engine deliberately does not compute any aggregate.
-        Guard against accidental early implementation."""
+    def test_empty_profile_produces_zero_denominator_zero_score(self):
+        """A profile with no ``max_positive_possible`` configured and no
+        contributors cannot normalize. The engine must degrade
+        gracefully (``final_score = 0.0``) rather than raise
+        ZeroDivisionError — downstream code must be able to trust the
+        numeric output regardless of profile completeness."""
         engine = ScoringEngineV2(
             evaluators=[_StaticEvaluator([_signal("a")])],
             profile=ScoringProfile(),
         )
         out = engine.evaluate_row({})
-        assert out.positive_total == 0.0
-        assert out.negative_total == 0.0
-        assert out.raw_score == 0.0
         assert out.final_score == 0.0
-        assert out.confidence == 0.0
         assert out.hard_stop is False
         assert out.hard_stop_reason is None
-        assert out.bucket == "unknown"
+        # A bucket is always assigned, never the placeholder "unknown".
+        assert out.bucket in {"high_confidence", "review", "invalid"}
 
     def test_engine_does_not_mutate_input_row(self):
         ev = _StaticEvaluator([_signal("a")])
@@ -353,19 +353,76 @@ class TestScoringProfile:
     def test_default_values(self):
         p = ScoringProfile()
         assert p.weights == {}
-        assert p.high_confidence_threshold == 70.0
-        assert p.review_threshold == 40.0
+        assert p.signal_weights == {}
+        assert p.confidence_weights == {}
+        # Thresholds are in [0.0, 1.0] because ``final_score`` is a
+        # normalized fraction. These are the *bare* ScoringProfile()
+        # defaults — the calibrated default lives in
+        # ``build_default_profile`` and may differ.
+        assert p.high_confidence_threshold == 0.75
+        assert p.review_threshold == 0.40
+        assert p.high_confidence_min_confidence == 0.80
         assert p.hard_stop_policy == []
         assert p.bucket_policy == {}
+        assert p.strong_evidence_reason_codes == set()
+        assert p.max_positive_contributors == set()
 
     def test_custom_values_round_trip(self):
         p = ScoringProfile(
-            weights={"mx_present": 50.0, "typo_corrected": -3.0},
-            high_confidence_threshold=80.0,
-            review_threshold=50.0,
+            signal_weights={"mx_present": 50.0, "typo_corrected": 3.0},
+            confidence_weights={"syntax_valid": 0.2},
+            high_confidence_threshold=0.8,
+            review_threshold=0.5,
             hard_stop_policy=["syntax_invalid", "nxdomain"],
+            strong_evidence_reason_codes={"mx_present"},
+            max_positive_contributors={"mx_present"},
             bucket_policy={"mode": "strict"},
         )
-        assert p.weights["mx_present"] == 50.0
+        assert p.signal_weights["mx_present"] == 50.0
         assert p.hard_stop_policy == ["syntax_invalid", "nxdomain"]
         assert p.bucket_policy["mode"] == "strict"
+        assert p.strong_evidence_reason_codes == {"mx_present"}
+
+    def test_legacy_weights_kwarg_populates_signal_weights(self):
+        """Old call sites pass ``weights=``; the profile merges that
+        into ``signal_weights`` so the engine sees a single source of
+        truth."""
+        p = ScoringProfile(weights={"mx_present": 50.0})
+        assert p.signal_weights["mx_present"] == 50.0
+
+    def test_effective_weight_falls_back_to_intrinsic(self):
+        p = ScoringProfile(signal_weights={"mx_present": 50.0})
+        # Configured — profile value wins.
+        assert p.effective_weight("mx_present", 99.0) == 50.0
+        # Not configured — intrinsic value is used.
+        assert p.effective_weight("unknown_code", 99.0) == 99.0
+
+    def test_effective_confidence_weight_defaults_to_one(self):
+        p = ScoringProfile(confidence_weights={"syntax_valid": 0.2})
+        assert p.effective_confidence_weight("syntax_valid") == 0.2
+        # Missing keys default to 1.0.
+        assert p.effective_confidence_weight("mx_present") == 1.0
+
+    def test_derived_max_positive_possible_sums_configured_weights(self):
+        p = ScoringProfile(
+            signal_weights={
+                "syntax_valid": 25.0,
+                "domain_present": 10.0,
+                "mx_present": 50.0,
+                "a_fallback": 20.0,
+                "domain_match": 5.0,
+            },
+            max_positive_contributors={
+                "syntax_valid",
+                "domain_present",
+                "mx_present",
+                "domain_match",
+            },
+        )
+        # a_fallback is NOT in contributors (mutually exclusive with
+        # mx_present); the theoretical maximum should exclude it.
+        assert p.derived_max_positive_possible() == 90.0
+
+    def test_derived_max_positive_possible_falls_back_to_literal(self):
+        p = ScoringProfile(max_positive_possible=120.0)
+        assert p.derived_max_positive_possible() == 120.0
