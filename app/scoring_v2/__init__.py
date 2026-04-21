@@ -14,6 +14,12 @@ with the pipeline. Pipeline integration is a future step.
 from __future__ import annotations
 
 from .breakdown import ScoreBreakdown
+from .comparison import (
+    COMPARISON_COLUMNS,
+    compare_scoring,
+    summarize_comparison,
+    write_comparison_report,
+)
 from .engine import ScoringEngineV2
 from .evaluator import SignalEvaluator
 from .evaluators import (
@@ -43,4 +49,9 @@ __all__ = [
     # Default engine composition
     "build_default_engine",
     "build_default_profile",
+    # Comparison utilities
+    "COMPARISON_COLUMNS",
+    "compare_scoring",
+    "summarize_comparison",
+    "write_comparison_report",
 ]

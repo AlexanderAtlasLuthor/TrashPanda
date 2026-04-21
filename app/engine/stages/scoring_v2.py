@@ -23,7 +23,12 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from ...scoring_v2 import ScoringEngineV2, build_default_engine
+from ...scoring_v2 import (
+    COMPARISON_COLUMNS,
+    ScoringEngineV2,
+    build_default_engine,
+    compare_scoring,
+)
 from ..context import PipelineContext
 from ..payload import ChunkPayload
 from ..stage import Stage
@@ -127,6 +132,37 @@ class ScoringV2Stage(Stage):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+class ScoringComparisonStage(Stage):
+    """Append V1-vs-V2 comparison columns to the frame.
+
+    Must run after both ``ScoringStage`` (V1) and ``ScoringV2Stage``
+    (V2). The stage is a thin wrapper around
+    :func:`app.scoring_v2.compare_scoring` — it does not alter any
+    existing V1 or V2 column, does not influence any downstream
+    decision, and does not emit a separate file. Columns it appends
+    are observational and are carried through to staging alongside
+    everything else.
+    """
+
+    name = "scoring_comparison"
+    requires = (
+        # V1
+        "score",
+        "preliminary_bucket",
+        "hard_fail",
+        # V2
+        "score_v2",
+        "bucket_v2",
+        "hard_stop_v2",
+        "confidence_v2",
+        "reason_codes_v2",
+    )
+    produces = COMPARISON_COLUMNS
+
+    def run(self, payload: ChunkPayload, context: PipelineContext) -> ChunkPayload:
+        return payload.with_frame(compare_scoring(payload.frame))
 
 
 def _columns_from_breakdowns(
