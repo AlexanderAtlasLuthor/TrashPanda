@@ -139,6 +139,8 @@ class DomainRecord:
     provider_type: str | None = None
     reputation_score: float | None = None
     counters: dict[str, int] = field(default_factory=dict)
+    catch_all_classification: str | None = None
+    catch_all_confidence: float | None = None
 
 
 class DomainCacheStore:
@@ -177,6 +179,8 @@ class DomainCacheStore:
                 provider_type=value.get("provider_type"),
                 reputation_score=value.get("reputation_score"),
                 counters=dict(value.get("counters") or {}),
+                catch_all_classification=value.get("catch_all_classification"),
+                catch_all_confidence=value.get("catch_all_confidence"),
             )
         return None
 
@@ -215,6 +219,12 @@ class DomainCacheStore:
             if reputation_score is not None
             else (existing.reputation_score if existing else None),
             counters=counters,
+            catch_all_classification=(
+                existing.catch_all_classification if existing else None
+            ),
+            catch_all_confidence=(
+                existing.catch_all_confidence if existing else None
+            ),
         )
         self.set(domain, record, ttl_seconds=ttl_seconds)
         return record

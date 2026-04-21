@@ -89,6 +89,16 @@ class ValidationResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     decision_trace: dict[str, Any] = field(default_factory=dict)
     execution_decision: dict[str, Any] | None = None
+    smtp_status: str = "not_attempted"
+    smtp_code: int | None = None
+    smtp_latency: float | None = None
+    smtp_error_type: str | None = None
+    catch_all_confidence: float | None = None
+    retry_attempted: bool = False
+    retry_outcome: str = "none"
+    deliverability_confidence: float = 0.0
+    action_recommendation: str = "review"
+    validation_breakdown: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable dict snapshot of this result.
@@ -120,6 +130,24 @@ class ValidationResult:
                 if self.execution_decision is not None
                 else None
             ),
+            "smtp_status": self.smtp_status,
+            "smtp_code": self.smtp_code,
+            "smtp_latency": (
+                float(self.smtp_latency)
+                if self.smtp_latency is not None
+                else None
+            ),
+            "smtp_error_type": self.smtp_error_type,
+            "catch_all_confidence": (
+                float(self.catch_all_confidence)
+                if self.catch_all_confidence is not None
+                else None
+            ),
+            "retry_attempted": bool(self.retry_attempted),
+            "retry_outcome": self.retry_outcome,
+            "deliverability_confidence": float(self.deliverability_confidence),
+            "action_recommendation": self.action_recommendation,
+            "validation_breakdown": dict(self.validation_breakdown),
         }
 
 

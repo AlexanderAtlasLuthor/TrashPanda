@@ -1,410 +1,180 @@
 # TrashPanda
 
-Pipeline local para limpieza masiva de listas de emails. Procesa CSV/XLSX por chunks, normaliza, valida, corrige typos, verifica DNS/MX, deduplica, puntua y exporta por buckets de confianza — sin validacion SMTP, sin costos por registro.
+TrashPanda is a data cleaning and email validation system designed to reduce dependency on expensive per-record validation tools. It combines structural data cleaning, deterministic scoring, validation signals, and probabilistic deliverability modeling into one explainable processing engine.
+
+The project is built around a staged pipeline and a Validation Engine V2 that treats email quality as a decision problem, not a binary lookup. Instead of simply returning `valid` or `invalid`, TrashPanda produces a probability, confidence level, validation status, and action recommendation.
 
 ---
 
-## Estado de implementacion
+## Current Capabilities
 
-### Subfase 2: Discovery y normalizacion base
-- Acepta `--input-dir` o `--input-file`
-- Descubre archivos `.csv` y `.xlsx`; ignora extensiones no soportadas con warning
-- Convierte `XLSX` a `CSV` temporal dentro de `temp/`
-- Lee `CSV` por chunks con `pandas`
-- Normaliza headers a nombres canonicos
-- Valida presencia de columna minima `email`
-- Normaliza valores string de forma conservadora
-- Agrega metadata tecnica por fila
+### Pipeline Engine
 
-### Subfase 3: Validacion sintactica de email
-- Valida sintaxis basica offline y deterministica
-- Detecta: ausencia/multiples `@`, local/domain parts vacios, espacios, domain sin punto, puntos consecutivos, local part comenzando/terminando con punto, domain labels con guion inicial/final, caracteres invalidos
-- Columnas agregadas: `syntax_valid`, `syntax_reason`, `has_single_at`, `local_part_present`, `domain_part_present`, `domain_has_dot`, `contains_spaces`
+TrashPanda includes a stage-based pipeline for processing contact datasets in a deterministic and auditable way.
 
-### Subfase 4: Extraccion de dominio y typo correction
-- Extrae `local_part_from_email` y `domain_from_email` de emails validos
-- Aplica typo correction conservadora con mapa cerrado (`configs/typo_map.csv`); sin fuzzy matching
-- Columnas agregadas: `typo_corrected`, `typo_original_domain`, `corrected_domain`, `domain_matches_input_column`
+- Modular stages for cleaning, normalization, validation, scoring, deduplication, and export
+- Deterministic processing suitable for repeatable runs and test fixtures
+- Chunk-friendly design for large CSV/XLSX inputs
+- Clear separation between raw input fields and derived technical fields
+- Structured reporting and test coverage across major stages
 
-### Subfase 5: Validacion DNS/MX del dominio corregido
-- Consulta MX del `corrected_domain`; fallback a A/AAAA configurable
-- Cache en memoria por `corrected_domain`, compartido entre todos los chunks y archivos del run
-- Resolucion paralela de dominios nuevos via `ThreadPoolExecutor` (configurable con `max_workers`)
-- Solo filas con `syntax_valid=True` y `corrected_domain` no nulo son consultadas; el resto recibe `pd.NA`
-- Manejo explicito de: NXDOMAIN, NoAnswer, Timeout, NoNameservers, error generico
-- Columnas agregadas: `dns_check_performed`, `domain_exists`, `has_mx_record`, `has_a_record`, `dns_error`
-- Semantica de `domain_exists`: `True` solo si hay MX o A/AAAA util; NXDOMAIN y timeout producen `False`
-- Metricas por chunk: `dns_new_queries`, `dns_cache_hits`, `mx_found`, `a_fallback`, `dns_failures`
-- Metricas globales por run: `dns_total_queries`, `dns_total_cache_hits`
-- **Sin SMTP. Sin verificacion de inbox individual. Sin scoring. Sin decisiones finales.**
+### Scoring System
 
-### Subfase 6: Scoring y asignacion de bucket preliminar
-- Consume senales de subfases 3, 4 y 5; no genera nuevas consultas de red
-- Detecta **hard fails** (fuerzan score=0, bucket=invalid): sintaxis invalida, dominio ausente, NXDOMAIN confirmado
-- Calcula **score 0-100** con pesos fijos: `syntax_valid` +25, MX presente +50, solo A/AAAA +20; penalizaciones: timeout/no_nameservers/error -15, no_mx/no_mx_no_a -10, typo corrected -3, domain mismatch -5
-- Produce **score_reasons** como string separado por `|` en orden estable (sintaxis → mx/a → dns → typo → mismatch)
-- Asigna **preliminary_bucket**: `high_confidence` (score≥70), `review` (score≥40), `invalid` (resto); umbrales configurables
-- Columnas agregadas: `hard_fail`, `score`, `score_reasons`, `preliminary_bucket`
-- Metricas por chunk: `hard_fails`, `high_confidence`, `review`, `invalid`, `avg_score`
-- Metricas globales por run: `scoring_hard_fails`, `high_confidence`, `review`, `invalid`
-- **Sin SMTP. Sin deduplicacion. Sin export. Las decisiones finales se difieren a Subfase 7 (dedupe).**
+TrashPanda includes both the original production baseline scoring system and a newer explainable scoring layer.
 
-### Subfase 7: Deduplicacion global por email
-- Clave de dedupe: `email_normalized` (columna explicita — email ya en minusculas y sin espacios desde Subfase 2)
-- Seleccion de fila canonica por jerarquía determinística de 4 reglas:
-  1. `hard_fail=False` gana contra `hard_fail=True`
-  2. Mayor `score` gana
-  3. Mayor `completeness_score` (columnas de negocio no nulas) gana
-  4. Primera ocurrencia en el stream (`global_ordinal` menor) gana — desempate estable
-- **Completitud** cuenta solo columnas de negocio: `email`, `domain`, `fname`, `lname`, `state`, `address`, `county`, `city`, `zip`, `website`, `ip`; ignora columnas tecnicas, de scoring y de DNS
-- `DedupeIndex` en memoria — global por corrida, sobrevive a todos los chunks y archivos
-- Cuando un challenger supera al canonico actual: el challenger toma el lugar y `replaced_canonicals` se incrementa; el canonico desplazado queda pendiente de correccion en Subfase 8
-- Columnas agregadas: `email_normalized`, `completeness_score`, `is_canonical`, `duplicate_flag`, `duplicate_reason`
-- `duplicate_reason` tokens: `duplicate_hard_fail_loser`, `duplicate_lower_score`, `duplicate_lower_completeness`, `duplicate_later_occurrence_tiebreak`
-- Si una fila es canonica: `duplicate_flag=False`, `is_canonical=True`, `duplicate_reason=None`
-- Si una fila perdio: `duplicate_flag=True`, `is_canonical=False`, `duplicate_reason` poblada
-- Metricas por chunk: `dedupe_new_canonicals`, `dedupe_duplicates`, `dedupe_replaced`, `dedupe_index_size`
-- Metricas globales por run: `dedupe_total_canonicals`, `dedupe_total_duplicates`, `dedupe_total_replaced`, `dedupe_index_size`
-- `is_canonical` es **provisional**: si una fila canonica es desplazada por un chunk posterior, su flag en el chunk original es stale; Subfase 8 aplica el estado final del indice antes de escribir outputs
-- La deduplicacion ocurre **antes** de la materializacion final — los buckets de export se asignan en Subfase 8
-- **Sin export. Sin SQLite. Sin reporting final. Sin recalculo de score. Sin decisiones definitivas.**
+- **Scoring V1**: production baseline used for deterministic quality buckets
+- **Scoring V2**: normalized, explainable, calibrated scoring model
+- V1/V2 comparison layer for evaluating score drift, calibration quality, and readiness to replace or run alongside V1
+- Reason-code based explanations for why records receive their scores
 
-### Pendiente (futuras subfases)
-- Deteccion de dominios desechables
-- Deteccion de patrones sospechosos
-- Materializacion final: correccion retroactiva de is_canonical con estado final del DedupeIndex
-- Export por buckets: `clean_high_confidence.csv`, `review_medium_confidence.csv`, `removed_invalid.csv`
-- Reportes finales JSON/CSV con metricas de calidad y dedupe
+### Validation Engine V2
+
+Validation Engine V2 is the newer validation architecture. It is modular, explainable, and designed to collect controlled validation signals before producing a probabilistic deliverability decision.
+
+#### Domain Intelligence
+
+- Provider detection
+- Provider reputation scoring
+- Suspicious domain pattern detection
+- Exclusion rules
+- In-memory domain and pattern caching
+- Passive intelligence collection before active network behavior
+
+#### Control Plane
+
+- Structured telemetry events
+- Per-domain and global rate limiting
+- Network execution policy controls
+- Decision traces for full explainability
+- Safe behavior when telemetry or optional services fail
+
+#### SMTP Controlled Probing
+
+- Safe single-attempt SMTP probe
+- Stops at the SMTP `RCPT TO` response
+- Does not send email
+- Does not perform aggressive mailbox validation
+- Runs only when execution policy, rate limits, candidacy, exclusions, and SMTP policy allow it
+
+#### Catch-all + Retry Logic
+
+- Conservative catch-all / accept-all classification
+- Uses existing SMTP signals, provider behavior, and historical cache signals
+- No random mailbox brute forcing
+- Bounded retry strategy for timeout, connection error, and 4xx temporary failures
+- Maximum one retry per request
+
+#### Probability Layer
+
+- `deliverability_probability` from 0.0 to 1.0
+- Non-binary `validation_status`
+- Product-facing `action_recommendation`
+- Weighted signal aggregation
+- Confidence scoring
+- Deterministic explanation with positive and negative contributing factors
 
 ---
 
-## Objetivo del proyecto
+## Example Output
 
-Limpiar bases masivas de contactos (aprox. 2.86M registros, ~25 listas de ~114k filas) sin pagar validacion externa por registro. El sistema reduce volumen basura, normaliza la data, detecta duplicados, corrige typos frecuentes, descarta dominios inexistentes, segmenta por riesgo y produce archivos de entrega profesional.
-
-**Lo que NO promete este sistema:**
-- Que un inbox individual existe
-- Que un email no rebotara
-- Que el email pertenece hoy a la misma persona
-- Que el correo no sea catch-all
-
-**Lo que SI entrega:**
-- Base mucho mas limpia y normalizada
-- Segmentacion clara: mantener / revisar / eliminar
-- Transparencia total de reglas aplicadas
-- Reproducibilidad completa
-- Velocidad para millones de registros
+- `deliverability_probability`: `0.78`
+- `validation_status`: `likely_valid`
+- `action_recommendation`: `send_with_monitoring`
 
 ---
 
-## Arquitectura del proyecto
+## What This System Is
 
-```
-TrashPanda/
-  app/
-    __init__.py
-    config.py          # Carga configuracion desde YAML / env vars
-    logger.py          # Logging estructurado
-    models.py          # Tipos y estructuras de datos internas
-    pipeline.py        # Orquesta el proceso completo
-    rules.py           # Reglas de negocio combinadas
-    normalizers.py     # Normalizacion de strings, columnas y emails
-    validators.py      # Validacion sintactica y reglas duras
-    dns_utils.py       # Resolucion MX/A con cache y concurrencia limitada
-    dedupe.py          # Deduplicacion exacta y futura logica de priorizacion
-    scoring.py         # Score de calidad y asignacion de bucket
-    reporting.py       # Construccion de resumenes y reportes finales
-    io_utils.py        # Lectura/escritura CSV/XLSX, manejo de chunks
-    cli.py             # Interfaz de linea de comandos
-  configs/
-    default.yaml              # Configuracion principal
-    disposable_domains.txt    # Lista de dominios desechables conocidos
-    typo_map.csv              # Mapa de correcciones de dominios
-  input/
-  output/
-  logs/
-  tests/
-    test_normalizers.py
-    test_validators.py
-    test_dns_utils.py
-    test_dedupe.py
-    test_scoring.py
-    test_pipeline_small.py
-  requirements.txt
-  README.md
-```
+TrashPanda is not just an email validator. It is a probabilistic decision engine for contact-data quality.
+
+It combines structural quality, domain intelligence, provider reputation, controlled SMTP signals, catch-all assessment, retry outcomes, and calibrated probability modeling into one explainable output. The goal is to support better business decisions: send, monitor, review, verify, or block.
 
 ---
 
-## Archivos de salida
+## What This System Is Not
 
-| Archivo | Descripcion |
-|---|---|
-| `clean_high_confidence.csv` | Registros con alta confianza estructural y de dominio |
-| `review_medium_confidence.csv` | Registros que no deben eliminarse automaticamente pero requieren revision |
-| `removed_invalid.csv` | Registros descartados por reglas duras |
-| `processing_report.json` | Resumen tecnico con metricas por archivo y globales |
-| `processing_report.csv` | Version tabular del resumen |
-| `domain_summary.csv` | Resumen por dominio: volumen, DNS, MX, correcciones, aprobados |
-| `typo_corrections.csv` | Registro auditado de correcciones automaticas aplicadas |
-| `duplicate_summary.csv` | Resumen de duplicados eliminados |
-| `logs/` | Logs detallados por ejecucion |
+TrashPanda is intentionally honest about its limits.
+
+- It does not guarantee that an inbox exists.
+- It does not guarantee that an address will not bounce.
+- It does not perform aggressive SMTP probing.
+- It does not behave like a large-scale commercial sender yet.
+- It does not promise perfect deliverability.
+- It does not replace real-world calibration against bounce, engagement, and delivery outcomes.
 
 ---
 
-## Filosofia de clasificacion
+## Roadmap
 
-Cada fila termina en uno de tres buckets:
+### Phase A - Scoring V2
 
-**High confidence** — conservar
-- Email no vacio, sintaxis valida, dominio valido con DNS resolvible, preferiblemente con MX, no duplicado, no temporal, sin patrones basura
+- Finalize calibration against representative datasets
+- Decide whether V2 replaces V1 or runs in hybrid mode
+- Continue evaluating V1/V2 disagreement patterns
+- Improve threshold tuning for operational buckets
 
-**Medium confidence / review** — no eliminar automaticamente
-- Dominio existe pero sin MX claro (solo A record), estructura rara pero potencialmente utilizable, campos de nombre vacios con email valido, correccion automatica aplicada con ambiguedad moderada
+### Phase B - Validation Engine V2
 
-**Invalid / remove** — descartar
-- Vacio, sin `@`, multiples `@`, dominio inexistente, TLD imposible, patrones basura extremos, duplicado descartado, dominio temporal
+#### B1. Domain Intelligence
 
----
+- Persistent cache improvements
+- Provider reputation expansion
+- More complete exclusion lists
+- Pattern heuristic refinement
+- Better historical domain behavior tracking
 
-## Scoring de calidad
+#### B2. SMTP Controlled Probing
 
-Cada registro recibe un puntaje numerico que determina su bucket:
+- Sampling strategy improvements
+- Smarter rate limiting
+- Intelligent retries, already partially implemented
+- Expanded telemetry
+- IP hygiene and clean probing pool, not implemented yet
 
-| Criterio | Puntos |
-|---|---|
-| Sintaxis valida | +25 |
-| Dominio resolvible | +20 |
-| MX presente | +25 |
-| Typo corregido (alta confianza) | +5 |
-| No duplicado | +10 |
-| No dominio temporal | +10 |
-| Nombre presente | +3 |
-| Apellido presente | +2 |
-| Correccion dudosa | -10 |
-| Mismatch domain columna vs email | -5 |
-| Sin MX pero con A record | -10 |
-| Timeout DNS | -15 |
-| Patron sospechoso | -25 |
+#### B3. Catch-all Detection
 
-**Umbrales configurables:**
-- `70+` → high confidence
-- `40–69` → review
-- `<40` → invalid
+- Better classification accuracy
+- Stronger domain-level heuristics
+- Improved use of historical signals
+- Probabilistic modeling improvements
 
----
+#### B4. Deliverability Probability Layer
 
-## Orden del pipeline
-
-```
-Etapa 1:  Carga — leer archivo, validar columnas obligatorias
-Etapa 2:  Limpieza basica — trim, lowercase email/domain, normalizar vacios
-Etapa 3:  Derivacion — extraer domain_from_email, comparar con columna domain
-Etapa 4:  Validacion sintactica — marcar syntax_valid
-Etapa 5:  Correccion de typos — recomputar domain si hubo cambio
-Etapa 6:  Dominio unico — construir catalogo de dominios para DNS
-Etapa 7:  DNS/MX — resolver dominios unicos, unir resultados al dataset
-Etapa 8:  Reglas sospechosas — disposable, patrones basura
-Etapa 9:  Scoring — score + reasons por fila
-Etapa 10: Dedupe — deduplicar globalmente por email_normalized
-Etapa 11: Decision final — high confidence / review / invalid
-Etapa 12: Export — escribir por bucket
-Etapa 13: Reporte — estadisticas por archivo y globales
-```
+- Calibration with real outcome data
+- Weight tuning
+- Provider-specific adjustments
+- Confidence model improvements
+- Better mapping between probability, product action, and business risk
 
 ---
 
-## Columnas derivadas internas
+## Future
 
-Cada fila procesada incluye:
+These are advanced capabilities and are not yet implemented.
 
-```
-email_normalized
-domain_from_email
-syntax_valid
-typo_corrected
-typo_original_domain
-domain_matches_input_column
-dns_status
-mx_present
-a_present
-disposable_domain
-suspicious_pattern
-duplicate_flag
-score
-decision
-decision_reasons
-```
-
-Ejemplo de trazabilidad por fila:
-```
-decision = invalid
-decision_reasons = missing_at_symbol|domain_nxdomain
-score = 5
-```
+- Large-scale SMTP handshake systems
+- Infrastructure-level sender behavior simulation
+- Deep provider-specific tuning
+- High-volume validation systems
+- Enterprise-grade deliverability modeling
+- Long-term reputation-aware validation infrastructure
 
 ---
 
-## Instalacion
+## Design Principles
 
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## Uso de la CLI
-
-```bash
-python -m app.cli \
-  --input-dir ./input \
-  --output-dir ./output/run_001 \
-  --chunk-size 50000 \
-  --workers 20 \
-  --config ./configs/default.yaml
-```
-
-**Opciones disponibles:**
-
-| Flag | Descripcion |
-|---|---|
-| `--input-file` | Archivo individual a procesar |
-| `--input-dir` | Directorio con multiples archivos |
-| `--output-dir` | Carpeta de salida para esta corrida |
-| `--chunk-size` | Filas por chunk (default: 50000) |
-| `--workers` | Concurrencia para DNS (default: 20) |
-| `--config` | Ruta al archivo YAML de configuracion |
-| `--disable-dns` | Omitir lookups DNS/MX |
-| `--dry-run` | Ejecutar sin escribir outputs |
-| `--sample-size` | Procesar solo N filas de muestra |
-| `--resume` | Continuar corrida previa interrumpida |
+- Safety over aggressiveness
+- Explainability first
+- Deterministic behavior
+- Modular architecture
+- Production-minded constraints
+- Clear separation between passive signals, controlled network behavior, and final decisions
+- Conservative defaults for anything that could affect infrastructure reputation
 
 ---
 
-## Configuracion (default.yaml)
+## Conclusion
 
-```yaml
-chunk_size: 50000
-max_workers: 20
-high_confidence_threshold: 70
-review_threshold: 40
-fallback_to_a_record: true
-invalid_if_disposable: true
-dns_timeout_seconds: 4
-retry_dns_times: 1
-export_review_bucket: true
-keep_original_columns: true
-```
+TrashPanda is a functional foundation for a full data cleaning and email validation platform. The pipeline, scoring systems, Validation Engine V2, controlled SMTP sampler, catch-all logic, retry strategy, and probability layer are in place.
 
----
-
-## Decisiones tecnicas clave
-
-**Sin validacion SMTP de buzon individual**
-No se construye sondeo SMTP en V1. Razones: alto riesgo de bloqueo, baja confiabilidad en escala, muchos servidores aceptan y rebotan despues, riesgo de reputacion de IP, complejidad innecesaria.
-
-**Resolver por dominio unico, no por fila**
-Con 2.8M filas y ~200k dominios unicos, el costo DNS baja dramaticamente. Nunca se resuelve el mismo dominio dos veces en una corrida.
-
-**Caching obligatorio**
-Resultado de resolucion almacenado por dominio durante la corrida, opcionalmente persistido entre corridas.
-
-**Typo correction conservadora**
-Solo dominios de error extremadamente conocidos y de alta confianza. Sin fuzzy matching, sin Levenshtein, sin heurísticas abiertas. Mapa cerrado y explicito en `configs/typo_map.csv`.
-
-**Deduplicacion con prioridad por completitud**
-Cuando un email aparece mas de una vez, se conserva la fila con mayor cantidad de campos no vacios. Si empatan, se conserva la primera ocurrencia.
-
----
-
-## Metricas de reporte
-
-Por archivo y globalmente:
-
-```
-total_rows
-valid_syntax_count / invalid_syntax_count
-typo_corrected_count
-unique_domains
-domains_with_mx / domains_without_mx
-nxdomain_count
-disposable_count
-duplicate_count
-high_confidence_count / review_count / invalid_count
-```
-
-Adicionalmente: top 100 dominios por volumen, top dominios invalidos, top dominios corregidos, tabla agregada de `decision_reasons`.
-
----
-
-## Hoja de ruta estrategica
-
-### V1 (actual) — Pre-validator fuerte y gratuito
-- Ingest CSV/XLSX
-- Normalizacion y validacion sintactica
-- Typo correction
-- MX/A lookup con cache
-- Deteccion de dominios desechables
-- Dedupe exacto por email normalizado
-- Scoring y export por buckets
-- Reportes completos
-
-### V1.1 — Mejoras de calidad
-- Cache persistente en SQLite o JSONL entre corridas
-- Mejor scoring con mas heuristicas
-- Mejores patrones sospechosos
-- Resumen HTML o dashboard simple
-
-### V2 — Verificacion avanzada
-- Modulo SMTP experimental para muestras pequenas
-- Pool de IPs limpias con rate limiting serio
-- Deteccion de catch-all / accept-all
-- Clasificacion probabilistica (no binaria)
-- Retries inteligentes y listas de exclusion
-- Telemetria y sistema de reputacion por proveedor
-- UI basica
-
----
-
-## Contexto y alcance
-
-Este sistema es una **V1 de reduccion fuerte de basura**, no una fuente de verdad absoluta sobre entregabilidad. Su valor esta en bajar dramaticamente el volumen malo sin costo por validacion externa, dejando al cliente con una base mucho mas sana y una capa de transparencia profesional.
-
-El sistema procesa el formato de lista estandar:
-
-```
-id, email, domain, fname, lname, state, address, county, city, zip, website, ip
-```
-
-Volumen objetivo: ~25 listas x ~114k filas = ~2.86M registros en total.
-
----
-
-## Tests
-
-```bash
-pytest tests/
-```
-
-Cobertura incluida:
-- Normalizacion de email
-- Extraccion de dominio
-- Validacion sintactica
-- Typo correction
-- Scoring
-- Reglas de descarte
-- Pipeline con mini-CSV de ejemplo
-- Dedupe correcto
-- Export por buckets
-- Reportes con conteos esperados
-
----
-
-## Principios de implementacion
-
-- Procesar por chunks; no cargar archivos completos en memoria si se puede evitar
-- Resolver DNS por dominio unico y cachear resultados
-- Registrar `decision_reasons` detallados por cada fila
-- Mantener columnas originales en outputs; agregar columnas derivadas sin destruirlas
-- Manejar fallos parciales (fila corrupta, encoding raro, timeout DNS) sin abortar la corrida
-- No enviar emails, no hacer conexiones SMTP a buzones, no modificar archivos originales
+The next step is calibration against real-world outcomes so the probability layer can be tuned for production decision-making at scale.

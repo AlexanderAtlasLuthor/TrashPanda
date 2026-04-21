@@ -627,6 +627,19 @@ class TestEngineIntegration:
             # Subphase 3 control-plane surface.
             "decision_trace",
             "execution_decision",
+            # Subphase 4 controlled SMTP sampler surface.
+            "smtp_status",
+            "smtp_code",
+            "smtp_latency",
+            "smtp_error_type",
+            # Subphase 5 catch-all / retry surface.
+            "catch_all_confidence",
+            "retry_attempted",
+            "retry_outcome",
+            # Subphase 6 probability surface.
+            "deliverability_confidence",
+            "action_recommendation",
+            "validation_breakdown",
         }
         engine = _wire_full_passive_engine(
             policy=ValidationPolicy(excluded_domains={"bad.com"}),

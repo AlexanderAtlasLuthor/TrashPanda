@@ -30,6 +30,12 @@ EVENT_EXCLUDED = "excluded"
 EVENT_CANDIDATE_SKIPPED = "candidate_skipped"
 EVENT_VALIDATION_ALLOWED = "validation_allowed"
 EVENT_VALIDATION_BLOCKED_BY_POLICY = "validation_blocked_by_policy"
+EVENT_SMTP_PROBE_STARTED = "smtp_probe_started"
+EVENT_SMTP_PROBE_COMPLETED = "smtp_probe_completed"
+EVENT_SMTP_PROBE_FAILED = "smtp_probe_failed"
+EVENT_SMTP_RETRY_ATTEMPTED = "smtp_retry_attempted"
+EVENT_SMTP_RETRY_SKIPPED = "smtp_retry_skipped"
+EVENT_CATCH_ALL_CLASSIFIED = "catch_all_classified"
 
 
 @dataclass(frozen=True)
@@ -139,4 +145,10 @@ __all__ = [
     "EVENT_CANDIDATE_SKIPPED",
     "EVENT_VALIDATION_ALLOWED",
     "EVENT_VALIDATION_BLOCKED_BY_POLICY",
+    "EVENT_SMTP_PROBE_STARTED",
+    "EVENT_SMTP_PROBE_COMPLETED",
+    "EVENT_SMTP_PROBE_FAILED",
+    "EVENT_SMTP_RETRY_ATTEMPTED",
+    "EVENT_SMTP_RETRY_SKIPPED",
+    "EVENT_CATCH_ALL_CLASSIFIED",
 ]

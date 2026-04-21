@@ -33,9 +33,13 @@ from typing import Any
 STAGE_DOMAIN_INTELLIGENCE = "domain_intelligence"
 STAGE_PROVIDER_REPUTATION = "provider_reputation"
 STAGE_EXCLUSION = "exclusion"
-STAGE_CANDIDATE = "candidate_selector"
+STAGE_CANDIDATE = "candidate_selection"
 STAGE_RATE_LIMIT = "rate_limit"
 STAGE_EXECUTION_POLICY = "execution_policy"
+STAGE_SMTP_PROBE = "smtp_probe"
+STAGE_SMTP_RETRY = "smtp_retry"
+STAGE_CATCH_ALL = "catch_all"
+STAGE_PROBABILITY = "probability"
 
 
 @dataclass
@@ -125,4 +129,8 @@ __all__ = [
     "STAGE_CANDIDATE",
     "STAGE_RATE_LIMIT",
     "STAGE_EXECUTION_POLICY",
+    "STAGE_SMTP_PROBE",
+    "STAGE_SMTP_RETRY",
+    "STAGE_CATCH_ALL",
+    "STAGE_PROBABILITY",
 ]

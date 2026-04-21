@@ -66,7 +66,11 @@ from .control.decision_trace import (
     STAGE_EXCLUSION,
     STAGE_EXECUTION_POLICY,
     STAGE_PROVIDER_REPUTATION,
+    STAGE_PROBABILITY,
     STAGE_RATE_LIMIT,
+    STAGE_CATCH_ALL,
+    STAGE_SMTP_PROBE,
+    STAGE_SMTP_RETRY,
 )
 from .control.execution_policy import (
     EXECUTION_REASON_ALLOWED,
@@ -81,6 +85,12 @@ from .control.telemetry import (
     EVENT_VALIDATION_ALLOWED,
     EVENT_VALIDATION_BLOCKED_BY_POLICY,
     EVENT_VALIDATION_STARTED,
+    EVENT_SMTP_PROBE_COMPLETED,
+    EVENT_SMTP_PROBE_FAILED,
+    EVENT_SMTP_PROBE_STARTED,
+    EVENT_SMTP_RETRY_ATTEMPTED,
+    EVENT_SMTP_RETRY_SKIPPED,
+    EVENT_CATCH_ALL_CLASSIFIED,
     TelemetryEvent,
     TelemetrySink as ControlTelemetrySink,
 )
@@ -98,6 +108,21 @@ from .policy import ValidationPolicy
 from .request import ValidationRequest
 from .result import ValidationResult
 from .types import ReasonCode, SmtpProbeStatus, ValidationStatus
+from .network.smtp_classifier import (
+    SMTP_STATUS_NOT_ATTEMPTED,
+    SMTP_STATUS_UNCERTAIN,
+    SMTPResultClassifier,
+)
+from .network.smtp_result import SMTPProbeResult
+from .network.catch_all import CatchAllAssessment
+from .network.retry import RetryDecision
+from .probability import (
+    DeliverabilityAggregator,
+    DeliverabilityResult,
+    DeliverabilitySignal,
+    ExplanationBuilder,
+    ValidationDecisionPolicy,
+)
 
 
 # Reason-code tokens emitted by the engine in addition to the
@@ -106,6 +131,16 @@ from .types import ReasonCode, SmtpProbeStatus, ValidationStatus
 # have no business emitting them directly.
 REASON_EXCLUDED_DOMAIN = "excluded_domain"
 REASON_LOW_PRIORITY_CANDIDATE = "low_priority_candidate"
+SMTP_SKIP_EXCLUDED = "excluded"
+SMTP_SKIP_NOT_CANDIDATE = "not_candidate"
+SMTP_SKIP_NETWORK_BLOCKED = "network_blocked"
+SMTP_SKIP_DISABLED_BY_POLICY = "smtp_disabled_by_policy"
+SMTP_SKIP_CLIENT_MISSING = "smtp_client_missing"
+SMTP_REASON_ALLOWED_BY_POLICY = "allowed_by_policy"
+RETRY_SKIP_NO_RESULT = "smtp_not_attempted"
+RETRY_SKIP_STRATEGY_MISSING = "retry_strategy_missing"
+CATCH_ALL_SKIP_NO_RESULT = "smtp_not_attempted"
+CATCH_ALL_SKIP_ANALYZER_MISSING = "catch_all_analyzer_missing"
 
 
 class ValidationEngineV2:
@@ -261,6 +296,12 @@ class ValidationEngineV2:
             },
         )
         if exclusion_reason is not None:
+            self._add_smtp_skipped_step(
+                trace,
+                reason=SMTP_SKIP_EXCLUDED,
+                request=request,
+                extra_inputs={"exclusion_reason": exclusion_reason},
+            )
             self._emit_event(
                 EVENT_EXCLUDED,
                 domain=request.domain,
@@ -288,6 +329,12 @@ class ValidationEngineV2:
             },
         )
         if not candidate_accepted:
+            self._add_smtp_skipped_step(
+                trace,
+                reason=SMTP_SKIP_NOT_CANDIDATE,
+                request=request,
+                extra_inputs={"candidate_reason": candidate_reason},
+            )
             self._emit_event(
                 EVENT_CANDIDATE_SKIPPED,
                 domain=request.domain,
@@ -356,33 +403,132 @@ class ValidationEngineV2:
                 metadata={"reason": execution_reason},
             )
 
+        smtp_result, smtp_classification, smtp_skip_reason = self._maybe_run_smtp_probe(
+            request=request,
+            trace=trace,
+            execution_allowed=execution_allowed,
+            execution_reason=execution_reason,
+        )
+        retry_result, retry_attempted, retry_outcome = self._maybe_retry_smtp_probe(
+            request=request,
+            trace=trace,
+            smtp_result=smtp_result,
+        )
+        if retry_result is not None:
+            smtp_result = retry_result
+            smtp_classification = SMTPResultClassifier().classify(smtp_result)
+
+        catch_all = self._maybe_assess_catch_all(
+            request=request,
+            trace=trace,
+            smtp_result=smtp_result,
+            smtp_classification=smtp_classification,
+        )
+        signals = _build_deliverability_signals(
+            request=request,
+            intel=intel,
+            reputation=reputation,
+            smtp_status=(
+                str(smtp_classification["smtp_status"])
+                if smtp_classification is not None
+                else SMTP_STATUS_NOT_ATTEMPTED
+            ),
+            catch_all=catch_all,
+        )
+        probability_result = DeliverabilityAggregator().compute(signals)
+        decision = ValidationDecisionPolicy().decide(
+            probability_result.probability
+        )
+        explanation = ExplanationBuilder().build(
+            probability_result.signals,
+            probability_result,
+            decision,
+        )
+        trace.add_step(
+            stage=STAGE_PROBABILITY,
+            decision="computed",
+            reason="aggregation_complete",
+            inputs={
+                "signal_count": len(probability_result.signals),
+                "probability": probability_result.probability,
+                "confidence": probability_result.confidence,
+            },
+        )
+
         # -- 9. Happy-path placeholder result ----------------------------
         metadata = dict(base_metadata)
         metadata["candidate_decision"] = {
             "accepted": True,
             "reason": candidate_reason,
         }
+        if smtp_classification is not None:
+            metadata["smtp_classification"] = dict(smtp_classification)
+        elif smtp_skip_reason is not None:
+            metadata["smtp_skip_reason"] = smtp_skip_reason
+        if catch_all is not None:
+            metadata["catch_all"] = {
+                "classification": catch_all.classification,
+                "confidence": catch_all.confidence,
+                "signals": dict(catch_all.signals),
+            }
+        metadata["action_recommendation"] = decision.action
+
+        smtp_status = (
+            str(smtp_classification["smtp_status"])
+            if smtp_classification is not None
+            else SMTP_STATUS_NOT_ATTEMPTED
+        )
+        smtp_code = smtp_result.code if smtp_result is not None else None
+        smtp_latency = (
+            smtp_result.latency_ms if smtp_result is not None else None
+        )
+        smtp_error_type = (
+            smtp_result.error_type if smtp_result is not None else None
+        )
         result = ValidationResult(
-            validation_status=ValidationStatus.DELIVERABLE_UNCERTAIN.value,
-            deliverability_probability=0.0,
-            smtp_probe_status=SmtpProbeStatus.NOT_ATTEMPTED.value,
-            catch_all_status=None,
+            validation_status=decision.status,
+            deliverability_probability=probability_result.probability,
+            smtp_probe_status=_smtp_probe_status_from_signal(
+                smtp_result,
+                smtp_status,
+            ),
+            catch_all_status=(
+                catch_all.classification if catch_all is not None else None
+            ),
             provider_reputation=provider_label,
             retry_recommended=False,
             validation_reason_codes=(
-                ReasonCode.VALIDATION_SKIPPED.value,
-                ReasonCode.NO_ACTIVE_PROBE.value,
+                *tuple(s.name for s in probability_result.signals),
+                decision.status,
             ),
-            validation_explanation=(
-                "Passive-intel engine: no active probe performed. "
-                f"domain={request.domain!r}, bucket_v2={request.bucket_v2!r}."
-            ),
+            validation_explanation=str(explanation["explanation_text"]),
             breakdown=breakdown,
             metadata=metadata,
             decision_trace=trace.to_dict(),
             execution_decision={
                 "allowed": bool(execution_allowed),
                 "reason": execution_reason,
+            },
+            smtp_status=smtp_status,
+            smtp_code=smtp_code,
+            smtp_latency=smtp_latency,
+            smtp_error_type=smtp_error_type,
+            catch_all_confidence=(
+                catch_all.confidence if catch_all is not None else None
+            ),
+            retry_attempted=retry_attempted,
+            retry_outcome=retry_outcome,
+            deliverability_confidence=probability_result.confidence,
+            action_recommendation=decision.action,
+            validation_breakdown={
+                "probability": probability_result.probability,
+                "confidence": probability_result.confidence,
+                "decision": {
+                    "status": decision.status,
+                    "action": decision.action,
+                },
+                "signals": [_signal_to_dict(s) for s in probability_result.signals],
+                "explanation": explanation,
             },
         )
         self._emit({"event": "skeleton_completed", "domain": request.domain})
@@ -453,6 +599,246 @@ class ValidationEngineV2:
         )
         return bool(accepted), (
             "accepted" if accepted else "not_accepted"
+        )
+
+    def _maybe_run_smtp_probe(
+        self,
+        *,
+        request: ValidationRequest,
+        trace: ProbeDecisionTrace,
+        execution_allowed: bool,
+        execution_reason: str,
+    ) -> tuple[SMTPProbeResult | None, dict[str, Any] | None, str | None]:
+        """Run the controlled SMTP sampler only after every gate passes."""
+        if not execution_allowed:
+            self._add_smtp_skipped_step(
+                trace,
+                reason=SMTP_SKIP_NETWORK_BLOCKED,
+                request=request,
+                extra_inputs={"execution_reason": execution_reason},
+            )
+            return None, None, SMTP_SKIP_NETWORK_BLOCKED
+
+        if not _smtp_policy_enabled(self._policy):
+            self._add_smtp_skipped_step(
+                trace,
+                reason=SMTP_SKIP_DISABLED_BY_POLICY,
+                request=request,
+            )
+            return None, None, SMTP_SKIP_DISABLED_BY_POLICY
+
+        if self._smtp_client is None:
+            self._add_smtp_skipped_step(
+                trace,
+                reason=SMTP_SKIP_CLIENT_MISSING,
+                request=request,
+            )
+            return None, None, SMTP_SKIP_CLIENT_MISSING
+
+        trace.add_step(
+            stage=STAGE_SMTP_PROBE,
+            decision="executed",
+            reason=SMTP_REASON_ALLOWED_BY_POLICY,
+            inputs={
+                "email": request.email,
+                "domain": request.domain,
+                "allow_smtp": True,
+            },
+        )
+        self._emit_event(
+            EVENT_SMTP_PROBE_STARTED,
+            domain=request.domain,
+            metadata={"email": request.email},
+        )
+
+        try:
+            result = self._smtp_client.probe(request)
+        except Exception as exc:
+            result = SMTPProbeResult(
+                success=False,
+                code=None,
+                message=str(exc) or None,
+                latency_ms=None,
+                error_type="protocol_error",
+            )
+
+        classification = SMTPResultClassifier().classify(result)
+        metadata = {
+            "code": result.code,
+            "smtp_status": classification["smtp_status"],
+            "classification_reason": classification[
+                "classification_reason"
+            ],
+            "error_type": result.error_type,
+        }
+        if result.error_type:
+            self._emit_event(
+                EVENT_SMTP_PROBE_FAILED,
+                domain=request.domain,
+                metadata=metadata,
+            )
+        else:
+            self._emit_event(
+                EVENT_SMTP_PROBE_COMPLETED,
+                domain=request.domain,
+                metadata=metadata,
+            )
+        return result, classification, None
+
+    def _maybe_retry_smtp_probe(
+        self,
+        *,
+        request: ValidationRequest,
+        trace: ProbeDecisionTrace,
+        smtp_result: SMTPProbeResult | None,
+    ) -> tuple[SMTPProbeResult | None, bool, str]:
+        if smtp_result is None:
+            return None, False, "none"
+
+        if self._retry_strategy is None:
+            self._add_retry_step(
+                trace, "skipped", RETRY_SKIP_STRATEGY_MISSING, request
+            )
+            self._emit_event(
+                EVENT_SMTP_RETRY_SKIPPED,
+                domain=request.domain,
+                metadata={"reason": RETRY_SKIP_STRATEGY_MISSING},
+            )
+            return None, False, "none"
+
+        decision = _evaluate_retry(self._retry_strategy, smtp_result)
+        if not decision.should_retry:
+            self._add_retry_step(trace, "skipped", decision.reason, request)
+            self._emit_event(
+                EVENT_SMTP_RETRY_SKIPPED,
+                domain=request.domain,
+                metadata={"reason": decision.reason},
+            )
+            return None, False, "none"
+
+        self._add_retry_step(
+            trace,
+            "executed",
+            decision.reason,
+            request,
+            extra_inputs={"delay_ms": decision.delay_ms},
+        )
+        self._emit_event(
+            EVENT_SMTP_RETRY_ATTEMPTED,
+            domain=request.domain,
+            metadata={"reason": decision.reason, "delay_ms": decision.delay_ms},
+        )
+        try:
+            retry_result = self._smtp_client.probe(request)  # type: ignore[union-attr]
+        except Exception as exc:
+            retry_result = SMTPProbeResult(
+                success=False,
+                code=None,
+                message=str(exc) or None,
+                latency_ms=None,
+                error_type="protocol_error",
+            )
+        return retry_result, True, "fail" if retry_result.error_type else "success"
+
+    def _maybe_assess_catch_all(
+        self,
+        *,
+        request: ValidationRequest,
+        trace: ProbeDecisionTrace,
+        smtp_result: SMTPProbeResult | None,
+        smtp_classification: dict[str, Any] | None,
+    ) -> CatchAllAssessment | None:
+        if smtp_result is None or smtp_classification is None:
+            return None
+
+        if self._catch_all_analyzer is None:
+            trace.add_step(
+                stage=STAGE_CATCH_ALL,
+                decision="skipped",
+                reason=CATCH_ALL_SKIP_ANALYZER_MISSING,
+                inputs={"domain": request.domain},
+            )
+            return None
+
+        try:
+            assessment = self._catch_all_analyzer.assess(
+                request.domain,
+                smtp_result,
+                smtp_classification,
+                _cache_from_domain_intel(self._domain_intel),
+            )
+            if isinstance(assessment, dict):
+                assessment = CatchAllAssessment(
+                    classification=str(assessment.get("classification", "unknown")),
+                    confidence=float(assessment.get("confidence", 0.0)),
+                    signals=dict(assessment.get("signals") or {}),
+                )
+        except Exception:
+            assessment = CatchAllAssessment(
+                classification="unknown",
+                confidence=0.0,
+                signals={"reason": "catch_all_analyzer_error"},
+            )
+
+        trace.add_step(
+            stage=STAGE_CATCH_ALL,
+            decision="classified",
+            reason=assessment.classification,
+            inputs={
+                "domain": request.domain,
+                "confidence": assessment.confidence,
+            },
+        )
+        self._emit_event(
+            EVENT_CATCH_ALL_CLASSIFIED,
+            domain=request.domain,
+            metadata={
+                "classification": assessment.classification,
+                "confidence": assessment.confidence,
+            },
+        )
+        return assessment
+
+    @staticmethod
+    def _add_retry_step(
+        trace: ProbeDecisionTrace,
+        decision: str,
+        reason: str,
+        request: ValidationRequest,
+        extra_inputs: dict[str, Any] | None = None,
+    ) -> None:
+        inputs: dict[str, Any] = {
+            "email": request.email,
+            "domain": request.domain,
+        }
+        if extra_inputs:
+            inputs.update(extra_inputs)
+        trace.add_step(
+            stage=STAGE_SMTP_RETRY,
+            decision=decision,
+            reason=reason,
+            inputs=inputs,
+        )
+
+    @staticmethod
+    def _add_smtp_skipped_step(
+        trace: ProbeDecisionTrace,
+        *,
+        reason: str,
+        request: ValidationRequest,
+        extra_inputs: dict[str, Any] | None = None,
+    ) -> None:
+        inputs: dict[str, Any] = {
+            "email": request.email,
+            "domain": request.domain,
+        }
+        if extra_inputs:
+            inputs.update(extra_inputs)
+        trace.add_step(
+            stage=STAGE_SMTP_PROBE,
+            decision="skipped",
+            reason=reason,
+            inputs=inputs,
         )
 
     # ------------------------------------------------------------------
@@ -677,6 +1063,159 @@ def _build_base_metadata(
         cache_hit = cache_hit or bool(reputation.get("cache_hit"))
     metadata["cache_hit"] = cache_hit
     return metadata
+
+
+def _smtp_policy_enabled(policy: ValidationPolicy) -> bool:
+    """Return True when SMTP sampling is explicitly enabled."""
+    allow_smtp = getattr(policy, "allow_smtp", None)
+    if allow_smtp is not None:
+        return bool(allow_smtp)
+    return bool(policy.enable_smtp_probing)
+
+
+def _smtp_probe_status_from_signal(
+    smtp_result: SMTPProbeResult | None,
+    smtp_status: str,
+) -> str:
+    if smtp_result is None:
+        return SmtpProbeStatus.NOT_ATTEMPTED.value
+    if smtp_result.error_type:
+        return SmtpProbeStatus.ATTEMPTED_TEMP_FAIL.value
+    if smtp_status == "invalid":
+        return SmtpProbeStatus.ATTEMPTED_REJECT.value
+    return SmtpProbeStatus.ATTEMPTED_SUCCESS.value
+
+
+def _build_deliverability_signals(
+    *,
+    request: ValidationRequest,
+    intel: dict[str, Any] | None,
+    reputation: dict[str, Any] | None,
+    smtp_status: str,
+    catch_all: CatchAllAssessment | None,
+) -> list[DeliverabilitySignal]:
+    signals = [
+        DeliverabilitySignal(
+            name="syntax_valid",
+            value=1.0 if request.syntax_valid else 0.0,
+            weight=1.0,
+            source="structural",
+        ),
+        DeliverabilitySignal(
+            name="domain_present",
+            value=1.0 if request.domain_present else 0.0,
+            weight=0.8,
+            source="dns",
+        ),
+    ]
+
+    if intel is not None:
+        is_suspicious = bool(intel.get("is_suspicious_pattern"))
+        signals.append(
+            DeliverabilitySignal(
+                name="domain_pattern",
+                value=0.3 if is_suspicious else 0.8,
+                weight=0.8,
+                source="dns",
+            )
+        )
+
+    if reputation is not None:
+        score = reputation.get("reputation_score")
+        if score is None:
+            score = reputation.get("score")
+        if score is not None:
+            signals.append(
+                DeliverabilitySignal(
+                    name="provider_reputation",
+                    value=_clamp_float(score),
+                    weight=1.2,
+                    source="reputation",
+                )
+            )
+
+    smtp_value = {
+        "valid": 1.0,
+        "invalid": 0.0,
+        "uncertain": 0.5,
+    }.get(smtp_status)
+    if smtp_value is not None:
+        signals.append(
+            DeliverabilitySignal(
+                name="smtp_result",
+                value=smtp_value,
+                weight=2.0,
+                source="smtp",
+            )
+        )
+
+    if catch_all is not None:
+        catch_all_value = {
+            "confirmed": 0.4,
+            "likely": 0.5,
+            "unlikely": 0.8,
+            "unknown": 0.6,
+        }.get(catch_all.classification, 0.6)
+        signals.append(
+            DeliverabilitySignal(
+                name="catch_all",
+                value=catch_all_value,
+                weight=0.9,
+                source="catch_all",
+            )
+        )
+
+    return signals
+
+
+def _signal_to_dict(signal: DeliverabilitySignal) -> dict[str, object]:
+    return {
+        "name": signal.name,
+        "value": signal.value,
+        "weight": signal.weight,
+        "source": signal.source,
+    }
+
+
+def _clamp_float(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.5
+    return max(0.0, min(1.0, number))
+
+
+def _evaluate_retry(strategy: RetryStrategy, result: SMTPProbeResult) -> RetryDecision:
+    evaluate = getattr(strategy, "evaluate", None)
+    if callable(evaluate):
+        decision = evaluate(result)
+        if isinstance(decision, RetryDecision):
+            return decision
+        return RetryDecision(
+            should_retry=bool(getattr(decision, "should_retry", False)),
+            delay_ms=getattr(decision, "delay_ms", None),
+            reason=str(getattr(decision, "reason", "not_retryable")),
+        )
+
+    decide = getattr(strategy, "decide")
+    raw = decide(
+        {
+            "success": result.success,
+            "code": result.code,
+            "message": result.message,
+            "latency_ms": result.latency_ms,
+            "error_type": result.error_type,
+        }
+    )
+    return RetryDecision(
+        should_retry=bool(raw.get("retry")),
+        delay_ms=raw.get("delay_ms"),  # type: ignore[arg-type]
+        reason=str(raw.get("reason", "not_retryable")),
+    )
+
+
+def _cache_from_domain_intel(domain_intel: Any) -> Any:
+    return getattr(domain_intel, "_cache", None)
 
 
 __all__ = [

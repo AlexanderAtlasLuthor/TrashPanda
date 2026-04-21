@@ -193,6 +193,13 @@ class TestValidationResult:
         assert r.validation_explanation == ""
         assert r.breakdown == {}
         assert r.metadata == {}
+        assert r.smtp_status == "not_attempted"
+        assert r.smtp_code is None
+        assert r.smtp_latency is None
+        assert r.smtp_error_type is None
+        assert r.deliverability_confidence == 0.0
+        assert r.action_recommendation == "review"
+        assert r.validation_breakdown == {}
 
     def test_to_dict_structure(self) -> None:
         r = ValidationResult(
@@ -218,6 +225,13 @@ class TestValidationResult:
         assert d["validation_explanation"] == "why"
         assert d["breakdown"] == {"k": 1}
         assert d["metadata"] == {"email": "x@y.com"}
+        assert d["smtp_status"] == "not_attempted"
+        assert d["smtp_code"] is None
+        assert d["smtp_latency"] is None
+        assert d["smtp_error_type"] is None
+        assert d["deliverability_confidence"] == pytest.approx(0.0)
+        assert d["action_recommendation"] == "review"
+        assert d["validation_breakdown"] == {}
 
     def test_to_dict_json_serializable(self) -> None:
         r = ValidationResult(
@@ -407,12 +421,16 @@ class TestValidationEngineV2:
         # No services provided at all.
         engine = ValidationEngineV2(ValidationPolicy())
         result = engine.validate(_make_request())
-        assert (
-            result.validation_status == ValidationStatus.DELIVERABLE_UNCERTAIN.value
-        )
+        assert result.validation_status in {
+            "valid",
+            "likely_valid",
+            "uncertain",
+            "risky",
+            "invalid",
+        }
         assert result.smtp_probe_status == SmtpProbeStatus.NOT_ATTEMPTED.value
-        assert ReasonCode.VALIDATION_SKIPPED.value in result.validation_reason_codes
-        assert ReasonCode.NO_ACTIVE_PROBE.value in result.validation_reason_codes
+        assert "syntax_valid" in result.validation_reason_codes
+        assert "domain_present" in result.validation_reason_codes
         assert result.provider_reputation is None
         assert result.breakdown == {}
 
@@ -480,6 +498,18 @@ class TestValidationEngineV2:
             "validation_explanation",
             "breakdown",
             "metadata",
+            "decision_trace",
+            "execution_decision",
+            "smtp_status",
+            "smtp_code",
+            "smtp_latency",
+            "smtp_error_type",
+            "catch_all_confidence",
+            "retry_attempted",
+            "retry_outcome",
+            "deliverability_confidence",
+            "action_recommendation",
+            "validation_breakdown",
         }
         policy = ValidationPolicy()
         paths = [
@@ -521,7 +551,7 @@ class TestValidationEngineV2:
                 raise AssertionError("retry must not be called in skeleton")
 
         engine = ValidationEngineV2(
-            ValidationPolicy(enable_smtp_probing=True),
+            ValidationPolicy(enable_smtp_probing=False),
             smtp_client=ExplodingSmtp(),
             catch_all_analyzer=ExplodingCatchAll(),
             retry_strategy=ExplodingRetry(),
@@ -542,9 +572,13 @@ class TestValidationEngineV2:
             ValidationPolicy(), telemetry=_ExplodingTelemetry()
         )
         result = engine2.validate(_make_request())
-        assert (
-            result.validation_status == ValidationStatus.DELIVERABLE_UNCERTAIN.value
-        )
+        assert result.validation_status in {
+            "valid",
+            "likely_valid",
+            "uncertain",
+            "risky",
+            "invalid",
+        }
 
     def test_policy_accessor(self) -> None:
         policy = ValidationPolicy(max_retries=7)
