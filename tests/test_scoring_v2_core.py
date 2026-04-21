@@ -282,22 +282,22 @@ class TestScoringEngineV2:
         out = engine.evaluate_row({"email": "x@y.com"})
         assert [s.reason_code for s in out.signals] == ["a"]
 
-    def test_skeleton_leaves_numeric_fields_as_placeholders(self):
-        """The skeleton engine deliberately does not compute any aggregate.
-        Guard against accidental early implementation."""
+    def test_engine_populates_numeric_fields(self):
+        """The aggregation engine fills in totals and the bucket label;
+        placeholders are no longer returned."""
         engine = ScoringEngineV2(
             evaluators=[_StaticEvaluator([_signal("a")])],
             profile=ScoringProfile(),
         )
         out = engine.evaluate_row({})
-        assert out.positive_total == 0.0
+        assert out.positive_total == 1.0
         assert out.negative_total == 0.0
-        assert out.raw_score == 0.0
-        assert out.final_score == 0.0
-        assert out.confidence == 0.0
+        assert out.raw_score == 1.0
+        assert out.final_score == 1.0
+        assert out.confidence == 1.0
         assert out.hard_stop is False
         assert out.hard_stop_reason is None
-        assert out.bucket == "unknown"
+        assert out.bucket in {"high_confidence", "review", "invalid"}
 
     def test_engine_does_not_mutate_input_row(self):
         ev = _StaticEvaluator([_signal("a")])
@@ -353,19 +353,23 @@ class TestScoringProfile:
     def test_default_values(self):
         p = ScoringProfile()
         assert p.weights == {}
-        assert p.high_confidence_threshold == 70.0
-        assert p.review_threshold == 40.0
+        # V2 thresholds live in normalized [0.0, 1.0] space.
+        assert p.high_confidence_threshold == 0.80
+        assert p.review_threshold == 0.45
+        assert p.review_threshold <= p.high_confidence_threshold
         assert p.hard_stop_policy == []
         assert p.bucket_policy == {}
 
     def test_custom_values_round_trip(self):
         p = ScoringProfile(
             weights={"mx_present": 50.0, "typo_corrected": -3.0},
-            high_confidence_threshold=80.0,
-            review_threshold=50.0,
+            high_confidence_threshold=0.85,
+            review_threshold=0.50,
             hard_stop_policy=["syntax_invalid", "nxdomain"],
             bucket_policy={"mode": "strict"},
         )
         assert p.weights["mx_present"] == 50.0
+        assert p.high_confidence_threshold == 0.85
+        assert p.review_threshold == 0.50
         assert p.hard_stop_policy == ["syntax_invalid", "nxdomain"]
         assert p.bucket_policy["mode"] == "strict"
