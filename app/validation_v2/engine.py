@@ -6,7 +6,7 @@ The engine wires together the pluggable services defined in
 single orchestration surface: subphases add logic behind the
 interfaces, the engine itself changes minimally.
 
-Current surface (Subphase 2 — passive intelligence):
+Current surface (Subphase 3 — telemetry + control plane):
 
     * Domain intelligence + provider reputation run first. Their
       outputs are collected into the result breakdown and mirrored
@@ -18,31 +18,72 @@ Current surface (Subphase 2 — passive intelligence):
     * Exclusion gate (short-circuit). If an ``ExclusionService`` is
       present and flags the request, the engine returns a canonical
       ``excluded_by_policy`` result with the collected intel
-      attached. When the service exposes the richer ``check`` API
-      (see :class:`~app.validation_v2.services.exclusion.\
-DefaultExclusionService`) the engine surfaces the matching
-      fine-grained reason (e.g. ``excluded_domain``).
+      attached.
 
     * Candidate-selection gate (short-circuit). If a
       ``ValidationCandidateSelector`` declines the request, the
       engine returns a ``deliverable_uncertain`` result with a
       ``not_a_candidate`` / ``low_priority_candidate`` reason.
-      When the selector exposes the richer ``explain`` API the
-      fine-grained reason is surfaced.
 
-    * Happy path returns a structured placeholder result. The
-      engine never calls SMTP / catch-all / retry / telemetry
-      services beyond best-effort observability emission, and it
-      never mutates its input.
+    * Rate limit gate. If a :class:`RateLimiter` is attached the
+      engine consults it; a blocked request falls through to the
+      execution-policy step, which stamps ``rate_limited`` on the
+      result.
+
+    * Execution-policy gate. The engine calls
+      :func:`is_validation_allowed` with the network policy plus
+      the upstream decisions and attaches the resulting
+      ``execution_decision`` to the result.
+
+    * Every step appends an entry to a
+      :class:`ProbeDecisionTrace` that is attached to the result
+      — so every decision the engine made is explainable without
+      re-running it.
+
+    * Structured telemetry events are emitted at every gate
+      through a pluggable :class:`TelemetrySink`. Emission is
+      best-effort; a failing sink cannot affect the validation
+      outcome.
 
 The constructor signature is stable. Future subphases (SMTP,
-catch-all, retries) will plug in without changing it.
+catch-all, retries) will plug in without changing it. The
+control-plane collaborators
+(:attr:`telemetry_sink`, :attr:`rate_limiter`,
+:attr:`execution_policy`) are configured by assigning the
+instance attributes after construction — this keeps the
+constructor frozen while still giving callers full control.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
+from .control.decision_trace import (
+    ProbeDecisionTrace,
+    STAGE_CANDIDATE,
+    STAGE_DOMAIN_INTELLIGENCE,
+    STAGE_EXCLUSION,
+    STAGE_EXECUTION_POLICY,
+    STAGE_PROVIDER_REPUTATION,
+    STAGE_RATE_LIMIT,
+)
+from .control.execution_policy import (
+    EXECUTION_REASON_ALLOWED,
+    EXECUTION_REASON_RATE_LIMITED,
+    NetworkExecutionPolicy,
+    is_validation_allowed,
+)
+from .control.rate_limit import RateLimiter
+from .control.telemetry import (
+    EVENT_CANDIDATE_SKIPPED,
+    EVENT_EXCLUDED,
+    EVENT_VALIDATION_ALLOWED,
+    EVENT_VALIDATION_BLOCKED_BY_POLICY,
+    EVENT_VALIDATION_STARTED,
+    TelemetryEvent,
+    TelemetrySink as ControlTelemetrySink,
+)
 from .interfaces import (
     CatchAllAnalyzer,
     DomainIntelligenceService,
@@ -79,6 +120,23 @@ class ValidationEngineV2:
     The constructor signature is additive-only across subphases —
     new services will appear as additional keyword-only
     parameters, existing callers are never broken.
+
+    Subphase 3 adds three optional *instance attributes* that
+    configure the control plane without touching the constructor:
+
+        * :attr:`telemetry_sink` — a
+          :class:`~app.validation_v2.control.TelemetrySink`
+          receiving structured events.
+        * :attr:`rate_limiter` — a
+          :class:`~app.validation_v2.control.RateLimiter` that
+          decides whether the request is allowed through the
+          per-domain / global caps.
+        * :attr:`execution_policy` — a
+          :class:`~app.validation_v2.control.NetworkExecutionPolicy`
+          that governs whether network-bearing work may proceed.
+
+    All three default to ``None``; a ``None`` collaborator is a
+    no-op at the relevant gate.
     """
 
     def __init__(
@@ -108,6 +166,13 @@ class ValidationEngineV2:
         self._retry_strategy = retry_strategy
         self._telemetry = telemetry
 
+        # -- Subphase 3 control plane -------------------------------
+        # Public attributes so callers can swap them in after
+        # construction. The constructor signature stays frozen.
+        self.telemetry_sink: ControlTelemetrySink | None = None
+        self.rate_limiter: RateLimiter | None = None
+        self.execution_policy: NetworkExecutionPolicy | None = None
+
     # ------------------------------------------------------------------
     # Read-only accessors (handy for tests / introspection)
     # ------------------------------------------------------------------
@@ -123,21 +188,58 @@ class ValidationEngineV2:
     def validate(self, request: ValidationRequest) -> ValidationResult:
         """Run the passive-intelligence validation flow for ``request``.
 
-        Steps:
+        Steps (Subphase 3):
 
-          1. Collect domain intelligence (if wired).
-          2. Collect provider reputation (if wired).
-          3. Exclusion gate — short-circuit on hit.
-          4. Candidate selection gate — short-circuit on skip.
-          5. Build a structured placeholder result carrying every
-             collected signal.
+          1. Start a :class:`ProbeDecisionTrace`.
+          2. Emit ``validation_started`` telemetry.
+          3. Collect domain intelligence (trace).
+          4. Collect provider reputation (trace).
+          5. Exclusion gate (trace + telemetry + short-circuit).
+          6. Candidate gate (trace + telemetry + short-circuit).
+          7. Rate limit (trace).
+          8. Execution policy (trace + telemetry).
+          9. Attach the trace + execution decision to the result.
 
         The method does not mutate ``request`` and does not make
-        network calls.
+        any network calls.
         """
-        # -- 1-2. Collect passive intelligence ---------------------------
+        trace = ProbeDecisionTrace()
+
+        # -- 2. Emit "validation_started" --------------------------------
+        self._emit_event(
+            EVENT_VALIDATION_STARTED,
+            domain=request.domain,
+            metadata={
+                "email": request.email,
+                "bucket_v2": request.bucket_v2,
+            },
+        )
+
+        # -- 3-4. Collect passive intelligence ---------------------------
         intel = self._run_domain_intel(request)
+        trace.add_step(
+            stage=STAGE_DOMAIN_INTELLIGENCE,
+            decision="collected" if intel is not None else "skipped",
+            reason=(
+                "domain_intelligence_service_missing"
+                if intel is None
+                else "domain_analyzed"
+            ),
+            inputs={"domain": request.domain},
+        )
+
         reputation = self._run_provider_reputation(request)
+        trace.add_step(
+            stage=STAGE_PROVIDER_REPUTATION,
+            decision="collected" if reputation is not None else "skipped",
+            reason=(
+                "provider_reputation_service_missing"
+                if reputation is None
+                else "provider_classified"
+            ),
+            inputs={"domain": request.domain},
+        )
+
         provider_label = _pluck_provider_label(reputation)
         breakdown = self._build_base_breakdown(intel, reputation)
         base_metadata = _build_base_metadata(
@@ -146,27 +248,115 @@ class ValidationEngineV2:
             reputation=reputation,
         )
 
-        # -- 3. Exclusion -------------------------------------------------
+        # -- 5. Exclusion ------------------------------------------------
         exclusion_reason = self._check_exclusion(request)
+        trace.add_step(
+            stage=STAGE_EXCLUSION,
+            decision="excluded" if exclusion_reason else "pass",
+            reason=exclusion_reason or "not_excluded",
+            inputs={
+                "domain": request.domain,
+                "excluded_domains_size": len(self._policy.excluded_domains),
+                "syntax_valid": request.syntax_valid,
+            },
+        )
         if exclusion_reason is not None:
+            self._emit_event(
+                EVENT_EXCLUDED,
+                domain=request.domain,
+                metadata={"reason": exclusion_reason},
+            )
             return self._build_excluded_result(
                 request=request,
                 breakdown=breakdown,
                 metadata=base_metadata,
                 exclusion_reason=exclusion_reason,
+                trace=trace,
             )
 
-        # -- 4. Candidate selection --------------------------------------
+        # -- 6. Candidate selection --------------------------------------
         candidate_accepted, candidate_reason = self._check_candidate(request)
+        trace.add_step(
+            stage=STAGE_CANDIDATE,
+            decision="accepted" if candidate_accepted else "rejected",
+            reason=candidate_reason,
+            inputs={
+                "bucket_v2": request.bucket_v2,
+                "score_v2": request.score_v2,
+                "confidence_v2": request.confidence_v2,
+                "syntax_valid": request.syntax_valid,
+            },
+        )
         if not candidate_accepted:
+            self._emit_event(
+                EVENT_CANDIDATE_SKIPPED,
+                domain=request.domain,
+                metadata={"reason": candidate_reason},
+            )
             return self._build_skipped_result(
                 request=request,
                 breakdown=breakdown,
                 metadata=base_metadata,
                 candidate_reason=candidate_reason,
+                trace=trace,
             )
 
-        # -- 5. Happy path placeholder -----------------------------------
+        # -- 7. Rate limit ------------------------------------------------
+        rate_limit_blocked = False
+        if self.rate_limiter is not None:
+            allowed_by_rate = self.rate_limiter.allow(request.domain)
+            rate_limit_blocked = not allowed_by_rate
+            trace.add_step(
+                stage=STAGE_RATE_LIMIT,
+                decision="allowed" if allowed_by_rate else "blocked",
+                reason=(
+                    "within_limits"
+                    if allowed_by_rate
+                    else EXECUTION_REASON_RATE_LIMITED
+                ),
+                inputs={"domain": request.domain},
+            )
+
+        # -- 8. Execution policy -----------------------------------------
+        if rate_limit_blocked:
+            execution_allowed = False
+            execution_reason = EXECUTION_REASON_RATE_LIMITED
+        else:
+            execution_allowed, execution_reason = is_validation_allowed(
+                self.execution_policy,
+                candidate_accepted,
+                exclusion_reason,
+            )
+        trace.add_step(
+            stage=STAGE_EXECUTION_POLICY,
+            decision="allowed" if execution_allowed else "blocked",
+            reason=execution_reason,
+            inputs={
+                "allow_network": (
+                    None
+                    if self.execution_policy is None
+                    else self.execution_policy.allow_network
+                ),
+                "candidate_accepted": bool(candidate_accepted),
+                "exclusion_reason": exclusion_reason,
+                "rate_limiter_wired": self.rate_limiter is not None,
+            },
+        )
+
+        if execution_allowed:
+            self._emit_event(
+                EVENT_VALIDATION_ALLOWED,
+                domain=request.domain,
+                metadata={"reason": execution_reason},
+            )
+        else:
+            self._emit_event(
+                EVENT_VALIDATION_BLOCKED_BY_POLICY,
+                domain=request.domain,
+                metadata={"reason": execution_reason},
+            )
+
+        # -- 9. Happy-path placeholder result ----------------------------
         metadata = dict(base_metadata)
         metadata["candidate_decision"] = {
             "accepted": True,
@@ -189,6 +379,11 @@ class ValidationEngineV2:
             ),
             breakdown=breakdown,
             metadata=metadata,
+            decision_trace=trace.to_dict(),
+            execution_decision={
+                "allowed": bool(execution_allowed),
+                "reason": execution_reason,
+            },
         )
         self._emit({"event": "skeleton_completed", "domain": request.domain})
         return result
@@ -283,6 +478,7 @@ class ValidationEngineV2:
         breakdown: dict[str, Any],
         metadata: dict[str, Any],
         exclusion_reason: str,
+        trace: ProbeDecisionTrace,
     ) -> ValidationResult:
         metadata = dict(metadata)
         metadata["excluded"] = True
@@ -309,6 +505,11 @@ class ValidationEngineV2:
             ),
             breakdown=breakdown,
             metadata=metadata,
+            decision_trace=trace.to_dict(),
+            execution_decision={
+                "allowed": False,
+                "reason": "excluded",
+            },
         )
         self._emit(
             {
@@ -326,6 +527,7 @@ class ValidationEngineV2:
         breakdown: dict[str, Any],
         metadata: dict[str, Any],
         candidate_reason: str,
+        trace: ProbeDecisionTrace,
     ) -> ValidationResult:
         metadata = dict(metadata)
         metadata["candidate_decision"] = {
@@ -355,6 +557,11 @@ class ValidationEngineV2:
             ),
             breakdown=breakdown,
             metadata=metadata,
+            decision_trace=trace.to_dict(),
+            execution_decision={
+                "allowed": False,
+                "reason": "not_candidate",
+            },
         )
         self._emit(
             {
@@ -370,7 +577,7 @@ class ValidationEngineV2:
     # ------------------------------------------------------------------
 
     def _emit(self, event: dict[str, Any]) -> None:
-        """Emit a telemetry event, swallowing any error.
+        """Emit a legacy dict-shaped telemetry event, swallowing any error.
 
         Telemetry failures must never affect validation outcomes.
         The engine is deterministic from the caller's perspective
@@ -382,6 +589,35 @@ class ValidationEngineV2:
             self._telemetry.emit(event)
         except Exception:
             # Best-effort — sink resilience is the sink's job.
+            pass
+
+    def _emit_event(
+        self,
+        event_type: str,
+        *,
+        domain: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Emit a structured :class:`TelemetryEvent` to the control sink.
+
+        Separate from :meth:`_emit` because the control-plane sink
+        uses the :class:`TelemetryEvent` dataclass while the
+        legacy sink uses plain dicts. Both live side by side so
+        callers can migrate without the engine making the choice.
+        """
+        if self.telemetry_sink is None:
+            return
+        try:
+            event = TelemetryEvent(
+                event_type=event_type,
+                timestamp=time.time(),
+                domain=domain,
+                metadata=dict(metadata) if metadata else {},
+            )
+            self.telemetry_sink.emit(event)
+        except Exception:
+            # Best-effort — sink failure must not affect
+            # validation.
             pass
 
 

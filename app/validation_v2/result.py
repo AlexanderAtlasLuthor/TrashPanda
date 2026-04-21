@@ -61,6 +61,20 @@ class ValidationResult:
             callers must only put JSON-safe values in here.
         metadata: Open-ended dict for caller-attached context that
             does not belong in the structured breakdown.
+        decision_trace: Step-by-step audit of every gate the
+            engine consulted for this request. Empty dict for
+            results produced before the control plane landed
+            (Subphase 3); populated for every V2 result from
+            Subphase 3 onward. See
+            :class:`app.validation_v2.control.ProbeDecisionTrace`
+            for the shape.
+        execution_decision: Compact summary of the terminal
+            control-plane decision — ``{"allowed": bool, "reason":
+            str}``. ``None`` for paths that short-circuit before
+            the execution-policy gate (exclusion / candidate
+            skip) when the caller has opted into the default
+            ``None`` — those paths still surface the reason on
+            the trace itself.
     """
 
     validation_status: str = ValidationStatus.DELIVERABLE_UNCERTAIN.value
@@ -73,6 +87,8 @@ class ValidationResult:
     validation_explanation: str = ""
     breakdown: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+    decision_trace: dict[str, Any] = field(default_factory=dict)
+    execution_decision: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable dict snapshot of this result.
@@ -98,6 +114,12 @@ class ValidationResult:
             "validation_explanation": self.validation_explanation,
             "breakdown": dict(self.breakdown),
             "metadata": dict(self.metadata),
+            "decision_trace": dict(self.decision_trace),
+            "execution_decision": (
+                dict(self.execution_decision)
+                if self.execution_decision is not None
+                else None
+            ),
         }
 
 
