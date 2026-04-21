@@ -21,7 +21,9 @@ from .engine.stages import (
     EmailNormalizationStage,
     EmailSyntaxValidationStage,
     HeaderNormalizationStage,
+    ScoringComparisonStage,
     ScoringStage,
+    ScoringV2Stage,
     StagingPersistenceStage,
     StructuralValidationStage,
     TechnicalMetadataStage,
@@ -83,6 +85,14 @@ class EmailCleaningPipeline:
             dedupe_index=dedupe_index,
             staging=staging,
         )
+        # V2 scoring runs immediately after V1 ``ScoringStage`` and before
+        # ``CompletenessStage``: at that point every upstream column the
+        # V2 evaluators consume is already populated (syntax,
+        # corrected_domain, typo/domain_match flags, DNS outcomes), and
+        # placing it before completeness keeps the V1-driven downstream
+        # path (completeness → dedupe → staging → materialize) totally
+        # unaffected. V2 only appends ``*_v2`` columns; no existing V1
+        # column is touched.
         chunk_engine = PipelineEngine(
             stages=[
                 HeaderNormalizationStage(),
@@ -95,6 +105,8 @@ class EmailCleaningPipeline:
                 DomainComparisonStage(),
                 DNSEnrichmentStage(),
                 ScoringStage(),
+                ScoringV2Stage(),
+                ScoringComparisonStage(),
                 CompletenessStage(),
                 EmailNormalizationStage(),
                 DedupeStage(),
