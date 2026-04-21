@@ -78,6 +78,51 @@ class DomainEnrichmentMetrics:
 
 
 @dataclass(slots=True)
+class DnsEnrichmentMetrics:
+    """Per-chunk DNS enrichment summary for Subphase 5."""
+
+    new_queries: int = 0
+    cache_hits: int = 0
+    mx_found: int = 0
+    a_fallback_found: int = 0
+    dns_failures: int = 0
+
+
+@dataclass(slots=True)
+class ScoringMetrics:
+    """Per-chunk scoring summary for Subphase 6."""
+
+    hard_fail_count: int = 0
+    high_confidence_count: int = 0
+    review_count: int = 0
+    invalid_count: int = 0
+    total_score: int = 0
+    rows_scored: int = 0
+
+
+@dataclass(slots=True)
+class DedupeMetrics:
+    """Per-chunk and run-level deduplication summary for Subphase 7."""
+
+    new_canonicals: int = 0
+    duplicates_detected: int = 0
+    replaced_canonicals: int = 0
+    index_size: int = 0
+
+
+@dataclass(slots=True)
+class MaterializationMetrics:
+    """Second-pass reconciliation and output stats for Subphase 8."""
+
+    total_canonical_rows: int = 0
+    total_duplicate_rows: int = 0
+    total_output_clean: int = 0
+    total_output_review: int = 0
+    total_output_removed: int = 0
+    replaced_canonical_corrections: int = 0
+
+
+@dataclass(slots=True)
 class PipelineResult:
     """Result returned by the ingestion pipeline."""
 
@@ -93,3 +138,12 @@ class PipelineResult:
     processed_files: list[str] = field(default_factory=list)
     ignored_files: list[str] = field(default_factory=list)
     file_metrics: list[FileIngestionMetrics] = field(default_factory=list)
+    clean_high_confidence_path: Path | None = None
+    review_path: Path | None = None
+    removed_path: Path | None = None
+    processing_report_json_path: Path | None = None
+    total_canonical_rows: int = 0
+    total_duplicate_rows: int = 0
+    total_output_clean: int = 0
+    total_output_review: int = 0
+    total_output_removed: int = 0
