@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import unicodedata
 from typing import Any
 
 import pandas as pd
@@ -13,21 +15,43 @@ from .typo_rules import DomainTypoCorrectionResult, apply_domain_typo_correction
 
 
 _WHITESPACE_REGEX = re.compile(r"\s+")
+_HEADER_LOGGER = logging.getLogger("app.normalizers.headers")
+
+
+def _strip_accents(text: str) -> str:
+    """Remove combining diacritical marks (á→a, ñ→n, ü→u, etc.)."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
 
 
 def normalize_header_name(name: Any) -> str:
-    """Normalize a raw header into a canonical, comparable name."""
+    """Normalize a raw header into a canonical, comparable name.
 
+    Steps: strip → lowercase → strip accents → dashes/whitespace to
+    underscores → alias lookup. Accent stripping makes Spanish headers
+    like ``correo electrónico``, ``teléfono``, ``compañía`` resolve to
+    the same alias keys as their ASCII equivalents.
+    """
     normalized = str(name).strip().lower()
+    normalized = _strip_accents(normalized)
     normalized = normalized.replace("-", "_")
     normalized = _WHITESPACE_REGEX.sub("_", normalized)
     return COLUMN_ALIASES.get(normalized, normalized)
 
 
 def normalize_headers(frame: pd.DataFrame) -> pd.DataFrame:
-    """Return a copy of the frame with normalized header names."""
+    """Return a copy of the frame with normalized header names.
 
-    renamed_columns = {str(column): normalize_header_name(column) for column in frame.columns}
+    Emits an INFO log line for each header whose canonical form differs
+    from the raw input, so operators can see how aliases were applied.
+    """
+    renamed_columns: dict[str, str] = {}
+    for column in frame.columns:
+        raw = str(column)
+        normalized = normalize_header_name(raw)
+        renamed_columns[raw] = normalized
+        if raw != normalized:
+            _HEADER_LOGGER.info("Mapped column %r -> %r", raw, normalized)
     return frame.rename(columns=renamed_columns).copy()
 
 

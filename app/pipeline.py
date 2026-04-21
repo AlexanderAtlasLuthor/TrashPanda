@@ -152,7 +152,11 @@ class EmailCleaningPipeline:
                 self.logger.info("Processing %s", discovered_file.original_name)
 
             first_chunk = True
-            for raw_chunk, chunk_context in read_csv_in_chunks(prepared_file.processing_csv_path, self.config.chunk_size):
+            for raw_chunk, chunk_context in read_csv_in_chunks(
+                prepared_file.processing_csv_path,
+                self.config.chunk_size,
+                logger=self.logger,
+            ):
                 # All chunk-level business logic runs inside chunk_engine:
                 # preprocessing → email processing → DNS enrichment →
                 # scoring → completeness → email_normalized → dedupe →

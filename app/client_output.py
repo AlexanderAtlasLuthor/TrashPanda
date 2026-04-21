@@ -87,7 +87,16 @@ REASON_PATTERNS: dict[str, tuple[str, ...]] = {
 # ---------------------------------------------------------------------------
 
 def _resolve_client_reason(row: pd.Series, default_reason: str) -> str:
-    """Return a non-empty client_reason, falling back to the bucket default."""
+    """Return a non-empty client_reason, falling back to the bucket default.
+
+    Special case: if the technical ``final_output_reason`` marks the row
+    as a removed duplicate, surface that explicitly to the client —
+    otherwise duplicates show up with an empty client_reason.
+    """
+    final_reason = row.get("final_output_reason")
+    if final_reason is not None and str(final_reason).strip() == "removed_duplicate":
+        return "Duplicate email"
+
     value = row.get("client_reason")
     if value is None:
         return default_reason
@@ -114,7 +123,7 @@ def _build_client_frame(
                 break
 
     out["status"] = client_status
-    if "client_reason" in df.columns:
+    if "client_reason" in df.columns or "final_output_reason" in df.columns:
         out["client_reason"] = df.apply(
             lambda r: _resolve_client_reason(r, default_reason), axis=1
         )

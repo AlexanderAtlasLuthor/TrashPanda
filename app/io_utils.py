@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
@@ -13,6 +14,20 @@ import pandas as pd
 from .config import AppConfig
 from .models import ChunkContext, InputFile, PreparedInputFile, RunContext
 from .rules import SUPPORTED_FILE_TYPES
+
+
+# Encoding fallback chain for CSV reads. Order matters: utf-8-sig first
+# so byte-order marks on utf-8 files are transparently stripped; plain
+# utf-8 second; cp1252 and latin-1 cover Windows/Excel exports that use
+# Western European codepages (handles tildes, ñ, accented characters).
+CSV_ENCODING_FALLBACKS: tuple[str, ...] = (
+    "utf-8-sig",
+    "utf-8",
+    "cp1252",
+    "latin-1",
+)
+
+_IO_LOGGER = logging.getLogger("app.io_utils")
 
 
 def build_run_context(config: AppConfig, output_dir: str | Path | None = None) -> RunContext:
@@ -131,28 +146,100 @@ def convert_xlsx_to_temporary_csv(input_file: InputFile, temp_dir: Path) -> tupl
     return csv_path, sheet_name
 
 
-def read_csv_in_chunks(csv_path: Path, chunk_size: int) -> Iterator[tuple[pd.DataFrame, ChunkContext]]:
-    """Yield CSV chunks with technical chunk context."""
+def _detect_csv_encoding(
+    csv_path: Path,
+    fallbacks: tuple[str, ...] = CSV_ENCODING_FALLBACKS,
+    probe_bytes: int = 64 * 1024,
+) -> str:
+    """Pick the first encoding from ``fallbacks`` that can decode the file.
 
-    try:
-        reader = pd.read_csv(
-            csv_path,
-            chunksize=chunk_size,
-            dtype=str,
-            keep_default_na=False,
-            encoding="utf-8-sig",
-        )
-        start_row_number = 2
-        for chunk_index, chunk in enumerate(reader):
-            row_count = len(chunk.index)
-            context = ChunkContext(
-                chunk_index=chunk_index,
-                row_count=row_count,
-                start_row_number=start_row_number,
+    Reads a probe from the start of the file for each candidate; if the
+    probe alone can't disprove a codec we fall back to a full-file read
+    for the last remaining candidate. ``latin-1`` can decode any byte
+    stream, so the chain is guaranteed to terminate.
+    """
+    with csv_path.open("rb") as fh:
+        head = fh.read(probe_bytes)
+    for encoding in fallbacks:
+        try:
+            head.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        # Probe passed. For very small files (probe covers the whole
+        # file) we know the encoding is safe. For larger files we still
+        # rely on the probe; if a later byte fails pandas will raise
+        # a UnicodeDecodeError and the caller will retry with the next
+        # encoding in ``read_csv_in_chunks`` below.
+        return encoding
+    # Unreachable because latin-1 never raises, but keep a defensive default.
+    return fallbacks[-1]
+
+
+def read_csv_in_chunks(
+    csv_path: Path,
+    chunk_size: int,
+    logger: logging.Logger | None = None,
+) -> Iterator[tuple[pd.DataFrame, ChunkContext]]:
+    """Yield CSV chunks with technical chunk context.
+
+    Encoding handling: tries ``utf-8-sig`` → ``utf-8`` → ``cp1252`` →
+    ``latin-1`` in order. The detected encoding is logged once at INFO
+    level. The input file is never modified; the fallback happens at
+    read time only.
+    """
+    log = logger or _IO_LOGGER
+
+    # Pre-flight probe: pick the best encoding candidate.
+    preferred = _detect_csv_encoding(csv_path)
+    encodings_to_try: list[str] = [preferred]
+    for enc in CSV_ENCODING_FALLBACKS:
+        if enc not in encodings_to_try:
+            encodings_to_try.append(enc)
+
+    last_error: UnicodeDecodeError | None = None
+    for encoding in encodings_to_try:
+        try:
+            reader = pd.read_csv(
+                csv_path,
+                chunksize=chunk_size,
+                dtype=str,
+                keep_default_na=False,
+                encoding=encoding,
             )
-            yield chunk, context
-            start_row_number += row_count
-    except UnicodeDecodeError as exc:
-        raise ValueError(f"Unable to decode CSV file as UTF-8: {csv_path}") from exc
-    except pd.errors.EmptyDataError:
-        return
+            start_row_number = 2
+            emitted = False
+            for chunk_index, chunk in enumerate(reader):
+                if not emitted:
+                    log.info(
+                        "Detected input encoding: %s | file=%s",
+                        encoding, csv_path.name,
+                    )
+                    emitted = True
+                row_count = len(chunk.index)
+                context = ChunkContext(
+                    chunk_index=chunk_index,
+                    row_count=row_count,
+                    start_row_number=start_row_number,
+                )
+                yield chunk, context
+                start_row_number += row_count
+            if not emitted:
+                # Empty file: still log the encoding decision.
+                log.info(
+                    "Detected input encoding: %s | file=%s (empty)",
+                    encoding, csv_path.name,
+                )
+            return
+        except UnicodeDecodeError as exc:
+            last_error = exc
+            log.warning(
+                "Failed to decode %s as %s; trying next encoding.",
+                csv_path.name, encoding,
+            )
+            continue
+        except pd.errors.EmptyDataError:
+            return
+
+    raise ValueError(
+        f"Unable to decode CSV file with any of {encodings_to_try}: {csv_path}"
+    ) from last_error

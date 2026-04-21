@@ -178,3 +178,126 @@ These are advanced capabilities and are not yet implemented.
 TrashPanda is a functional foundation for a full data cleaning and email validation platform. The pipeline, scoring systems, Validation Engine V2, controlled SMTP sampler, catch-all logic, retry strategy, and probability layer are in place.
 
 The next step is calibration against real-world outcomes so the probability layer can be tuned for production decision-making at scale.
+
+
+
+---
+
+## Input Format (for Operators)
+
+This section documents what the pipeline accepts as input. It is
+intentionally short and operational.
+
+### Supported formats
+
+- CSV (`.csv`)
+- Excel workbooks (`.xlsx`) — the first visible sheet is converted to
+  a temporary CSV automatically (the original file is never modified).
+
+### Minimum required columns
+
+- `email` (the only hard requirement)
+
+Everything else is optional and carried through to the client outputs
+when present.
+
+### Recognized column aliases
+
+Headers are normalized before the pipeline looks them up:
+lower-cased, accents stripped (`é → e`, `ñ → n`, `ü → u`), and
+whitespace/dashes converted to underscores. After that, the following
+aliases map to their canonical internal name:
+
+| Canonical | Recognized aliases |
+|-----------|-------------------|
+| `email`   | `email`, `e-mail`, `e_mail`, `mail`, `email_address`, `correo`, `correo electrónico`, `correo_electronico` |
+| `fname`   | `first_name`, `firstname`, `given_name`, `nombre`, `nombres`, `primer_nombre` |
+| `lname`   | `last_name`, `lastname`, `surname`, `family_name`, `apellido`, `apellidos`, `primer_apellido` |
+| `phone`   | `phone`, `phone_number`, `mobile`, `cell`, `teléfono`, `telefono`, `tel`, `celular`, `móvil` |
+| `company` | `company`, `organization`, `org`, `empresa`, `compañía`, `compania`, `razón_social` |
+| `city`    | `city`, `ciudad` |
+| `state`   | `state`, `estado`, `provincia`, `region` |
+| `zip`     | `zip`, `zip_code`, `zipcode`, `postal_code`, `codigo_postal`, `cp` |
+
+Whenever a header is remapped, an `INFO` log line is emitted:
+`Mapped column 'correo electrónico' -> 'email'`.
+
+### Valid header examples
+
+```
+email,fname,lname,phone,company,city,state
+correo,nombre,apellido,teléfono,empresa,ciudad,estado
+E-Mail,First Name,Last Name,Phone Number,Organization,City,State
+```
+
+### Encoding
+
+The pipeline tries these encodings in order and uses the first one
+that decodes the file:
+
+1. `utf-8-sig` (strips a Byte Order Mark if present)
+2. `utf-8`
+3. `cp1252` (common Excel-exported CSVs on Windows)
+4. `latin-1` (guaranteed final fallback)
+
+The detected encoding is logged once per file
+(`Detected input encoding: cp1252 | file=contacts.csv`). The input
+file is never modified; the fallback happens only at read time.
+
+**Recommendation for operators**: save CSVs as UTF-8 when possible to
+avoid ambiguity with accented characters. If the source is Excel, use
+"CSV UTF-8 (comma delimited)" when exporting.
+
+### File size / chunking
+
+CSV/XLSX files are streamed in chunks of `chunk_size` rows (default
+50,000) defined in `configs/default.yaml`. There is no hard upper
+bound — 100k+ row files are routine. For very large inputs, split the
+file into multiple CSVs and place them in `input/` to use
+`--input-dir` mode.
+
+### Unicode / accented emails
+
+The email syntax validator enforces **ASCII-only local parts and
+domains**. Emails such as `maría@example.com` or `user@café.com`
+are rejected with syntax reasons like `local_part_invalid_chars` or
+`domain_invalid_chars`. This is the documented policy: most SMTP
+infrastructure does not universally support SMTPUTF8/IDN, so
+accented addresses are treated as syntactically invalid rather than
+passed downstream where they would likely bounce.
+
+Accented characters in **other columns** (names, company, city,
+state, etc.) are preserved unchanged.
+
+### MX vs A record policy
+
+DNS enrichment produces two signals per domain: `has_mx_record` and
+`has_a_record`. The scoring layer applies them asymmetrically so
+that A-only domains never auto-promote to the `valid` bucket:
+
+- Domains with a valid **MX** record contribute `+50` to the score
+  (strong email signal).
+- Domains with **only A/AAAA** records contribute `+20` (weak
+  signal; the domain resolves but is not advertised as an email
+  receiver).
+
+With the default thresholds (`high_confidence_threshold: 70`,
+`review_threshold: 40`), an A-only domain combined with valid
+syntax tops out at a score of `45` → `review` bucket. It cannot
+reach the `valid` bucket without an MX record. The flag
+`fallback_to_a_record` in `configs/default.yaml` controls whether
+the A-record lookup happens at all; disabling it makes A-only
+domains look like `no_mx_no_a` and fall further toward `invalid`.
+
+### Outputs
+
+Every run produces, under the run directory:
+
+- Technical CSVs: `clean_high_confidence.csv`,
+  `review_medium_confidence.csv`, `removed_invalid.csv`,
+  `processing_report.json`/`processing_report.csv`,
+  `domain_summary.csv`, `typo_corrections.csv`,
+  `duplicate_summary.csv`.
+- Client XLSX deliverables: `valid_emails.xlsx`,
+  `review_emails.xlsx`, `invalid_or_bounce_risk.xlsx`,
+  `summary_report.xlsx`.
