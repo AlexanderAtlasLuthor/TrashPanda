@@ -9,17 +9,20 @@ import logging
 from pathlib import Path
 
 from .config import AppConfig
-from .dedupe import DedupeIndex, apply_dedupe_columns, apply_email_normalized_column
+from .dedupe import DedupeIndex
 from .dns_utils import DnsCache
 from .engine import ChunkPayload, PipelineContext, PipelineEngine
 from .engine.stages import (
     CompletenessStage,
     DNSEnrichmentStage,
+    DedupeStage,
     DomainComparisonStage,
     DomainExtractionStage,
+    EmailNormalizationStage,
     EmailSyntaxValidationStage,
     HeaderNormalizationStage,
     ScoringStage,
+    StagingPersistenceStage,
     StructuralValidationStage,
     TechnicalMetadataStage,
     TypoCorrectionStage,
@@ -63,11 +66,14 @@ class EmailCleaningPipeline:
         dedupe_index = DedupeIndex()
         staging = StagingDB(active_run_context.staging_db_path)
 
-        # Engine-driven portion of the chunk flow. After Subphase 4 of the
-        # engine refactor the engine owns preprocessing, email processing,
-        # DNS enrichment, scoring, and completeness scoring. Only dedupe
-        # (email_normalized + apply_dedupe_columns), staging persistence,
-        # and the second-pass materialization remain inline below.
+        # Engine-driven portion of the chunk flow. After Subphase 5 of the
+        # engine refactor, ALL chunk-level business logic runs through the
+        # PipelineEngine: preprocessing, email processing, DNS enrichment,
+        # scoring, completeness, email normalization, dedupe, and staging
+        # persistence. The only remaining inline work in ``run`` is
+        # metric aggregation and logging. The second-pass materialization
+        # (``_materialize``) is explicitly out of scope for this refactor
+        # and continues to operate directly on the staging DB.
         pipeline_context = PipelineContext(
             config=self.config,
             logger=self.logger,
@@ -90,6 +96,9 @@ class EmailCleaningPipeline:
                 DNSEnrichmentStage(),
                 ScoringStage(),
                 CompletenessStage(),
+                EmailNormalizationStage(),
+                DedupeStage(),
+                StagingPersistenceStage(),
             ],
             logger=self.logger,
         )
@@ -131,10 +140,12 @@ class EmailCleaningPipeline:
 
             first_chunk = True
             for raw_chunk, chunk_context in read_csv_in_chunks(prepared_file.processing_csv_path, self.config.chunk_size):
-                # Subphases 2 (preprocess), 3-4 (email processing), 5 (DNS
-                # enrichment), 6 (scoring), and completeness are driven by
-                # the PipelineEngine. Only dedupe and staging persistence
-                # remain inline below.
+                # All chunk-level business logic runs inside chunk_engine:
+                # preprocessing → email processing → DNS enrichment →
+                # scoring → completeness → email_normalized → dedupe →
+                # staging persist. The code below only consumes the
+                # resulting frame and shared-state counters to emit
+                # per-chunk aggregate metrics.
                 payload = ChunkPayload(
                     frame=raw_chunk,
                     chunk_index=chunk_context.chunk_index,
@@ -147,11 +158,14 @@ class EmailCleaningPipeline:
                     },
                 )
 
-                # DNS cache snapshot for per-chunk delta metrics. Must be
-                # captured before engine.run because the DNSEnrichmentStage
-                # inside the engine mutates the cache.
+                # Snapshot shared-state counters BEFORE engine.run so the
+                # per-chunk deltas reflect only the work this engine pass
+                # did (DNS cache + dedupe index are mutated by stages).
                 queries_before = dns_cache.domains_queried
                 hits_before = dns_cache.cache_hits
+                canonicals_before = dedupe_index.new_canonicals
+                dupes_before = dedupe_index.duplicates_detected
+                replaced_before = dedupe_index.replaced_canonicals
 
                 payload = chunk_engine.run(payload, pipeline_context)
                 normalized_chunk = payload.frame
@@ -191,23 +205,10 @@ class EmailCleaningPipeline:
                 run_review += chunk_review
                 run_invalid += chunk_invalid
 
-                # Subphase 7: Global deduplication. Completeness already
-                # computed inside the engine (CompletenessStage). Only the
-                # email_normalized key and the per-row dedupe decision
-                # remain inline.
-                canonicals_before = dedupe_index.new_canonicals
-                dupes_before = dedupe_index.duplicates_detected
-                replaced_before = dedupe_index.replaced_canonicals
-
-                normalized_chunk = apply_email_normalized_column(normalized_chunk)
-                normalized_chunk = apply_dedupe_columns(normalized_chunk, dedupe_index)
-
+                # Dedupe delta metrics (DedupeStage ran via the engine).
                 chunk_new_canonicals = dedupe_index.new_canonicals - canonicals_before
                 chunk_duplicates = dedupe_index.duplicates_detected - dupes_before
                 chunk_replaced = dedupe_index.replaced_canonicals - replaced_before
-
-                # Subphase 8 first pass: persist chunk to staging
-                staging.append_chunk(normalized_chunk)
 
                 metrics.rows_processed += chunk_context.row_count
                 metrics.chunks_processed += 1

@@ -6,6 +6,8 @@ Stages are grouped by phase:
   * ``email_processing`` — Subphases 3 and 4 (syntax, domain, typo, compare)
   * ``enrichment``       — Subphases 5, 6, and completeness (DNS, scoring,
                            completeness score)
+  * ``postprocessing``   — Email normalization, dedupe, and staging
+                           persistence (the final three chunk steps)
 """
 
 from __future__ import annotations
@@ -20,6 +22,11 @@ from .enrichment import (
     CompletenessStage,
     DNSEnrichmentStage,
     ScoringStage,
+)
+from .postprocessing import (
+    DedupeStage,
+    EmailNormalizationStage,
+    StagingPersistenceStage,
 )
 from .preprocess import (
     HeaderNormalizationStage,
@@ -43,4 +50,8 @@ __all__ = [
     "DNSEnrichmentStage",
     "ScoringStage",
     "CompletenessStage",
+    # Postprocessing
+    "EmailNormalizationStage",
+    "DedupeStage",
+    "StagingPersistenceStage",
 ]
