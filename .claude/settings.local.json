@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(unzip -q trashpanda-next.zip)",
-      "Read(//c/c/Users/ceo/OneDrive/Desktop/**)"
+      "Read(//c/c/Users/ceo/OneDrive/Desktop/**)",
+      "Bash(npm install *)",
+      "Bash(npm run *)"
     ]
   }
 }

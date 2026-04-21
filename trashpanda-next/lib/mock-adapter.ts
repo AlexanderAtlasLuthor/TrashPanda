@@ -114,13 +114,18 @@ export function getMockJob(jobId: string): JobResult | null {
         invalid_or_bounce_risk: "invalid_or_bounce_risk.xlsx",
         summary_report: "summary_report.xlsx",
       },
+      // Keys match app/api_boundary.py _TECHNICAL_CSV_NAMES and _REPORT_NAMES
       technical_csvs: {
-        raw_normalized: "raw_normalized.csv",
-        mx_results: "mx_results.csv",
-        dedup_log: "dedup_log.csv",
+        clean_high_confidence: "clean_high_confidence.csv",
+        review_medium_confidence: "review_medium_confidence.csv",
+        removed_invalid: "removed_invalid.csv",
       },
       reports: {
-        pipeline_report: "pipeline_report.json",
+        processing_report_json: "processing_report.json",
+        processing_report_csv: "processing_report.csv",
+        domain_summary: "domain_summary.csv",
+        typo_corrections: "typo_corrections.csv",
+        duplicate_summary: "duplicate_summary.csv",
       },
     },
   };
