@@ -294,6 +294,7 @@ class EmailCleaningPipeline:
         removed_path = run_context.run_dir / "removed_invalid.csv"
 
         stats = ReportingStats(run_id=run_context.run_id)
+        stats.total_unique_emails = dedupe_index.index_size
 
         fieldnames: list[str] | None = None
 
@@ -357,36 +358,79 @@ class EmailCleaningPipeline:
                     else:
                         stats.total_duplicate_rows += 1
 
-                    domain = str(row_dict.get("domain_from_email") or row_dict.get("domain") or "")
+                    if hard_fail:
+                        stats.total_hard_fail += 1
+                    else:
+                        try:
+                            stats.score_sum += int(row_dict.get("score") or 0)
+                            stats.score_count += 1
+                        except (TypeError, ValueError):
+                            pass
+
+                    dns_err = row_dict.get("dns_error")
+                    if dns_err is not None and str(dns_err).strip():
+                        stats.total_dns_errors += 1
+
+                    # Effective domain: prefer corrected_domain (the value DNS was
+                    # queried on), falling back to domain_from_email, then the
+                    # input domain column.
+                    domain = str(
+                        row_dict.get("corrected_domain")
+                        or row_dict.get("domain_from_email")
+                        or row_dict.get("domain")
+                        or ""
+                    )
+                    info: dict | None = None
                     if domain:
-                        if domain not in stats.domain_counts:
-                            stats.domain_counts[domain] = {"clean": 0, "review": 0, "removed": 0}
+                        info = stats.domain_info.get(domain)
+                        if info is None:
+                            info = {
+                                "total_rows": 0,
+                                "corrected_count": 0,
+                                "domain_exists": False,
+                                "has_mx_record": False,
+                                "has_a_record": False,
+                                "kept_rows": 0,
+                                "removed_rows": 0,
+                            }
+                            stats.domain_info[domain] = info
+                        info["total_rows"] += 1
+                        if bool(row_dict.get("typo_corrected")):
+                            info["corrected_count"] += 1
+                        for dns_key in ("domain_exists", "has_mx_record", "has_a_record"):
+                            if bool(row_dict.get(dns_key)):
+                                info[dns_key] = True
 
                     if reason == "kept_high_confidence":
                         stats.total_output_clean += 1
-                        if domain:
-                            stats.domain_counts[domain]["clean"] += 1
+                        if info is not None:
+                            info["kept_rows"] += 1
                         assert clean_writer is not None
                         clean_writer.writerow(row_dict)
                     elif reason == "kept_review":
                         stats.total_output_review += 1
-                        if domain:
-                            stats.domain_counts[domain]["review"] += 1
+                        if info is not None:
+                            info["kept_rows"] += 1
                         assert review_writer is not None
                         review_writer.writerow(row_dict)
                     else:
                         stats.total_output_removed += 1
-                        if domain:
-                            stats.domain_counts[domain]["removed"] += 1
+                        if info is not None:
+                            info["removed_rows"] += 1
                         assert removed_writer is not None
                         removed_writer.writerow(row_dict)
 
-                    if row_dict.get("typo_corrected"):
+                    if bool(row_dict.get("typo_corrected")):
                         stats.typo_corrections.append({
                             "source_file": source_file,
                             "source_row_number": source_row_number,
-                            "original_domain": row_dict.get("domain_from_email", ""),
-                            "corrected_to": row_dict.get("domain_corrected_to", ""),
+                            "email": row_dict.get("email") or "",
+                            "typo_original_domain": (
+                                row_dict.get("typo_original_domain")
+                                or row_dict.get("domain_from_email")
+                                or ""
+                            ),
+                            "corrected_domain": row_dict.get("corrected_domain") or "",
                         })
 
                     if email_norm and not is_canonical_final:
@@ -394,10 +438,19 @@ class EmailCleaningPipeline:
                             canonical = dedupe_index.get_final_canonical(email_norm)
                             stats.duplicate_groups[email_norm] = {
                                 "duplicate_count": 0,
+                                "duplicates_removed_count": 0,
                                 "canonical_source_file": canonical.source_file if canonical else "",
                                 "canonical_source_row_number": canonical.source_row_number if canonical else 0,
+                                "winner_score": canonical.score if canonical else 0,
+                                "winner_completeness": canonical.completeness_score if canonical else 0,
+                                "duplicate_reasons": [],
                             }
-                        stats.duplicate_groups[email_norm]["duplicate_count"] += 1
+                        group = stats.duplicate_groups[email_norm]
+                        group["duplicate_count"] += 1
+                        group["duplicates_removed_count"] += 1
+                        dup_reason = row_dict.get("duplicate_reason")
+                        if dup_reason and dup_reason not in group["duplicate_reasons"]:
+                            group["duplicate_reasons"].append(dup_reason)
 
         generate_reports(stats, run_context.run_dir)
 
