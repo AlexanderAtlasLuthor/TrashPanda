@@ -1,14 +1,15 @@
 import type { JobArtifacts } from "@/lib/types";
 import { CLIENT_OUTPUT_MANIFEST } from "@/lib/types";
-import { artifactDownloadUrl, artifactZipUrl } from "@/lib/api";
+import { artifactDownloadUrl, artifactZipUrl, buildZipFilename } from "@/lib/api";
 import styles from "./DownloadArtifacts.module.css";
 
 interface DownloadArtifactsProps {
   jobId: string;
   artifacts: JobArtifacts | null | undefined;
+  inputFilename?: string | null;
 }
 
-export function DownloadArtifacts({ jobId, artifacts }: DownloadArtifactsProps) {
+export function DownloadArtifacts({ jobId, artifacts, inputFilename }: DownloadArtifactsProps) {
   const clientOutputs = artifacts?.client_outputs ?? {};
   const technical = artifacts?.technical_csvs ?? {};
   const reports = artifacts?.reports ?? {};
@@ -44,7 +45,7 @@ export function DownloadArtifacts({ jobId, artifacts }: DownloadArtifactsProps) 
           <a
             href={artifactZipUrl(jobId)}
             className={styles.zipBtn}
-            download={`trashpanda_results_${jobId}.zip`}
+            download={buildZipFilename(inputFilename)}
           >
             <svg viewBox="0 0 24 24" aria-hidden>
               <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />

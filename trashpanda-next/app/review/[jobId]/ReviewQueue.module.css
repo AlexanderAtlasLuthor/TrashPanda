@@ -1,0 +1,440 @@
+/* ── Stats bar ───────────────────────────────────────────────────────────── */
+
+.statsBar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.stat {
+  flex: 1;
+  padding: 14px 18px;
+  background: var(--bg-panel);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;
+}
+
+.stat::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--steel-blue);
+}
+
+.statApproved::before { background: var(--neon); box-shadow: 0 0 12px var(--neon-glow); }
+.statRemoved::before  { background: var(--danger); }
+.statPending::before  { background: var(--warn); }
+
+.statValue {
+  font-family: var(--font-display);
+  font-size: 26px;
+  color: var(--ink-high);
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.statApproved .statValue { color: var(--neon); }
+.statRemoved .statValue  { color: var(--danger); }
+
+.statLabel {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--ink-low);
+}
+
+/* ── Controls ────────────────────────────────────────────────────────────── */
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.searchInput {
+  flex: 1;
+  min-width: 200px;
+  padding: 9px 14px;
+  background: var(--bg-deep);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 3px;
+  color: var(--ink-high);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.searchInput::placeholder { color: var(--ink-low); }
+.searchInput:focus { border-color: var(--neon); }
+
+.filterSelect {
+  padding: 9px 12px;
+  background: var(--bg-deep);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 3px;
+  color: var(--ink-mid);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.filterSelect:focus { border-color: var(--neon); }
+
+.quickBtns {
+  display: flex;
+  gap: 8px;
+}
+
+.quickApprove,
+.quickRemove {
+  padding: 8px 14px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.quickApprove {
+  background: rgba(142, 255, 58, 0.08);
+  border: 1px solid rgba(142, 255, 58, 0.3);
+  color: var(--neon);
+}
+.quickApprove:hover { background: rgba(142, 255, 58, 0.15); }
+
+.quickRemove {
+  background: rgba(255, 58, 92, 0.08);
+  border: 1px solid rgba(255, 58, 92, 0.3);
+  color: var(--danger);
+}
+.quickRemove:hover { background: rgba(255, 58, 92, 0.15); }
+
+/* ── Table panel ─────────────────────────────────────────────────────────── */
+
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+/* ── Table header ────────────────────────────────────────────────────────── */
+
+.th {
+  padding: 11px 16px;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--ink-low);
+  background: var(--bg-deep);
+  border-bottom: 1px solid var(--stroke-steel);
+  white-space: nowrap;
+}
+
+.thCheck { width: 44px; padding-left: 16px; }
+
+/* ── Table rows ──────────────────────────────────────────────────────────── */
+
+.row {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  transition: background 0.1s ease;
+}
+
+.row:last-child { border-bottom: none; }
+
+.row:hover { background: var(--bg-panel-2); }
+
+.rowSelected { background: rgba(95, 180, 255, 0.05); }
+.rowSelected:hover { background: rgba(95, 180, 255, 0.08); }
+
+.rowApproved { background: rgba(142, 255, 58, 0.03); }
+.rowApproved:hover { background: rgba(142, 255, 58, 0.06); }
+
+.rowRemoved { opacity: 0.45; }
+
+/* ── Table cells ─────────────────────────────────────────────────────────── */
+
+.td {
+  padding: 11px 16px;
+  vertical-align: middle;
+}
+
+.tdCheck { width: 44px; }
+
+.tdEmail { max-width: 280px; }
+
+.emailAddr {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-high);
+  word-break: break-all;
+}
+
+.tdActions { width: 200px; white-space: nowrap; }
+
+/* ── Checkbox ────────────────────────────────────────────────────────────── */
+
+.checkbox {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--neon);
+  cursor: pointer;
+}
+
+/* ── Reason pills ────────────────────────────────────────────────────────── */
+
+.pill {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  white-space: nowrap;
+}
+
+.pillCatchAll {
+  color: var(--warn);
+  background: rgba(255, 184, 58, 0.1);
+  border: 1px solid rgba(255, 184, 58, 0.3);
+}
+
+.pillRoleBased {
+  color: var(--info);
+  background: rgba(95, 180, 255, 0.1);
+  border: 1px solid rgba(95, 180, 255, 0.3);
+}
+
+.pillNoSmtp {
+  color: var(--ink-mid);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--stroke-steel);
+}
+
+/* ── Confidence ──────────────────────────────────────────────────────────── */
+
+.conf {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+}
+
+.confLow { color: var(--warn); }
+.confMed { color: var(--ink-mid); }
+
+/* ── Row action buttons ──────────────────────────────────────────────────── */
+
+.actionBtns { display: flex; gap: 6px; }
+
+.btnApprove,
+.btnRemove {
+  padding: 5px 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.btnApprove {
+  background: transparent;
+  border: 1px solid rgba(142, 255, 58, 0.35);
+  color: var(--neon);
+}
+.btnApprove:hover { background: rgba(142, 255, 58, 0.1); }
+
+.btnRemove {
+  background: transparent;
+  border: 1px solid rgba(255, 58, 92, 0.35);
+  color: var(--danger);
+}
+.btnRemove:hover { background: rgba(255, 58, 92, 0.1); }
+
+/* ── Decided state ───────────────────────────────────────────────────────── */
+
+.decidedRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.decidedApproved {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--neon);
+}
+
+.decidedRemoved {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--danger);
+}
+
+.undoBtn {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-low);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color 0.1s;
+}
+.undoBtn:hover { color: var(--ink-mid); }
+
+/* ── Table footer ────────────────────────────────────────────────────────── */
+
+.tableFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-top: 1px solid var(--stroke-steel);
+  background: var(--bg-deep);
+}
+
+.footerCount {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-low);
+}
+
+.loadMoreBtn {
+  padding: 6px 14px;
+  background: transparent;
+  border: 1px solid var(--stroke-steel);
+  border-radius: 2px;
+  color: var(--ink-mid);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.loadMoreBtn:hover { border-color: var(--neon); color: var(--neon); }
+
+/* ── Empty state ─────────────────────────────────────────────────────────── */
+
+.emptyCell {
+  padding: 40px 16px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-low);
+}
+
+/* ── Skeleton loading ────────────────────────────────────────────────────── */
+
+.skeletonCell {
+  height: 12px;
+  background: var(--bg-elevated);
+  border-radius: 2px;
+  opacity: 0.5;
+}
+
+/* ── Back link ───────────────────────────────────────────────────────────── */
+
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-mid);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.backLink:hover { color: var(--neon); }
+
+/* ── Floating bulk bar ───────────────────────────────────────────────────── */
+
+.bulkBar {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--stroke-strong);
+  border-radius: 4px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+  z-index: 200;
+  white-space: nowrap;
+}
+
+.bulkCount {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-high);
+  min-width: 80px;
+}
+
+.bulkApprove,
+.bulkRemove,
+.bulkClear {
+  padding: 7px 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 1px;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.bulkApprove {
+  background: var(--neon);
+  border: none;
+  color: var(--bg-void);
+}
+.bulkApprove:hover { opacity: 0.85; }
+
+.bulkRemove {
+  background: transparent;
+  border: 1px solid rgba(255, 58, 92, 0.5);
+  color: var(--danger);
+}
+.bulkRemove:hover { background: rgba(255, 58, 92, 0.1); }
+
+.bulkClear {
+  background: transparent;
+  border: 1px solid var(--stroke-steel);
+  color: var(--ink-low);
+}
+.bulkClear:hover { color: var(--ink-mid); border-color: var(--stroke-strong); }
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+
+@media (max-width: 720px) {
+  .statsBar { flex-wrap: wrap; }
+  .stat { flex: 1 1 calc(50% - 6px); }
+  .controls { flex-direction: column; align-items: stretch; }
+  .searchInput { min-width: unset; }
+  .quickBtns { flex-direction: column; }
+  .bulkBar { left: 16px; right: 16px; transform: none; }
+}

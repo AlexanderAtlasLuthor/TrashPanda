@@ -6,12 +6,13 @@
  * Keep this file server-only (used only from route handlers under app/api).
  */
 
-import type { JobList, JobLogs, JobResult } from "./types";
+import type { JobList, JobLogs, JobResult, ReviewQueue } from "./types";
 import {
   createMockJob,
   getMockJob,
   getMockJobList,
   getMockJobLogs,
+  getMockReviewEmails,
   mockArtifactResponse,
 } from "./mock-adapter";
 
@@ -149,6 +150,19 @@ export async function adapterGetJobList(limit: number): Promise<JobList> {
     return (await res.json()) as JobList;
   }
   return getMockJobList(limit);
+}
+
+export async function adapterGetReviewEmails(jobId: string): Promise<ReviewQueue> {
+  if (useProxy) {
+    const res = await fetch(
+      `${backendUrl}/jobs/${encodeURIComponent(jobId)}/review`,
+      { cache: "no-store" },
+    );
+    if (res.status === 404) return { job_id: jobId, total: 0, emails: [] };
+    if (!res.ok) throw new Error(`Backend error (${res.status})`);
+    return (await res.json()) as ReviewQueue;
+  }
+  return getMockReviewEmails(jobId);
 }
 
 export const adapterMode = useProxy ? "proxy" : "mock";

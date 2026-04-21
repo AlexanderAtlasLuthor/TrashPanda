@@ -385,6 +385,40 @@ def _build_zip(root: Path) -> bytes:
     return buf.getvalue()
 
 
+def _build_zip_filename(input_filename: str | None, now: datetime | None = None) -> str:
+    """Build the download filename for the all-artifacts ZIP.
+
+    Format: ``<cleaned_stem>_trashpanda_results_<YYYY-MM-DD_HH-MM>.zip``
+
+    The stem is derived from the original uploaded filename by:
+      * stripping the extension (``.csv``, ``.xlsx``, etc.)
+      * lowercasing
+      * replacing whitespace with underscores
+      * keeping only ``[a-z0-9_-]`` characters
+      * collapsing repeated underscores
+      * trimming leading/trailing underscores
+
+    If the resulting stem is empty (missing or fully sanitized away), falls
+    back to ``trashpanda_results_<timestamp>.zip``.
+    """
+    import re
+
+    ts = (now or datetime.now()).strftime("%Y-%m-%d_%H-%M")
+
+    stem = ""
+    if input_filename:
+        raw_stem = Path(input_filename).stem
+        lowered = raw_stem.lower()
+        with_underscores = re.sub(r"\s+", "_", lowered)
+        sanitized = re.sub(r"[^a-z0-9_-]+", "", with_underscores)
+        collapsed = re.sub(r"_+", "_", sanitized).strip("_-")
+        stem = collapsed
+
+    if not stem:
+        return f"trashpanda_results_{ts}.zip"
+    return f"{stem}_trashpanda_results_{ts}.zip"
+
+
 def _tail_log(path: Path, n: int) -> list[str]:
     """Return the last *n* non-empty lines of *path*, or [] on any I/O error."""
     try:
@@ -463,11 +497,11 @@ def get_artifacts_zip(job_id: str) -> Response:
         _raise_http_error(403, "forbidden", "Path traversal detected.", {})
 
     zip_bytes = _build_zip(run_dir)
-    safe_id = job_id.replace("/", "_").replace("..", "_")
+    download_name = _build_zip_filename(result.input_filename)
     return Response(
         content=zip_bytes,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="trashpanda_results_{safe_id}.zip"'},
+        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
     )
 
 

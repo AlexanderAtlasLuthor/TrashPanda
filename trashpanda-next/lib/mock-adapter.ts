@@ -6,7 +6,7 @@
  * proxy directly. This file is only used in dev.
  */
 
-import type { JobList, JobLogs, JobResult } from "./types";
+import type { JobList, JobLogs, JobResult, ReviewQueue, ReviewEmail, ReviewReason, ReviewConfidence } from "./types";
 
 interface StoredJob {
   result: JobResult;
@@ -261,6 +261,71 @@ export function getMockJobList(limit: number): JobList {
       finished_at: r.finished_at,
     }));
   return { jobs: items };
+}
+
+// ── Review queue mock generator ──────────────────────────────────────────
+
+const _ROLES = ["info","admin","contact","sales","support","hello","billing",
+  "hr","dev","help","office","team","press","webmaster","noreply","mail",
+  "marketing","newsletter","careers","jobs","data","it","security","ops"];
+const _CATCHALL = ["acme-enterprise.io","nexus-solutions.co","vertex-group.biz",
+  "alphatech.ventures","globalcorp.co","betaholdings.io","omnisystems.biz",
+  "stellargroup.co","apexinc.io","meridian.co","paradigm-labs.biz",
+  "axiomtech.io","crescendo.ventures","synergy-co.biz","horizon-ent.io"];
+const _NOSMTP = ["freelance.design","creative-studio.biz","digitalcraft.io",
+  "webpilot.co","theagency.design","projecthive.biz","buildersco.io",
+  "crafted.co","pixelsmith.biz","devshop.io"];
+const _REGULAR = ["company.com","techfirm.net","startup.io","agency.co",
+  "webgroup.biz","digitalteam.net","cloudsvc.io","appco.net"];
+const _FIRST = ["alex","sarah","mike","emily","rob","jessica","david",
+  "jennifer","carlos","anna","pierre","liu","ahmed","priya","tom",
+  "jordan","chris","taylor","morgan","sam","riley","casey","dana","blake"];
+const _LAST = ["smith","jones","garcia","mueller","dupont","chen","kowalski",
+  "hernandez","kim","patel","wilson","brown","davis","martin","thompson",
+  "white","jackson","harris","lee","nguyen","clark","rodriguez","walker"];
+
+function _seedRand(str: string): () => number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  let s = h;
+  return () => {
+    s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
+    return (s >>> 0) / 4294967296;
+  };
+}
+
+function _pick<T>(arr: T[], r: () => number): T {
+  return arr[Math.floor(r() * arr.length)];
+}
+
+export function getMockReviewEmails(jobId: string): ReviewQueue {
+  const rand = _seedRand(jobId);
+  const emails: ReviewEmail[] = [];
+  for (let i = 0; i < 200; i++) {
+    const roll = rand();
+    let reason: ReviewReason;
+    let email: string;
+    let domain: string;
+    if (roll < 0.44) {
+      reason = "catch-all";
+      domain = _pick(_CATCHALL, rand);
+      email = `${_pick(_FIRST, rand)}.${_pick(_LAST, rand)}@${domain}`;
+    } else if (roll < 0.79) {
+      reason = "role-based";
+      domain = _pick(_REGULAR, rand);
+      email = `${_pick(_ROLES, rand)}@${domain}`;
+    } else {
+      reason = "no-smtp";
+      domain = _pick(_NOSMTP, rand);
+      email = `${_pick(_FIRST, rand)}@${domain}`;
+    }
+    const confidence: ReviewConfidence = rand() < 0.4 ? "low" : "medium";
+    emails.push({ id: `${jobId}_r${i}`, email, domain, reason, confidence });
+  }
+  return { job_id: jobId, total: 200, emails };
 }
 
 /**

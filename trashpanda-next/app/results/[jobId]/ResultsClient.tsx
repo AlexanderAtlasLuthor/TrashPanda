@@ -246,8 +246,17 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
           <div className="fade-up">
             <ClassificationBreakdown summary={job.summary} />
           </div>
+          {(job.summary?.total_review ?? 0) > 0 && (
+            <div className="fade-up">
+              <ReviewQueueBanner jobId={jobId} count={job.summary!.total_review!} />
+            </div>
+          )}
           <div className="fade-up">
-            <DownloadArtifacts jobId={jobId} artifacts={job.artifacts} />
+            <DownloadArtifacts
+              jobId={jobId}
+              artifacts={job.artifacts}
+              inputFilename={job.input_filename}
+            />
           </div>
           <div className="fade-up">
             <LiveLogsPanel
@@ -276,6 +285,58 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
         </>
       )}
     </>
+  );
+}
+
+// ── Review Queue CTA banner ──────────────────────────────────────────────────
+
+function ReviewQueueBanner({ jobId, count }: { jobId: string; count: number }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 16,
+        padding: "14px 20px",
+        marginBottom: 28,
+        background: "rgba(255, 184, 58, 0.05)",
+        border: "1px solid rgba(255, 184, 58, 0.25)",
+        borderRadius: 3,
+      }}
+    >
+      <div>
+        <div style={{ fontFamily: "var(--font-ui)", fontWeight: 600, fontSize: 14, color: "var(--ink-high)", marginBottom: 2 }}>
+          {count.toLocaleString()} emails need manual review
+        </div>
+        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-low)" }}>
+          Catch-all domains · role-based addresses · unverified SMTP
+        </div>
+      </div>
+      <Link
+        href={`/review/${encodeURIComponent(jobId)}`}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "9px 18px",
+          fontFamily: "var(--font-mono)",
+          fontSize: 11,
+          letterSpacing: "1px",
+          textTransform: "uppercase",
+          color: "var(--warn)",
+          background: "transparent",
+          border: "1px solid rgba(255, 184, 58, 0.5)",
+          borderRadius: 3,
+          textDecoration: "none",
+          whiteSpace: "nowrap",
+          flexShrink: 0,
+          transition: "all 0.15s ease",
+        }}
+      >
+        Review queue →
+      </Link>
+    </div>
   );
 }
 

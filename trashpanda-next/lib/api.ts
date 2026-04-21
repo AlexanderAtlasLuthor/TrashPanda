@@ -13,7 +13,7 @@
  * No UI code needs to change.
  */
 
-import type { JobList, JobLogs, JobResult } from "./types";
+import type { JobList, JobLogs, JobResult, ReviewQueue } from "./types";
 
 export interface UploadResponse {
   job_id: string;
@@ -114,7 +114,50 @@ export function artifactDownloadUrl(jobId: string, key: string): string {
   return `/api/jobs/${encodeURIComponent(jobId)}/artifacts/${encodeURIComponent(key)}`;
 }
 
+export async function getReviewEmails(jobId: string): Promise<ReviewQueue> {
+  const res = await fetch(
+    `/api/jobs/${encodeURIComponent(jobId)}/review`,
+    { cache: "no-store" },
+  );
+  return handleResponse<ReviewQueue>(res);
+}
+
 /** URL that streams a ZIP of all artifacts for a completed job. */
 export function artifactZipUrl(jobId: string): string {
   return `/api/jobs/${encodeURIComponent(jobId)}/artifacts/zip`;
+}
+
+/**
+ * Build the client-side fallback ZIP filename. Mirrors the backend rule in
+ * `app/server.py::_build_zip_filename` so the <a download> attribute matches
+ * the Content-Disposition the server sends back.
+ *
+ * Format: `<clean_stem>_trashpanda_results_<YYYY-MM-DD_HH-MM>.zip`
+ * Fallback when no input filename: `trashpanda_results_<timestamp>.zip`
+ */
+export function buildZipFilename(
+  inputFilename: string | null | undefined,
+  now: Date = new Date(),
+): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const ts =
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+    `_${pad(now.getHours())}-${pad(now.getMinutes())}`;
+
+  let stem = "";
+  if (inputFilename) {
+    const base = inputFilename.split(/[\\/]/).pop() ?? "";
+    const dot = base.lastIndexOf(".");
+    const rawStem = dot > 0 ? base.slice(0, dot) : base;
+    stem = rawStem
+      .toLowerCase()
+      .replace(/\s+/g, "_")
+      .replace(/[^a-z0-9_-]+/g, "")
+      .replace(/_+/g, "_")
+      .replace(/^[_-]+|[_-]+$/g, "");
+  }
+
+  return stem
+    ? `${stem}_trashpanda_results_${ts}.zip`
+    : `trashpanda_results_${ts}.zip`;
 }

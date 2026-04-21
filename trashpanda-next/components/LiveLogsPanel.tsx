@@ -104,6 +104,9 @@ export function LiveLogsPanel({
   defaultCollapsed = false,
 }: LiveLogsPanelProps) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
+    "idle",
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
   const parsed = lines.map(parseLine);
   const activity = deriveActivity(lines);
@@ -115,6 +118,38 @@ export function LiveLogsPanel({
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [lines, collapsed]);
+
+  const handleCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (lines.length === 0) return;
+    const text = lines.join("\n");
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback for non-secure contexts.
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopyState("copied");
+    } catch {
+      setCopyState("error");
+    }
+    setTimeout(() => setCopyState("idle"), 1500);
+  };
+
+  const copyLabel =
+    copyState === "copied"
+      ? "COPIED"
+      : copyState === "error"
+        ? "FAILED"
+        : "COPY";
 
   return (
     <div className={styles.panel}>
@@ -135,6 +170,15 @@ export function LiveLogsPanel({
               {activity}
             </span>
           )}
+          <button
+            className={styles.collapseBtn}
+            onClick={handleCopy}
+            disabled={lines.length === 0}
+            aria-label="Copy console output to clipboard"
+            title="Copy console output"
+          >
+            {copyLabel}
+          </button>
           <button
             className={styles.collapseBtn}
             onClick={(e) => {

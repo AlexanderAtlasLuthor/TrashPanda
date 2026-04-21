@@ -62,6 +62,24 @@ export interface JobList {
   jobs: JobListItem[];
 }
 
+export type ReviewReason = "catch-all" | "role-based" | "no-smtp";
+export type ReviewConfidence = "low" | "medium";
+export type ReviewDecision = "approved" | "removed";
+
+export interface ReviewEmail {
+  id: string;
+  email: string;
+  domain: string;
+  reason: ReviewReason;
+  confidence: ReviewConfidence;
+}
+
+export interface ReviewQueue {
+  job_id: string;
+  total: number;
+  emails: ReviewEmail[];
+}
+
 /**
  * Known client output filenames the backend is guaranteed to produce on success.
  * Keys match artifact keys the backend returns; labels are UI-friendly.
