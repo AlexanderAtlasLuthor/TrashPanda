@@ -14,6 +14,10 @@ import { ErrorState } from "@/components/ErrorState";
 
 const POLL_INTERVAL_MS = 2000;
 
+function shouldPoll(job: JobResult | null): boolean {
+  return job?.status === "queued" || job?.status === "running";
+}
+
 interface ResultsClientProps {
   jobId: string;
   initialJob: JobResult | null;
@@ -32,27 +36,49 @@ interface ResultsClientProps {
 export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
   const [job, setJob] = useState<JobResult | null>(initialJob);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const jobRef = useRef<JobResult | null>(initialJob);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inFlightRef = useRef(false);
 
   useEffect(() => {
-    const isTerminal =
-      job?.status === "completed" || job?.status === "failed";
-    if (isTerminal) {
+    let cancelled = false;
+
+    function clearTimer() {
       if (timerRef.current) {
-        clearInterval(timerRef.current);
+        clearTimeout(timerRef.current);
         timerRef.current = null;
       }
-      return;
     }
 
-    // kick off polling
+    function scheduleNextFetch() {
+      if (cancelled) return;
+      clearTimer();
+      timerRef.current = setTimeout(fetchOnce, POLL_INTERVAL_MS);
+    }
+
     async function fetchOnce() {
+      if (cancelled || inFlightRef.current) return;
+      if (jobRef.current && !shouldPoll(jobRef.current)) return;
+
+      inFlightRef.current = true;
       try {
         const next = await getJob(jobId);
+        if (cancelled) return;
+
+        jobRef.current = next;
         setJob(next);
         setFetchError(null);
+
+        if (shouldPoll(next)) {
+          scheduleNextFetch();
+        } else {
+          clearTimer();
+        }
       } catch (err) {
+        if (cancelled) return;
+
         if (err instanceof ApiError && err.status === 404) {
+          jobRef.current = null;
           setJob(null);
           setFetchError(null);
           return;
@@ -60,18 +86,27 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
         const message =
           err instanceof Error ? err.message : "Could not fetch job status.";
         setFetchError(message);
+        scheduleNextFetch();
+      } finally {
+        inFlightRef.current = false;
       }
     }
 
-    // fetch immediately on mount if we don't have an initial snapshot,
-    // then start the interval
-    if (!job) fetchOnce();
+    jobRef.current = initialJob;
+    inFlightRef.current = false;
+    setJob(initialJob);
+    setFetchError(null);
+    clearTimer();
 
-    timerRef.current = setInterval(fetchOnce, POLL_INTERVAL_MS);
+    if (!initialJob || shouldPoll(initialJob)) {
+      scheduleNextFetch();
+    }
+
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
+      cancelled = true;
+      clearTimer();
     };
-  }, [job, jobId]);
+  }, [initialJob, jobId]);
 
   // 404 / not found
   if (!job) {
