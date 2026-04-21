@@ -23,6 +23,7 @@ from .evaluators import (
     SyntaxSignalEvaluator,
     TypoCorrectionSignalEvaluator,
 )
+from .factory import build_default_engine, build_default_profile
 from .profile import ScoringProfile
 from .signal import ScoringSignal
 
@@ -39,4 +40,7 @@ __all__ = [
     "TypoCorrectionSignalEvaluator",
     "DomainMatchSignalEvaluator",
     "DnsSignalEvaluator",
+    # Default engine composition
+    "build_default_engine",
+    "build_default_profile",
 ]

@@ -28,6 +28,7 @@ from .postprocessing import (
     EmailNormalizationStage,
     StagingPersistenceStage,
 )
+from .scoring_v2 import ScoringV2Stage
 from .preprocess import (
     HeaderNormalizationStage,
     StructuralValidationStage,
@@ -49,6 +50,7 @@ __all__ = [
     # Enrichment
     "DNSEnrichmentStage",
     "ScoringStage",
+    "ScoringV2Stage",
     "CompletenessStage",
     # Postprocessing
     "EmailNormalizationStage",
