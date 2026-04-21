@@ -14,6 +14,7 @@ or depends on V1 scoring. Those concerns are future subphases.
 
 from __future__ import annotations
 
+from . import control
 from .engine import ValidationEngineV2
 from .interfaces import (
     CatchAllAnalyzer,
@@ -61,4 +62,6 @@ __all__ = [
     "VALIDATION_STATUSES",
     "SMTP_PROBE_STATUSES",
     "CATCH_ALL_STATUSES",
+    # Subphase 3 control-plane subpackage.
+    "control",
 ]

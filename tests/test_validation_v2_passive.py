@@ -624,6 +624,9 @@ class TestEngineIntegration:
             "validation_explanation",
             "breakdown",
             "metadata",
+            # Subphase 3 control-plane surface.
+            "decision_trace",
+            "execution_decision",
         }
         engine = _wire_full_passive_engine(
             policy=ValidationPolicy(excluded_domains={"bad.com"}),
