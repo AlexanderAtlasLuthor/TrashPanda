@@ -1,5 +1,6 @@
 import type { JobResult, JobStatus } from "@/lib/types";
 import styles from "./JobStatusPanel.module.css";
+import { useEtaEstimator } from "./useEtaEstimator";
 
 const STAGES: Array<{ name: string; desc: string }> = [
   { name: "INGEST", desc: "Read CSV/XLSX · parse rows into memory" },
@@ -58,10 +59,18 @@ function statusLabel(status: JobStatus): string {
 
 interface JobStatusPanelProps {
   result: JobResult;
+  /**
+   * Streaming log lines from the same poll cycle as `result`. Used by the
+   * ETA estimator to derive a real throughput readout from `[TIMING]` lines.
+   * Optional so existing call sites that don't have logs still compile; in
+   * that case the ETA row degrades to "Estimating..." while running.
+   */
+  logLines?: string[];
 }
 
-export function JobStatusPanel({ result }: JobStatusPanelProps) {
+export function JobStatusPanel({ result, logLines = [] }: JobStatusPanelProps) {
   const activeIdx = estimateStage(result);
+  const eta = useEtaEstimator(result, logLines);
   const fileExt =
     result.input_filename?.toLowerCase().endsWith(".xlsx") ? "XLSX" : "CSV";
 
@@ -123,6 +132,17 @@ export function JobStatusPanel({ result }: JobStatusPanelProps) {
             );
           })}
         </div>
+
+        {eta.label && (
+          <div
+            className={[styles.eta, styles[`eta_${eta.state}`]]
+              .filter(Boolean)
+              .join(" ")}
+          >
+            <span className={styles.etaPrefix}>ETA</span>
+            <span className={styles.etaValue}>{eta.label}</span>
+          </div>
+        )}
 
         {result.status === "queued" && (
           <div className={styles.hint}>

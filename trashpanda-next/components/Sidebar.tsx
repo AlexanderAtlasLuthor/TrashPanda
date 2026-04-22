@@ -44,7 +44,7 @@ interface SidebarProps {
 
 export function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname();
-  const isConsole = pathname === "/";
+  const isHome = pathname === "/";
   const isResults = pathname?.startsWith("/results");
   const isInsights = pathname?.startsWith("/insights");
   const isLeadDiscovery = pathname?.startsWith("/lead-discovery");
@@ -83,8 +83,8 @@ export function Sidebar({ open, onClose }: SidebarProps) {
           <div className={styles.sectionLabel}>// Workspace</div>
           <NavLink
             href="/"
-            active={isConsole}
-            label="Console"
+            active={isHome}
+            label="Home"
             icon={
               <svg viewBox="0 0 24 24">
                 <path d="M3 12h4l3-9 4 18 3-9h4" />

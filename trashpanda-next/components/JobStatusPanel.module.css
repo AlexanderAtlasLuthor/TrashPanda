@@ -251,6 +251,54 @@
   line-height: 1.6;
 }
 
+.eta {
+  margin-top: 18px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--stroke);
+  background: var(--bg-deep);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.3px;
+  border-radius: 3px;
+}
+
+.etaPrefix {
+  color: var(--ink-low);
+  font-size: 10px;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+}
+
+.etaValue {
+  color: var(--ink-mid);
+  font-variant-numeric: tabular-nums;
+}
+
+.eta_running {
+  border-color: var(--stroke-strong);
+}
+
+.eta_running .etaValue {
+  color: var(--ink-high);
+}
+
+.eta_estimating .etaValue,
+.eta_waiting .etaValue {
+  color: var(--ink-low);
+  font-style: italic;
+}
+
+.eta_complete {
+  border-color: rgba(57, 255, 20, 0.25);
+}
+
+.eta_complete .etaValue {
+  color: var(--neon);
+}
+
 @media (max-width: 720px) {
   .stage {
     grid-template-columns: 24px 1fr;

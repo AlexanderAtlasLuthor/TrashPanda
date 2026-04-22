@@ -1,0 +1,119 @@
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  padding: 18px 20px 16px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.title {
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: var(--ink-high);
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.title::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  background: var(--neon);
+  transform: rotate(45deg);
+  display: inline-block;
+}
+
+.sub {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-low);
+  letter-spacing: 0.8px;
+}
+
+.list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--stroke-steel);
+  border-left: 2px solid var(--ink-ghost);
+  border-radius: 3px;
+  background: var(--bg-deep);
+}
+
+.bullet {
+  width: 6px;
+  height: 6px;
+  background: var(--ink-low);
+  border-radius: 50%;
+  margin-top: 6px;
+}
+
+.itemBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.itemHead {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-high);
+  letter-spacing: 0.2px;
+}
+
+.itemText {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-mid);
+  line-height: 1.55;
+  letter-spacing: 0.2px;
+}
+
+.tone_ok {
+  border-left-color: var(--neon);
+}
+.tone_ok .bullet {
+  background: var(--neon);
+  box-shadow: 0 0 6px var(--neon-glow);
+}
+
+.tone_warn {
+  border-left-color: var(--warn);
+}
+.tone_warn .bullet {
+  background: var(--warn);
+  box-shadow: 0 0 6px var(--warn-glow);
+}
+
+.tone_info {
+  border-left-color: var(--info);
+}
+.tone_info .bullet {
+  background: var(--info);
+  box-shadow: 0 0 6px var(--info-glow);
+}

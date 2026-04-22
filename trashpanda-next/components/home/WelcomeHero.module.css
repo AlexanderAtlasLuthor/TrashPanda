@@ -1,0 +1,125 @@
+.hero {
+  display: grid;
+  grid-template-columns: 1.1fr 1.6fr;
+  gap: 28px;
+  align-items: center;
+  padding: 28px 30px;
+  margin-bottom: 24px;
+  background:
+    linear-gradient(135deg, rgba(142, 255, 58, 0.04), transparent 55%),
+    var(--bg-panel);
+  border: 1px solid var(--stroke);
+  border-radius: 4px;
+  position: relative;
+  overflow: hidden;
+}
+
+.hero::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--neon);
+  box-shadow: 0 0 14px var(--neon-glow);
+}
+
+.left {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kicker {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--ink-low);
+  text-transform: uppercase;
+}
+
+.title {
+  font-family: var(--font-display);
+  font-size: 30px;
+  letter-spacing: 0.5px;
+  color: var(--ink-high);
+  line-height: 1.05;
+}
+
+.accent {
+  color: var(--neon);
+  text-shadow: 0 0 14px var(--neon-glow);
+}
+
+.subtitle {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink-mid);
+  letter-spacing: 0.2px;
+  max-width: 520px;
+}
+
+.right {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--stroke-steel);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.stat {
+  padding: 14px 14px 12px;
+  background: var(--bg-deep);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.statValue {
+  font-family: var(--font-display);
+  font-size: 24px;
+  line-height: 1;
+  color: var(--ink-high);
+  letter-spacing: -0.3px;
+}
+
+.valueAccent {
+  color: var(--neon);
+}
+
+.valueDanger {
+  color: var(--danger);
+}
+
+.statLabel {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: var(--ink-low);
+}
+
+@media (max-width: 1100px) {
+  .hero {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+  .right {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .hero {
+    padding: 22px 20px;
+  }
+  .title {
+    font-size: 24px;
+  }
+  .right {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

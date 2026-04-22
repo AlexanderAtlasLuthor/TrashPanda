@@ -281,7 +281,7 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
       ) : (
         <>
           <div className="fade-up">
-            <JobStatusPanel result={job} />
+            <JobStatusPanel result={job} logLines={logLines} />
           </div>
           <div className="fade-up">
             <LiveLogsPanel lines={logLines} status={job.status} />

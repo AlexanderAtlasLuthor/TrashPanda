@@ -1,0 +1,148 @@
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  padding: 18px 20px 16px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.title {
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: var(--ink-high);
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.title::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  background: var(--neon);
+  transform: rotate(45deg);
+  display: inline-block;
+}
+
+.sub {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-low);
+  letter-spacing: 0.8px;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--stroke-steel);
+  border-left: 2px solid var(--ink-ghost);
+  border-radius: 3px;
+  background: var(--bg-deep);
+}
+
+.toneOk   { border-left-color: var(--neon);   }
+.toneWarn { border-left-color: var(--warn);   }
+.toneBad  { border-left-color: var(--danger); }
+.toneInfo { border-left-color: var(--info);   }
+
+.rowLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.rowLabel {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: var(--ink-low);
+}
+
+.rowSample {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-mid);
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowValue {
+  font-family: var(--font-display);
+  font-size: 20px;
+  line-height: 1;
+  color: var(--ink-high);
+  letter-spacing: -0.3px;
+}
+
+.toneOk   .rowValue { color: var(--neon);   }
+.toneWarn .rowValue { color: var(--warn);   }
+.toneBad  .rowValue { color: var(--danger); }
+.toneInfo .rowValue { color: var(--info);   }
+
+.empty {
+  padding: 14px 12px;
+  border: 1px dashed var(--stroke-steel);
+  border-radius: 3px;
+  background: var(--bg-deep);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.emptyTitle {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-mid);
+  letter-spacing: 0.2px;
+}
+
+.emptyBody {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-low);
+  line-height: 1.55;
+}
+
+.cta {
+  margin-top: auto;
+  display: inline-block;
+  padding-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--neon);
+  text-decoration: none;
+  align-self: flex-start;
+  transition: color 0.15s ease, transform 0.12s ease;
+}
+
+.cta:hover {
+  color: var(--neon-bright);
+  transform: translateX(2px);
+}
