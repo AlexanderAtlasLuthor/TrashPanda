@@ -119,4 +119,11 @@ export const CLIENT_OUTPUT_MANIFEST: ReadonlyArray<{
     description: "Full pipeline breakdown and per-stage counts.",
     severity: "info",
   },
+  {
+    key: "approved_original_format",
+    filename: "approved_original_format.xlsx",
+    label: "Approved records (original format)",
+    description: "Approved rows with the exact column layout from your original input file.",
+    severity: "ok",
+  },
 ];

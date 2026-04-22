@@ -7,7 +7,11 @@
       "Bash(npm run *)",
       "Bash(python -m pytest tests/test_http_api.py -v)",
       "Bash(npx tsc *)",
-      "Bash(python -m pytest tests/test_http_api.py -q)"
+      "Bash(python -m pytest tests/test_http_api.py -q)",
+      "PowerShell($wsh = New-Object -ComObject WScript.Shell; $lnk = $wsh.CreateShortcut\\(\"$env:USERPROFILE\\\\Desktop\\\\TrashPanda.lnk\"\\); \"Target: $\\($lnk.TargetPath\\)\"; \"WorkDir: $\\($lnk.WorkingDirectory\\)\"; \"Icon: $\\($lnk.IconLocation\\)\"; \"Desc: $\\($lnk.Description\\)\")",
+      "PowerShell($lnk = \"$env:USERPROFILE\\\\Desktop\\\\TrashPanda.lnk\"; Test-Path $lnk; \\(Get-Item $lnk\\).Length; Test-Path \"C:\\\\Users\\\\ceo\\\\OneDrive\\\\Desktop\\\\TrashPanda\\\\assets\\\\trashpanda.ico\")",
+      "PowerShell(\\(Get-ItemProperty 'HKCU:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Explorer\\\\Shell Folders'\\).Desktop; $env:OneDriveConsumer; $env:OneDrive)",
+      "PowerShell($lnk = \"C:\\\\Users\\\\ceo\\\\OneDrive\\\\Desktop\\\\TrashPanda.lnk\"; Test-Path $lnk; \\(Get-Item $lnk\\).Length)"
     ]
   }
 }

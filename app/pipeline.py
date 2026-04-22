@@ -33,7 +33,7 @@ from .engine.stages import (
 )
 from .io_utils import build_run_context, discover_input_files, prepare_input_file, read_csv_in_chunks
 from .models import FileIngestionMetrics, MaterializationMetrics, PipelineResult, RunContext
-from .client_output import generate_client_outputs
+from .client_output import generate_approved_original_format, generate_client_outputs
 from .reporting import ReportingStats, generate_reports
 from .storage import StagingDB
 from .typo_rules import build_typo_map
@@ -310,6 +310,22 @@ class EmailCleaningPipeline:
         self.logger.info("[TIMING] Materialize START")
         mat_metrics = self._materialize(staging, dedupe_index, active_run_context)
         self.logger.info("[TIMING] Materialize DONE elapsed=%.3fs", time.perf_counter() - t0_mat)
+
+        t0_aof = time.perf_counter()
+        self.logger.info("[TIMING] approved_original_format START")
+        try:
+            generate_approved_original_format(
+                active_run_context.run_dir,
+                [f.absolute_path for f in discovered_files],
+                logger=self.logger,
+            )
+        except Exception as exc:
+            self.logger.warning("approved_original_format generation failed: %s", exc)
+        self.logger.info(
+            "[TIMING] approved_original_format DONE elapsed=%.3fs",
+            time.perf_counter() - t0_aof,
+        )
+
         self.logger.info("[TIMING] Pipeline DONE elapsed=%.3fs", time.perf_counter() - t0_run)
         staging.close()
 

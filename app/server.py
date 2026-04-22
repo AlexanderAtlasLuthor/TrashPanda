@@ -48,6 +48,7 @@ ARTIFACT_KEYS: dict[str, tuple[str, str]] = {
     "review_emails": ("client_outputs", "review_emails"),
     "invalid_or_bounce_risk": ("client_outputs", "invalid_or_bounce_risk"),
     "summary_report": ("client_outputs", "summary_report"),
+    "approved_original_format": ("client_outputs", "approved_original_format"),
     "clean_high_confidence": ("technical_csvs", "clean_high_confidence"),
     "review_medium_confidence": ("technical_csvs", "review_medium_confidence"),
     "removed_invalid": ("technical_csvs", "removed_invalid"),

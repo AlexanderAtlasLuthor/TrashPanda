@@ -149,6 +149,21 @@ def _read_csv_safe(path: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+_ENCODING_FALLBACKS = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
+
+
+def _read_original_file(path: Path) -> pd.DataFrame:
+    """Read the original client input file (CSV or XLSX) preserving all columns."""
+    if path.suffix.lower() == ".xlsx":
+        return pd.read_excel(path, dtype=str, keep_default_na=False)
+    for enc in _ENCODING_FALLBACKS:
+        try:
+            return pd.read_csv(path, dtype=str, keep_default_na=False, na_filter=False, encoding=enc)
+        except (UnicodeDecodeError, pd.errors.EmptyDataError):
+            continue
+    raise ValueError(f"Cannot decode original input file with any supported encoding: {path}")
+
+
 def _count_reason(df: pd.DataFrame, patterns: tuple[str, ...]) -> int:
     if df.empty or "client_reason" not in df.columns:
         return 0
@@ -228,6 +243,87 @@ def generate_client_outputs(
         log.warning("Failed to write summary_report.xlsx: %s", exc)
 
     return written
+
+
+def generate_approved_original_format(
+    run_dir: Path,
+    input_paths: list[Path],
+    logger: logging.Logger | None = None,
+) -> Path | None:
+    """Write approved_original_format.xlsx with approved rows in the original column layout.
+
+    Reads source_file + source_row_number from clean_high_confidence.csv and
+    review_medium_confidence.csv, then cross-references the original input files
+    to extract those exact rows with all original columns preserved.
+
+    Returns the written path on success, None if skipped.
+    Logs warnings and returns None on any error; never raises.
+    """
+    run_dir = Path(run_dir)
+    log = logger or logging.getLogger(__name__)
+
+    # --- Collect approved (source_file → set of source_row_numbers) ---
+    approved: dict[str, set[int]] = {}
+    for csv_name in ("clean_high_confidence.csv", "review_medium_confidence.csv"):
+        df = _read_csv_safe(run_dir / csv_name)
+        if df.empty or "source_file" not in df.columns or "source_row_number" not in df.columns:
+            continue
+        for _, row in df.iterrows():
+            src = str(row["source_file"]).strip()
+            try:
+                rn = int(row["source_row_number"])
+            except (ValueError, TypeError):
+                continue
+            approved.setdefault(src, set()).add(rn)
+
+    if not approved:
+        log.warning("approved_original_format: no approved rows found in pipeline outputs")
+        return None
+
+    # --- Build name → path lookup for the original input files ---
+    path_by_name: dict[str, Path] = {p.name: p for p in input_paths}
+
+    # --- Extract approved rows from each original file ---
+    frames: list[pd.DataFrame] = []
+    for src_name in sorted(approved):
+        row_nums = approved[src_name]
+        orig_path = path_by_name.get(src_name)
+        if orig_path is None or not orig_path.is_file():
+            log.warning(
+                "approved_original_format: original input not found for source_file=%r", src_name
+            )
+            continue
+        try:
+            orig_df = _read_original_file(orig_path)
+        except Exception as exc:
+            log.warning("approved_original_format: cannot read %r: %s", src_name, exc)
+            continue
+
+        # source_row_number starts at 2 (row 1 = header, row 2 = first data row).
+        # Translate to zero-based pandas iloc: pandas_index = source_row_number - 2.
+        valid_indices = sorted(rn - 2 for rn in row_nums if 0 <= rn - 2 < len(orig_df))
+        if not valid_indices:
+            continue
+        frames.append(orig_df.iloc[valid_indices].reset_index(drop=True))
+
+    if not frames:
+        log.warning(
+            "approved_original_format: could not extract rows from any original input"
+        )
+        return None
+
+    combined = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+    out_path = run_dir / "approved_original_format.xlsx"
+    try:
+        _write_xlsx(combined, out_path, sheet_name="approved")
+        log.info(
+            "approved_original_format written | rows=%s file=%s",
+            len(combined), out_path.name,
+        )
+        return out_path
+    except Exception as exc:
+        log.warning("approved_original_format: failed to write XLSX: %s", exc)
+        return None
 
 
 def _write_summary_report(

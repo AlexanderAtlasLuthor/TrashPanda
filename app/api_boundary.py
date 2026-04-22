@@ -115,6 +115,7 @@ class ClientOutputs:
     review_emails: Path | None = None
     invalid_or_bounce_risk: Path | None = None
     summary_report: Path | None = None
+    approved_original_format: Path | None = None
 
 
 @dataclass(slots=True)
@@ -198,6 +199,7 @@ _CLIENT_OUTPUT_NAMES: dict[str, str] = {
     "review_emails": "review_emails.xlsx",
     "invalid_or_bounce_risk": "invalid_or_bounce_risk.xlsx",
     "summary_report": "summary_report.xlsx",
+    "approved_original_format": "approved_original_format.xlsx",
 }
 
 _REPORT_NAMES: dict[str, str] = {

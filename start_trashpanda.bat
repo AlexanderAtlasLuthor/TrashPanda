@@ -2,6 +2,10 @@
 setlocal EnableDelayedExpansion
 title TrashPanda Launcher
 
+:: ROOT = directory of this .bat file, regardless of where cmd was launched from
+set "ROOT=%~dp0"
+if "!ROOT:~-1!"=="\" set "ROOT=!ROOT:~0,-1!"
+
 echo.
 echo  =========================================
 echo   TrashPanda - Local Dev Launcher
@@ -10,40 +14,51 @@ echo.
 
 :: --- Validate prerequisites ---
 
-if not exist ".venv\Scripts\activate.bat" (
-    echo [ERROR] .venv not found. Run: python -m venv .venv ^& pip install -r requirements.txt
+if not exist "!ROOT!\.venv\Scripts\activate.bat" (
+    echo [ERROR] .venv not found.
+    echo         Run: python -m venv .venv ^&^& pip install -r requirements.txt
     pause
     exit /b 1
 )
 
-if not exist "trashpanda-next" (
+if not exist "!ROOT!\trashpanda-next" (
     echo [ERROR] trashpanda-next/ folder not found.
     pause
     exit /b 1
 )
 
-if not exist "trashpanda-next\node_modules" (
+:: node_modules check: only install if the folder is missing
+if not exist "!ROOT!\trashpanda-next\node_modules" (
     echo [WARN] node_modules not found. Running npm install...
-    cd trashpanda-next
+    pushd "!ROOT!\trashpanda-next"
     call npm install
-    cd ..
+    popd
 )
 
 :: --- Start Backend ---
-echo [Backend] Starting FastAPI on http://localhost:8000 ...
-start "TrashPanda - Backend" cmd /k "cd /d %CD% && .venv\Scripts\activate.bat && uvicorn app.server:app --reload --port 8000"
+:: /d sets working directory so relative paths work even with spaces in ROOT
+echo [Backend]  Starting FastAPI on http://localhost:8000 ...
+start "TrashPanda - Backend" /d "!ROOT!" cmd /k "call .venv\Scripts\activate.bat && uvicorn app.server:app --reload --port 8000"
 
 :: --- Start Frontend ---
 echo [Frontend] Starting Next.js on http://localhost:3000 ...
-start "TrashPanda - Frontend" cmd /k "cd /d %CD%\trashpanda-next && npm run dev"
+start "TrashPanda - Frontend" /d "!ROOT!\trashpanda-next" cmd /k "npm run dev"
 
-:: --- Wait a moment then open browser ---
+:: --- Poll until frontend responds (max ~60 s, 2 s intervals) ---
 echo.
-echo  Both servers are starting...
-echo  Open: http://localhost:3000
-echo.
-timeout /t 4 /nobreak >nul
+echo  Waiting for http://localhost:3000 to be ready...
+set /a _n=0
+:_poll
+    set /a _n+=1
+    if !_n! gtr 30 goto _open
+    powershell -NoProfile -Command "try{$null=Invoke-WebRequest -Uri 'http://localhost:3000' -UseBasicParsing -TimeoutSec 1;exit 0}catch{exit 1}" >nul 2>&1
+    if errorlevel 1 (
+        timeout /t 2 /nobreak >nul
+        goto _poll
+    )
+:_open
 start http://localhost:3000
 
+echo.
 echo  Done. Close the two terminal windows to stop the app.
 echo.
