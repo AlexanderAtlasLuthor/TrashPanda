@@ -555,6 +555,42 @@ def run_cleaning_job(
     artifacts = collect_job_artifacts(result.run_dir)
     summary = load_job_summary(result.run_dir)
 
+    # --- Phase 5 (V2): domain history update. --- #
+    # Additive, guarded: any failure here must not affect the JobResult
+    # or V1 outputs. Runs only when config.history.enabled.
+    _maybe_update_domain_history(
+        run_dir=result.run_dir,
+        config=config,
+        logger=logger,
+    )
+
+    # --- Phase 6 (V2.4): selective SMTP probing. --- #
+    # Runs AFTER the history update so the CSVs already carry
+    # review_subclass / historical_label / confidence_adjustment_applied
+    # for candidate selection. Entirely optional, off by default.
+    _maybe_run_smtp_probing(
+        run_dir=result.run_dir,
+        config=config,
+        logger=logger,
+    )
+
+    # --- Phase 7 (V2.5): probabilistic deliverability model. --- #
+    # Runs last so every V2 signal available on the CSV contributes.
+    _maybe_run_probability_model(
+        run_dir=result.run_dir,
+        config=config,
+        logger=logger,
+    )
+
+    # --- Phase 8 (V2.6): Decision Engine (automated actions layer). --- #
+    # Consumes the Phase-5 probability and produces final_action +
+    # decision_reason. Only reads/writes columns; never moves rows.
+    _maybe_run_decision_engine(
+        run_dir=result.run_dir,
+        config=config,
+        logger=logger,
+    )
+
     return JobResult(
         job_id=request.job_id,
         status=JobStatus.COMPLETED,
@@ -566,6 +602,135 @@ def run_cleaning_job(
         started_at=started_at,
         finished_at=datetime.now(),
     )
+
+
+def _maybe_update_domain_history(
+    run_dir: Path,
+    config: Any,
+    logger: logging.Logger,
+) -> None:
+    """Invoke the V2 history layer. Never raises; logs and returns on failure."""
+    history_cfg = getattr(config, "history", None)
+    if history_cfg is None or not getattr(history_cfg, "enabled", False):
+        return
+    try:
+        # Local import keeps V1 boot paths free of V2 dependencies.
+        from .validation_v2 import (
+            AdjustmentConfig,
+            DomainHistoryStore,
+            update_history_from_run,
+        )
+
+        sqlite_path = Path(history_cfg.sqlite_path)
+        if not sqlite_path.is_absolute():
+            project_root = resolve_project_paths().project_root
+            sqlite_path = (project_root / sqlite_path).resolve()
+
+        # Phase 2: build the adjustment config from top-level thresholds
+        # plus the history knobs.
+        adjustment_config = AdjustmentConfig(
+            apply=bool(history_cfg.apply_light_confidence_adjustment),
+            max_positive_adjustment=int(history_cfg.max_positive_adjustment),
+            max_negative_adjustment=int(history_cfg.max_negative_adjustment),
+            min_observations_for_adjustment=int(history_cfg.min_observations_for_adjustment),
+            allow_bucket_flip_from_history=bool(history_cfg.allow_bucket_flip_from_history),
+            high_confidence_threshold=int(config.high_confidence_threshold),
+            review_threshold=int(config.review_threshold),
+        )
+
+        store = DomainHistoryStore(sqlite_path)
+        try:
+            update_history_from_run(
+                run_dir=run_dir,
+                store=store,
+                write_summary_report=bool(history_cfg.write_summary_report),
+                max_positive_adjustment=int(history_cfg.max_positive_adjustment),
+                max_negative_adjustment=int(history_cfg.max_negative_adjustment),
+                adjustment_config=adjustment_config,
+                write_adjustment_report=bool(history_cfg.write_adjustment_report),
+                logger=logger,
+            )
+        finally:
+            store.close()
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning("history layer update failed: %s", exc)
+
+
+def _maybe_run_smtp_probing(
+    run_dir: Path,
+    config: Any,
+    logger: logging.Logger,
+) -> None:
+    """Invoke the V2.4 SMTP probing pass. Never raises."""
+    smtp_cfg = getattr(config, "smtp_probe", None)
+    if smtp_cfg is None or not getattr(smtp_cfg, "enabled", False):
+        return
+    try:
+        from .validation_v2 import SMTPProbeConfig, run_smtp_probing_pass
+
+        runtime_cfg = SMTPProbeConfig(
+            enabled=bool(smtp_cfg.enabled),
+            dry_run=bool(smtp_cfg.dry_run),
+            sample_size=int(smtp_cfg.sample_size),
+            max_per_domain=int(smtp_cfg.max_per_domain),
+            timeout_seconds=float(smtp_cfg.timeout_seconds),
+            rate_limit_per_second=float(smtp_cfg.rate_limit_per_second),
+            retries=int(smtp_cfg.retries),
+            negative_adjustment_trigger_threshold=int(
+                smtp_cfg.negative_adjustment_trigger_threshold
+            ),
+            sender_address=str(smtp_cfg.sender_address),
+        )
+        run_smtp_probing_pass(run_dir=run_dir, config=runtime_cfg, logger=logger)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning("smtp probing pass failed: %s", exc)
+
+
+def _maybe_run_probability_model(
+    run_dir: Path,
+    config: Any,
+    logger: logging.Logger,
+) -> None:
+    """Invoke the V2.5 deliverability probability pass. Never raises."""
+    pc = getattr(config, "probability", None)
+    if pc is None or not getattr(pc, "enabled", False):
+        return
+    try:
+        from .validation_v2 import ProbabilityConfig, run_probability_pass
+
+        runtime_cfg = ProbabilityConfig(
+            enabled=bool(pc.enabled),
+            high_threshold=float(pc.high_threshold),
+            medium_threshold=float(pc.medium_threshold),
+            write_summary_report=bool(pc.write_summary_report),
+        )
+        run_probability_pass(run_dir=run_dir, config=runtime_cfg, logger=logger)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning("probability pass failed: %s", exc)
+
+
+def _maybe_run_decision_engine(
+    run_dir: Path,
+    config: Any,
+    logger: logging.Logger,
+) -> None:
+    """Invoke the V2.6 decision engine pass. Never raises."""
+    dc = getattr(config, "decision", None)
+    if dc is None or not getattr(dc, "enabled", False):
+        return
+    try:
+        from .validation_v2 import DecisionConfig, run_decision_pass
+
+        runtime_cfg = DecisionConfig(
+            enabled=bool(dc.enabled),
+            approve_threshold=float(dc.approve_threshold),
+            review_threshold=float(dc.review_threshold),
+            enable_bucket_override=bool(dc.enable_bucket_override),
+            write_summary_report=bool(dc.write_summary_report),
+        )
+        run_decision_pass(run_dir=run_dir, config=runtime_cfg, logger=logger)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning("decision engine pass failed: %s", exc)
 
 
 # --------------------------------------------------------------------------- #

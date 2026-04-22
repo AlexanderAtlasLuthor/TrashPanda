@@ -66,18 +66,48 @@ export type ReviewReason = "catch-all" | "role-based" | "no-smtp";
 export type ReviewConfidence = "low" | "medium";
 export type ReviewDecision = "approved" | "removed";
 
+export interface ReviewEmailFlags {
+  role_based?: boolean;
+  catch_all?: boolean;
+  smtp_unverified?: boolean;
+  typo_corrected?: boolean;
+  domain_mismatch?: boolean;
+}
+
 export interface ReviewEmail {
   id: string;
   email: string;
   domain: string;
   reason: ReviewReason;
   confidence: ReviewConfidence;
+  classification_bucket?: string;
+  friendly_reason?: string;
+  risk?: string;
+  recommended_action?: string;
+  flags?: ReviewEmailFlags;
 }
 
 export interface ReviewQueue {
   job_id: string;
   total: number;
   emails: ReviewEmail[];
+}
+
+export interface ReviewDecisions {
+  job_id: string;
+  decisions: Record<string, ReviewDecision>;
+}
+
+export interface TypoCorrection {
+  original: string;
+  corrected: string;
+  email: string;
+}
+
+export interface TypoCorrections {
+  job_id: string;
+  total: number;
+  corrections: TypoCorrection[];
 }
 
 /**

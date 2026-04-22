@@ -11,3 +11,63 @@ keep_original_columns: true
 log_level: INFO
 staging_db_name: staging.sqlite3
 temp_dir_name: temp
+
+# V2 Domain Historical Memory.
+# Purely additive: reads outputs after a run finishes, upserts per-domain
+# counts into a local SQLite, writes domain_history_summary.csv, and
+# (optionally) computes a conservative confidence adjustment that is
+# recorded but NOT yet fed back into scoring.
+history:
+  enabled: true
+  backend: sqlite
+  sqlite_path: runtime/history/domain_history.sqlite
+  # Phase 2: light-adjustment ON, bucket flips OFF by default.
+  # With flips off, history only annotates the CSVs (score_post_history,
+  # historical_label, human_reason, etc.); V1 placement on disk is untouched.
+  apply_light_confidence_adjustment: true
+  max_positive_adjustment: 3
+  max_negative_adjustment: 5
+  min_observations_for_labeling: 5
+  min_observations_for_adjustment: 5
+  allow_bucket_flip_from_history: false
+  write_summary_report: true
+  write_adjustment_report: true
+
+# V2 Phase 4: selective SMTP probing.
+# Off by default and, when on, runs in dry_run mode unless explicitly
+# disabled. Selection is limited to review_catch_all / review_timeout
+# rows, rows with large negative confidence adjustments, or rows whose
+# domain is historically unstable/risky. Capped by max_per_domain and
+# sample_size so a single run never issues many network probes.
+smtp_probe:
+  enabled: false
+  dry_run: true
+  sample_size: 50
+  max_per_domain: 3
+  timeout_seconds: 4.0
+  rate_limit_per_second: 2.0
+  retries: 0
+  negative_adjustment_trigger_threshold: 3
+  sender_address: trashpanda-probe@localhost
+
+# V2 Phase 5: probabilistic deliverability model.
+# Collapses Phase 1-4 signals into one probability in [0, 1] per row
+# plus a high/medium/low label. Purely informational — bucket placement
+# is never altered by this stage.
+probability:
+  enabled: true
+  high_threshold: 0.70
+  medium_threshold: 0.40
+  write_summary_report: true
+
+# V2 Phase 6: Decision Engine (automated actions layer).
+# Converts deliverability_probability into one of three actions:
+# auto_approve (>= 0.80), manual_review (>= 0.50), auto_reject.
+# Bucket override is opt-in; when off, the engine only annotates
+# the CSVs via final_action / decision_reason / decision_confidence.
+decision:
+  enabled: true
+  approve_threshold: 0.80
+  review_threshold: 0.50
+  enable_bucket_override: false
+  write_summary_report: true

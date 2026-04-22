@@ -13,7 +13,15 @@
  * No UI code needs to change.
  */
 
-import type { JobList, JobLogs, JobResult, ReviewQueue } from "./types";
+import type {
+  JobList,
+  JobLogs,
+  JobResult,
+  ReviewDecision,
+  ReviewDecisions,
+  ReviewQueue,
+  TypoCorrections,
+} from "./types";
 
 export interface UploadResponse {
   job_id: string;
@@ -120,6 +128,41 @@ export async function getReviewEmails(jobId: string): Promise<ReviewQueue> {
     { cache: "no-store" },
   );
   return handleResponse<ReviewQueue>(res);
+}
+
+export async function getReviewDecisions(jobId: string): Promise<ReviewDecisions> {
+  const res = await fetch(
+    `/api/jobs/${encodeURIComponent(jobId)}/review/decisions`,
+    { cache: "no-store" },
+  );
+  return handleResponse<ReviewDecisions>(res);
+}
+
+export async function saveReviewDecisions(
+  jobId: string,
+  decisions: Record<string, ReviewDecision>,
+): Promise<{ job_id: string; saved: number }> {
+  const res = await fetch(
+    `/api/jobs/${encodeURIComponent(jobId)}/review/decisions`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decisions }),
+    },
+  );
+  return handleResponse<{ job_id: string; saved: number }>(res);
+}
+
+export function reviewExportUrl(jobId: string): string {
+  return `/api/jobs/${encodeURIComponent(jobId)}/review/export`;
+}
+
+export async function getTypoCorrections(jobId: string): Promise<TypoCorrections> {
+  const res = await fetch(
+    `/api/jobs/${encodeURIComponent(jobId)}/typo-corrections`,
+    { cache: "no-store" },
+  );
+  return handleResponse<TypoCorrections>(res);
 }
 
 /** URL that streams a ZIP of all artifacts for a completed job. */

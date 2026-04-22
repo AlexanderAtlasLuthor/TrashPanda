@@ -1,8 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { getReviewEmails } from "@/lib/api";
+import {
+  getReviewDecisions,
+  getReviewEmails,
+  reviewExportUrl,
+  saveReviewDecisions,
+} from "@/lib/api";
 import { Topbar } from "@/components/Topbar";
 import type { ReviewDecision, ReviewEmail, ReviewReason } from "@/lib/types";
 import styles from "./ReviewQueue.module.css";
@@ -42,12 +47,17 @@ interface RowProps {
   email: ReviewEmail;
   decision: ReviewDecision | null;
   selected: boolean;
+  expanded: boolean;
   onSelect: () => void;
   onDecide: (d: ReviewDecision) => void;
   onUndo: () => void;
+  onToggleDetails: () => void;
 }
 
-function EmailRow({ email, decision, selected, onSelect, onDecide, onUndo }: RowProps) {
+function EmailRow({
+  email, decision, selected, expanded,
+  onSelect, onDecide, onUndo, onToggleDetails,
+}: RowProps) {
   const rowCls = [
     styles.row,
     decision === "approved" && styles.rowApproved,
@@ -56,57 +66,100 @@ function EmailRow({ email, decision, selected, onSelect, onDecide, onUndo }: Row
   ].filter(Boolean).join(" ");
 
   return (
-    <tr className={rowCls}>
-      <td className={`${styles.td} ${styles.tdCheck}`}>
-        <input
-          type="checkbox"
-          className={styles.checkbox}
-          checked={selected}
-          onChange={onSelect}
-          aria-label={`Select ${email.email}`}
-        />
-      </td>
-      <td className={`${styles.td} ${styles.tdEmail}`}>
-        <span className={styles.emailAddr}>{email.email}</span>
-      </td>
-      <td className={styles.td}>
-        <ReasonPill reason={email.reason} />
-      </td>
-      <td className={styles.td}>
-        <span className={`${styles.conf} ${email.confidence === "low" ? styles.confLow : styles.confMed}`}>
-          {email.confidence.toUpperCase()}
-        </span>
-      </td>
-      <td className={`${styles.td} ${styles.tdActions}`}>
-        {decision ? (
-          <div className={styles.decidedRow}>
-            <span className={decision === "approved" ? styles.decidedApproved : styles.decidedRemoved}>
-              {decision === "approved" ? "→ Approved" : "✕ Removed"}
-            </span>
-            <button className={styles.undoBtn} onClick={onUndo} type="button">
-              undo
-            </button>
-          </div>
-        ) : (
-          <div className={styles.actionBtns}>
-            <button
-              className={styles.btnApprove}
-              onClick={() => onDecide("approved")}
-              type="button"
-            >
-              Approve
-            </button>
-            <button
-              className={styles.btnRemove}
-              onClick={() => onDecide("removed")}
-              type="button"
-            >
-              Remove
-            </button>
-          </div>
-        )}
-      </td>
-    </tr>
+    <>
+      <tr className={rowCls}>
+        <td className={`${styles.td} ${styles.tdCheck}`}>
+          <input
+            type="checkbox"
+            className={styles.checkbox}
+            checked={selected}
+            onChange={onSelect}
+            aria-label={`Select ${email.email}`}
+          />
+        </td>
+        <td className={`${styles.td} ${styles.tdEmail}`}>
+          <span className={styles.emailAddr}>{email.email}</span>
+          <button
+            type="button"
+            className={styles.whyBtn}
+            onClick={onToggleDetails}
+            aria-expanded={expanded}
+            aria-label="Why this email is here"
+          >
+            {expanded ? "Hide details" : "Why?"}
+          </button>
+        </td>
+        <td className={styles.td}>
+          <ReasonPill reason={email.reason} />
+        </td>
+        <td className={styles.td}>
+          <span className={`${styles.conf} ${email.confidence === "low" ? styles.confLow : styles.confMed}`}>
+            {email.confidence.toUpperCase()}
+          </span>
+        </td>
+        <td className={`${styles.td} ${styles.tdActions}`}>
+          {decision ? (
+            <div className={styles.decidedRow}>
+              <span className={decision === "approved" ? styles.decidedApproved : styles.decidedRemoved}>
+                {decision === "approved" ? "→ Approved" : "✕ Removed"}
+              </span>
+              <button className={styles.undoBtn} onClick={onUndo} type="button">
+                undo
+              </button>
+            </div>
+          ) : (
+            <div className={styles.actionBtns}>
+              <button
+                className={styles.btnApprove}
+                onClick={() => onDecide("approved")}
+                type="button"
+              >
+                Approve
+              </button>
+              <button
+                className={styles.btnRemove}
+                onClick={() => onDecide("removed")}
+                type="button"
+              >
+                Reject
+              </button>
+            </div>
+          )}
+        </td>
+      </tr>
+      {expanded && (
+        <tr className={styles.detailRow}>
+          <td colSpan={5} className={styles.detailCell}>
+            <div className={styles.detailGrid}>
+              <div>
+                <div className={styles.detailLabel}>Classification</div>
+                <div className={styles.detailValue}>
+                  {email.classification_bucket ?? "Needs attention"}
+                </div>
+              </div>
+              <div>
+                <div className={styles.detailLabel}>Reason</div>
+                <div className={styles.detailValue}>
+                  {email.friendly_reason ?? REASON_LABELS[email.reason]}
+                </div>
+              </div>
+              <div>
+                <div className={styles.detailLabel}>Risk</div>
+                <div className={styles.detailValue}>
+                  {email.risk ?? "Deliverability could not be fully verified."}
+                </div>
+              </div>
+              <div>
+                <div className={styles.detailLabel}>Recommendation</div>
+                <div className={styles.detailValue}>
+                  {email.recommended_action ?? "Review manually before sending."}
+                </div>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
@@ -120,26 +173,51 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
   const [search, setSearch]         = useState("");
   const [reasonFilter, setReasonFilter] = useState<ReviewReason | "all">("all");
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [decisionsLoaded, setDecisionsLoaded] = useState(false);
 
-  // Fetch + restore decisions from localStorage
+  // Fetch emails + decisions (backend first, localStorage fallback)
   useEffect(() => {
     let cancelled = false;
     getReviewEmails(jobId)
       .then((q) => { if (!cancelled) setEmails(q.emails); })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false); });
-    try {
-      const saved = localStorage.getItem(`tp:review:${jobId}`);
-      if (saved) setDecisions(JSON.parse(saved) as Record<string, ReviewDecision>);
-    } catch { /* ignore */ }
+
+    getReviewDecisions(jobId)
+      .then((d) => {
+        if (cancelled) return;
+        const fromBackend = d.decisions ?? {};
+        if (Object.keys(fromBackend).length > 0) {
+          setDecisions(fromBackend);
+        } else {
+          try {
+            const saved = localStorage.getItem(`tp:review:${jobId}`);
+            if (saved) setDecisions(JSON.parse(saved) as Record<string, ReviewDecision>);
+          } catch { /* ignore */ }
+        }
+      })
+      .catch(() => {
+        try {
+          const saved = localStorage.getItem(`tp:review:${jobId}`);
+          if (saved && !cancelled) setDecisions(JSON.parse(saved) as Record<string, ReviewDecision>);
+        } catch { /* ignore */ }
+      })
+      .finally(() => { if (!cancelled) setDecisionsLoaded(true); });
+
     return () => { cancelled = true; };
   }, [jobId]);
 
-  // Persist decisions
+  // Persist decisions — localStorage (instant) + backend (debounced)
   useEffect(() => {
+    if (!decisionsLoaded) return;
     try { localStorage.setItem(`tp:review:${jobId}`, JSON.stringify(decisions)); }
     catch { /* ignore */ }
-  }, [jobId, decisions]);
+    const handle = setTimeout(() => {
+      saveReviewDecisions(jobId, decisions).catch(() => { /* best effort */ });
+    }, 500);
+    return () => clearTimeout(handle);
+  }, [jobId, decisions, decisionsLoaded]);
 
   // Derived lists
   const filtered = useMemo(() => {
@@ -321,9 +399,13 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
                     email={e}
                     decision={decisions[e.id] ?? null}
                     selected={selected.has(e.id)}
+                    expanded={expandedId === e.id}
                     onSelect={() => toggleSelect(e.id)}
                     onDecide={(d) => decide(e.id, d)}
                     onUndo={() => undecide(e.id)}
+                    onToggleDetails={() =>
+                      setExpandedId((prev) => (prev === e.id ? null : e.id))
+                    }
                   />
                 ))
             }
@@ -346,11 +428,28 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
         )}
       </div>
 
-      {/* ── Back link ───────────────────────────────────────────── */}
-      <div className="fade-up" style={{ marginBottom: 40 }}>
+      {/* ── Footer actions ──────────────────────────────────────── */}
+      <div
+        className="fade-up"
+        style={{
+          marginBottom: 40,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
         <Link href={`/results/${encodeURIComponent(jobId)}`} className={styles.backLink}>
           ← Back to results
         </Link>
+        <a
+          href={reviewExportUrl(jobId)}
+          className={styles.finalExportBtn}
+          download
+        >
+          ↓ Download final list (after review)
+        </a>
       </div>
 
       {/* ── Floating bulk action bar ─────────────────────────────── */}

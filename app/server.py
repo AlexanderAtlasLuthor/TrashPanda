@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import csv
 import io
-import shutil
+import json
+import os
 import threading
 import uuid
 import zipfile
@@ -36,13 +37,21 @@ from .api_boundary import (
     JobErrorType,
     JobResult,
     JobStatus,
+    collect_job_artifacts,
     job_result_to_dict,
+    load_job_summary,
     run_cleaning_job,
 )
 
 
 SUPPORTED_EXTENSIONS = {".csv", ".xlsx"}
 RUNTIME_ROOT = Path("runtime").resolve()
+
+# Upload size ceiling. Configurable via env var so deployments can tune
+# it without code changes. Applied to POST /jobs AND POST /upload.
+MAX_UPLOAD_MB: int = int(os.environ.get("TRASHPANDA_MAX_UPLOAD_MB", "100"))
+MAX_UPLOAD_BYTES: int = MAX_UPLOAD_MB * 1024 * 1024
+_UPLOAD_CHUNK_SIZE: int = 1024 * 1024  # 1 MiB streaming chunks
 
 ARTIFACT_KEYS: dict[str, tuple[str, str]] = {
     "valid_emails": ("client_outputs", "valid_emails"),
@@ -183,12 +192,17 @@ async def validation_exception_handler(
     _request: Request,
     exc: RequestValidationError,
 ) -> JSONResponse:
+    # FastAPI's errors() can embed non-serialisable objects (e.g. the raw
+    # ValueError that triggered validation) under "ctx". Normalise the
+    # structure through json with default=str so every nested value
+    # round-trips safely.
+    safe_errors = json.loads(json.dumps(exc.errors(), default=str))
     return JSONResponse(
         status_code=422,
         content=_error_payload(
             "request_validation_error",
             "Request validation failed.",
-            {"errors": exc.errors()},
+            {"errors": safe_errors},
         ),
     )
 
@@ -236,12 +250,173 @@ def _validate_extension(filename: str) -> None:
         )
 
 
+def _copy_upload_with_size_limit(
+    upload: UploadFile,
+    destination: Path,
+    max_bytes: int | None = None,
+) -> int:
+    """Stream ``upload`` into ``destination`` and enforce the size cap.
+
+    ``max_bytes`` defaults to the module-level ``MAX_UPLOAD_BYTES``,
+    resolved at call time so tests can monkeypatch the cap without
+    touching this function.
+
+    Returns the total number of bytes written. Raises HTTPException(413)
+    if the upload exceeds the cap, cleaning up the partial file first so
+    we never leave a half-written input on disk.
+    """
+    effective_max = max_bytes if max_bytes is not None else MAX_UPLOAD_BYTES
+    total = 0
+    try:
+        with destination.open("wb") as fh:
+            while True:
+                chunk = upload.file.read(_UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > effective_max:
+                    fh.close()
+                    try:
+                        destination.unlink()
+                    except OSError:
+                        pass
+                    _raise_http_error(
+                        413,
+                        "payload_too_large",
+                        f"Upload exceeds maximum size ({effective_max // (1024 * 1024)} MB).",
+                        {
+                            "max_bytes": effective_max,
+                            "uploaded_bytes_at_abort": total,
+                        },
+                    )
+                fh.write(chunk)
+    except HTTPException:
+        raise
+    except OSError as exc:
+        try:
+            destination.unlink()
+        except OSError:
+            pass
+        _raise_http_error(
+            500,
+            "upload_write_failed",
+            "Failed to persist uploaded file.",
+            {"detail": str(exc)},
+        )
+    return total
+
+
 def _job_paths(job_id: str) -> tuple[Path, Path]:
     uploads_dir = RUNTIME_ROOT / "uploads" / job_id
     output_root = RUNTIME_ROOT / "jobs" / job_id
     uploads_dir.mkdir(parents=True, exist_ok=True)
     output_root.mkdir(parents=True, exist_ok=True)
     return uploads_dir, output_root
+
+
+def _save_job_meta(result: JobResult) -> None:
+    """Persist minimal job metadata so jobs survive server restarts."""
+    try:
+        job_dir = RUNTIME_ROOT / "jobs" / result.job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        status_value = result.status.value if hasattr(result.status, "value") else str(result.status)
+        meta = {
+            "job_id": result.job_id,
+            "input_filename": result.input_filename,
+            "status": status_value,
+            "started_at": result.started_at.isoformat() if result.started_at else None,
+            "finished_at": result.finished_at.isoformat() if result.finished_at else None,
+        }
+        (job_dir / "job_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _read_job_meta(job_id: str) -> dict[str, Any] | None:
+    meta_file = RUNTIME_ROOT / "jobs" / job_id / "job_meta.json"
+    if not meta_file.is_file():
+        return None
+    try:
+        return json.loads(meta_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _latest_run_dir(job_output_dir: Path) -> Path | None:
+    if not job_output_dir.is_dir():
+        return None
+    candidates = sorted(
+        [d for d in job_output_dir.iterdir() if d.is_dir() and d.name.startswith("run_")],
+        key=lambda d: d.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def _reconstruct_job_from_disk(job_id: str) -> JobResult | None:
+    """Rebuild a JobResult from disk (meta + artifacts) when JOB_STORE is empty."""
+    job_output_dir = RUNTIME_ROOT / "jobs" / job_id
+    meta = _read_job_meta(job_id)
+    if meta is None and not job_output_dir.is_dir():
+        return None
+
+    run_dir = _latest_run_dir(job_output_dir)
+    artifacts = None
+    summary = None
+    if run_dir is not None and _is_under(run_dir, job_output_dir):
+        try:
+            artifacts = collect_job_artifacts(run_dir)
+        except Exception:
+            artifacts = None
+        try:
+            summary = load_job_summary(run_dir)
+        except Exception:
+            summary = None
+
+    started_at = datetime.now()
+    finished_at = None
+    status_str = JobStatus.COMPLETED if artifacts is not None else JobStatus.QUEUED
+    input_filename = job_id
+
+    if meta is not None:
+        input_filename = meta.get("input_filename") or input_filename
+        status_str = meta.get("status") or status_str
+        try:
+            if meta.get("started_at"):
+                started_at = datetime.fromisoformat(meta["started_at"])
+            if meta.get("finished_at"):
+                finished_at = datetime.fromisoformat(meta["finished_at"])
+        except Exception:
+            pass
+
+    result = JobResult(
+        job_id=job_id,
+        status=status_str,
+        input_filename=input_filename,
+        run_dir=run_dir,
+        summary=summary,
+        artifacts=artifacts,
+        error=None,
+        started_at=started_at,
+        finished_at=finished_at,
+    )
+    JOB_STORE.create(result)
+    return result
+
+
+def _decisions_path(job_id: str) -> Path:
+    return RUNTIME_ROOT / "jobs" / job_id / "review_decisions.json"
+
+
+def _load_decisions(job_id: str) -> dict[str, str]:
+    path = _decisions_path(job_id)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {k: v for k, v in data.get("decisions", {}).items() if v in ("approved", "removed")}
+    except Exception:
+        return {}
 
 
 def _queued_result(job_id: str, input_filename: str) -> JobResult:
@@ -282,27 +457,55 @@ def _run_job(
                 details={"exception_class": exc.__class__.__name__},
             ),
         )
+        failed = JOB_STORE.get(job_id)
+        if failed is not None:
+            _save_job_meta(failed)
         return
 
     JOB_STORE.set_result(result)
+    _save_job_meta(result)
 
 
 @app.get("/jobs")
 def list_jobs(limit: int = 20) -> dict[str, Any]:
     safe_limit = max(1, min(limit, 100))
-    items = JOB_STORE.list(safe_limit)
-    return {
-        "jobs": [
-            {
-                "job_id": j.job_id,
-                "input_filename": j.input_filename,
-                "status": j.status.value,
-                "started_at": j.started_at.isoformat() if j.started_at else None,
-                "finished_at": j.finished_at.isoformat() if j.finished_at else None,
-            }
-            for j in items
-        ]
-    }
+
+    in_memory = JOB_STORE.list(100)
+    in_memory_ids = {j.job_id for j in in_memory}
+
+    merged: list[dict[str, Any]] = [
+        {
+            "job_id": j.job_id,
+            "input_filename": j.input_filename,
+            "status": j.status.value if hasattr(j.status, "value") else str(j.status),
+            "started_at": j.started_at.isoformat() if j.started_at else None,
+            "finished_at": j.finished_at.isoformat() if j.finished_at else None,
+        }
+        for j in in_memory
+    ]
+
+    jobs_root = RUNTIME_ROOT / "jobs"
+    if jobs_root.is_dir():
+        for job_dir in jobs_root.iterdir():
+            if not job_dir.is_dir() or job_dir.name in in_memory_ids:
+                continue
+            meta = _read_job_meta(job_dir.name)
+            if meta is not None:
+                merged.append(meta)
+                continue
+            # No meta file (e.g. pre-existing jobs). Best-effort reconstruction.
+            run_dir = _latest_run_dir(job_dir)
+            status = JobStatus.COMPLETED if run_dir is not None else JobStatus.QUEUED
+            merged.append({
+                "job_id": job_dir.name,
+                "input_filename": job_dir.name,
+                "status": status,
+                "started_at": datetime.fromtimestamp(job_dir.stat().st_mtime).isoformat(),
+                "finished_at": None,
+            })
+
+    merged.sort(key=lambda x: x.get("started_at") or "", reverse=True)
+    return {"jobs": merged[:safe_limit]}
 
 
 @app.post("/jobs", status_code=201)
@@ -326,19 +529,208 @@ async def create_job(
     uploads_dir, output_root = _job_paths(job_id)
     input_path = uploads_dir / filename
 
-    with input_path.open("wb") as destination:
-        shutil.copyfileobj(file.file, destination)
+    _copy_upload_with_size_limit(file, input_path)
 
     result = _queued_result(job_id, filename)
     JOB_STORE.create(result)
+    _save_job_meta(result)
     background_tasks.add_task(_run_job, job_id, input_path, output_root, config_path)
 
     return job_result_to_dict(result)
 
 
+# --------------------------------------------------------------------------- #
+# Public API envelope (for external integrations / frontends).                #
+#                                                                             #
+# These routes are deliberately simpler than the /jobs/* surface used by the  #
+# internal Next.js client. They reuse the job system end-to-end — no business #
+# logic lives here — so any future change to the pipeline automatically flows #
+# through both surfaces.                                                      #
+# --------------------------------------------------------------------------- #
+
+
+@app.post("/upload", status_code=201)
+async def upload_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile | None = File(default=None),
+    config_path: str | None = Form(default=None),
+) -> dict[str, Any]:
+    """Accept a CSV/XLSX, queue processing, return ``{job_id, status}``.
+
+    Alias of :func:`create_job` with a smaller response payload tailored
+    for simple integrations.
+    """
+    full = await create_job(background_tasks, file=file, config_path=config_path)
+    return {
+        "job_id": full["job_id"],
+        "status": full["status"],
+        "input_filename": full.get("input_filename"),
+    }
+
+
+def _status_payload(result: JobResult) -> dict[str, Any]:
+    status_value = (
+        result.status.value if hasattr(result.status, "value") else str(result.status)
+    )
+    error_payload: dict[str, Any] | None = None
+    if result.error is not None:
+        error_payload = {
+            "error_type": result.error.error_type,
+            "message": result.error.message,
+        }
+    return {
+        "job_id": result.job_id,
+        "status": status_value,
+        "input_filename": result.input_filename,
+        "started_at": result.started_at.isoformat() if result.started_at else None,
+        "finished_at": result.finished_at.isoformat() if result.finished_at else None,
+        "error": error_payload,
+    }
+
+
+@app.get("/status/{job_id}")
+def get_status(job_id: str) -> dict[str, Any]:
+    """Return compact job status: queued / running / completed / failed."""
+    result = JOB_STORE.get(job_id)
+    if result is None:
+        result = _reconstruct_job_from_disk(job_id)
+    if result is None:
+        _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
+    return _status_payload(result)
+
+
+def _bucket_entry(
+    *,
+    job_id: str,
+    result: JobResult,
+    artifact_key: str,
+    count: int | None,
+) -> dict[str, Any]:
+    path = _artifact_path(result, artifact_key)
+    return {
+        "count": count,
+        "download_url": f"/jobs/{job_id}/artifacts/{artifact_key}" if path else None,
+        "filename": path.name if path else None,
+    }
+
+
+def _summary_to_dict(result: JobResult) -> dict[str, Any] | None:
+    summary = result.summary
+    if summary is None:
+        return None
+    return {
+        "total_input_rows": summary.total_input_rows,
+        "total_valid": summary.total_valid,
+        "total_review": summary.total_review,
+        "total_invalid_or_bounce_risk": summary.total_invalid_or_bounce_risk,
+        "duplicates_removed": summary.duplicates_removed,
+        "typo_corrections": summary.typo_corrections,
+        "disposable_emails": summary.disposable_emails,
+        "placeholder_or_fake_emails": summary.placeholder_or_fake_emails,
+        "role_based_emails": summary.role_based_emails,
+    }
+
+
+_PUBLIC_REPORT_KEYS: tuple[str, ...] = (
+    "summary_report",
+    "processing_report_json",
+    "processing_report_csv",
+    "domain_summary",
+    "typo_corrections",
+    "duplicate_summary",
+)
+
+
+@app.get("/results/{job_id}")
+def get_results(job_id: str) -> dict[str, Any]:
+    """Return structured results for a completed job.
+
+    Response shape::
+
+        {
+          "job_id": ...,
+          "status": "completed",
+          "input_filename": ...,
+          "summary": {...},
+          "buckets": {
+            "clean_high_confidence": {"count", "download_url", "filename"},
+            "review":                 {"count", "download_url", "filename"},
+            "invalid":                {"count", "download_url", "filename"}
+          },
+          "reports":     {"<key>": "<download_url>", ...},
+          "artifacts_zip": "<download_url>"
+        }
+
+    Returns 409 if the job is not yet completed, 404 if the job id is
+    unknown. The download URLs point at the canonical
+    ``/jobs/{id}/artifacts/...`` routes — no results data is duplicated.
+    """
+    result = JOB_STORE.get(job_id)
+    if result is None:
+        result = _reconstruct_job_from_disk(job_id)
+    if result is None:
+        _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
+
+    status_value = (
+        result.status.value if hasattr(result.status, "value") else str(result.status)
+    )
+    if status_value != JobStatus.COMPLETED:
+        _raise_http_error(
+            409,
+            "job_not_completed",
+            "Results are only available for completed jobs.",
+            {"job_id": job_id, "status": status_value},
+        )
+
+    summary_dict = _summary_to_dict(result)
+
+    def _count(field_name: str) -> int | None:
+        if summary_dict is None:
+            return None
+        value = summary_dict.get(field_name)
+        return int(value) if value is not None else None
+
+    buckets = {
+        "clean_high_confidence": _bucket_entry(
+            job_id=job_id, result=result,
+            artifact_key="valid_emails",
+            count=_count("total_valid"),
+        ),
+        "review": _bucket_entry(
+            job_id=job_id, result=result,
+            artifact_key="review_emails",
+            count=_count("total_review"),
+        ),
+        "invalid": _bucket_entry(
+            job_id=job_id, result=result,
+            artifact_key="invalid_or_bounce_risk",
+            count=_count("total_invalid_or_bounce_risk"),
+        ),
+    }
+
+    reports: dict[str, str] = {}
+    for key in _PUBLIC_REPORT_KEYS:
+        if _artifact_path(result, key) is not None:
+            reports[key] = f"/jobs/{job_id}/artifacts/{key}"
+
+    return {
+        "job_id": job_id,
+        "status": status_value,
+        "input_filename": result.input_filename,
+        "started_at": result.started_at.isoformat() if result.started_at else None,
+        "finished_at": result.finished_at.isoformat() if result.finished_at else None,
+        "summary": summary_dict,
+        "buckets": buckets,
+        "reports": reports,
+        "artifacts_zip": f"/jobs/{job_id}/artifacts/zip",
+    }
+
+
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str) -> dict[str, Any]:
     result = JOB_STORE.get(job_id)
+    if result is None:
+        result = _reconstruct_job_from_disk(job_id)
     if result is None:
         _raise_http_error(
             404,
@@ -431,6 +823,37 @@ def _tail_log(path: Path, n: int) -> list[str]:
         return []
 
 
+_REVIEW_EXPLANATIONS: dict[str, tuple[str, str, str]] = {
+    # reason -> (friendly_reason, risk, recommendation)
+    "role-based": (
+        "Role-based address (info@, support@, sales@)",
+        "May not reach a specific person and can trigger spam filters.",
+        "Approve only for broad outreach; reject for 1:1 campaigns.",
+    ),
+    "catch-all": (
+        "Catch-all domain (accepts any address)",
+        "Delivery cannot be confirmed — the domain accepts all mail.",
+        "Approve only when you have a direct relationship with the contact.",
+    ),
+    "no-smtp": (
+        "No mail server detected (missing MX record)",
+        "Domain is unlikely to receive email reliably.",
+        "Reject unless you can confirm the domain receives email.",
+    ),
+}
+
+
+def _derive_flags(reason_codes: str) -> dict[str, bool]:
+    rc = reason_codes.lower()
+    return {
+        "role_based": "role" in rc,
+        "catch_all": "catch_all" in rc or "catch-all" in rc,
+        "smtp_unverified": "a_fallback" in rc or "no_mx" in rc or "dns_no_nameservers" in rc,
+        "typo_corrected": "typo_corrected" in rc,
+        "domain_mismatch": "domain_mismatch" in rc,
+    }
+
+
 def _map_review_row(row: dict[str, str], index: int) -> dict[str, Any] | None:
     email = row.get("email", "").strip()
     if not email:
@@ -453,7 +876,21 @@ def _map_review_row(row: dict[str, str], index: int) -> dict[str, Any] | None:
         conf_float = 0.0
     confidence = "medium" if conf_float >= 0.75 else "low"
 
-    return {"id": row_id, "email": email, "domain": domain, "reason": reason, "confidence": confidence}
+    friendly_reason, risk, recommendation = _REVIEW_EXPLANATIONS[reason]
+    flags = _derive_flags(reason_codes)
+
+    return {
+        "id": row_id,
+        "email": email,
+        "domain": domain,
+        "reason": reason,
+        "confidence": confidence,
+        "classification_bucket": "Needs attention",
+        "friendly_reason": friendly_reason,
+        "risk": risk,
+        "recommended_action": recommendation,
+        "flags": flags,
+    }
 
 
 @app.get("/jobs/{job_id}/review")
@@ -497,6 +934,179 @@ def get_job_review(job_id: str) -> dict[str, Any]:
         _raise_http_error(500, "artifact_read_error", "Failed to read review artifact.", {"detail": str(exc)})
 
     return {"job_id": job_id, "total": len(emails), "emails": emails}
+
+
+@app.get("/jobs/{job_id}/review/decisions")
+def get_review_decisions(job_id: str) -> dict[str, Any]:
+    job_output_dir = RUNTIME_ROOT / "jobs" / job_id
+    if not job_output_dir.is_dir():
+        _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
+    return {"job_id": job_id, "decisions": _load_decisions(job_id)}
+
+
+@app.post("/jobs/{job_id}/review/decisions")
+async def save_review_decisions(job_id: str, request: Request) -> dict[str, Any]:
+    job_output_dir = RUNTIME_ROOT / "jobs" / job_id
+    if not job_output_dir.is_dir():
+        _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
+
+    try:
+        body = await request.json()
+    except Exception:
+        _raise_http_error(400, "invalid_body", "Request body must be JSON.")
+
+    raw = body.get("decisions", {}) if isinstance(body, dict) else {}
+    cleaned = {
+        str(k): v for k, v in raw.items()
+        if isinstance(k, str) and v in ("approved", "removed")
+    }
+
+    payload = {
+        "job_id": job_id,
+        "decisions": cleaned,
+        "updated_at": datetime.now().isoformat(),
+    }
+    _decisions_path(job_id).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return {"job_id": job_id, "saved": len(cleaned)}
+
+
+def _collect_approved_refs(
+    run_dir: Path,
+    decisions: dict[str, str],
+) -> dict[str, set[int]]:
+    """Build {source_file: {source_row_number,...}} for final-approved rows.
+
+    Includes all clean_high_confidence rows plus review rows decided "approved".
+    """
+    approved: dict[str, set[int]] = {}
+
+    def _absorb(csv_path: Path, only_approved: bool) -> None:
+        if not csv_path.is_file():
+            return
+        try:
+            with csv_path.open(encoding="utf-8", newline="") as fh:
+                for row in csv.DictReader(fh):
+                    if only_approved:
+                        rid = row.get("id", "").strip()
+                        if decisions.get(rid) != "approved":
+                            continue
+                    src = (row.get("source_file") or "").strip()
+                    try:
+                        rn = int(row.get("source_row_number") or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    if not src or rn <= 0:
+                        continue
+                    approved.setdefault(src, set()).add(rn)
+        except OSError:
+            return
+
+    _absorb(run_dir / "clean_high_confidence.csv", only_approved=False)
+    _absorb(run_dir / "review_medium_confidence.csv", only_approved=True)
+    return approved
+
+
+@app.get("/jobs/{job_id}/review/export")
+def get_review_export(job_id: str) -> Response:
+    """Final approved XLSX: clean_high_confidence + manually-approved review."""
+    import pandas as pd
+
+    job_output_dir = RUNTIME_ROOT / "jobs" / job_id
+    if not job_output_dir.is_dir():
+        _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
+
+    run_dir = _latest_run_dir(job_output_dir)
+    if run_dir is None or not _is_under(run_dir, job_output_dir):
+        _raise_http_error(404, "no_run_dir", "No run directory found.", {"job_id": job_id})
+
+    decisions = _load_decisions(job_id)
+    approved = _collect_approved_refs(run_dir, decisions)
+
+    if not approved:
+        _raise_http_error(
+            404,
+            "no_approved_rows",
+            "No approved rows available for export.",
+            {"job_id": job_id},
+        )
+
+    uploads_dir = RUNTIME_ROOT / "uploads" / job_id
+    if not uploads_dir.is_dir():
+        _raise_http_error(404, "no_uploads", "Original input files not found.", {"job_id": job_id})
+
+    path_by_name: dict[str, Path] = {p.name: p for p in uploads_dir.iterdir() if p.is_file()}
+
+    frames: list[Any] = []
+    for src_name in sorted(approved):
+        orig_path = path_by_name.get(src_name)
+        if orig_path is None or not orig_path.is_file():
+            continue
+        try:
+            if orig_path.suffix.lower() == ".csv":
+                orig_df = pd.read_csv(orig_path, dtype=str, keep_default_na=False, na_filter=False)
+            else:
+                orig_df = pd.read_excel(orig_path, dtype=str)
+        except Exception:
+            continue
+
+        valid_indices = sorted(rn - 2 for rn in approved[src_name] if 0 <= rn - 2 < len(orig_df))
+        if not valid_indices:
+            continue
+        frames.append(orig_df.iloc[valid_indices].reset_index(drop=True))
+
+    if not frames:
+        _raise_http_error(
+            404,
+            "no_rows_extracted",
+            "Could not extract rows from any original input.",
+            {"job_id": job_id},
+        )
+
+    combined = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        combined.to_excel(writer, sheet_name="final_approved", index=False)
+
+    filename = f"final_approved_{job_id}.xlsx"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/jobs/{job_id}/typo-corrections")
+def get_typo_corrections(job_id: str) -> dict[str, Any]:
+    job_output_dir = RUNTIME_ROOT / "jobs" / job_id
+    if not job_output_dir.is_dir():
+        _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
+
+    run_dir = _latest_run_dir(job_output_dir)
+    if run_dir is None:
+        return {"job_id": job_id, "total": 0, "corrections": []}
+
+    csv_path = run_dir / "typo_corrections.csv"
+    if not csv_path.is_file() or not _is_under(csv_path, job_output_dir):
+        return {"job_id": job_id, "total": 0, "corrections": []}
+
+    corrections: list[dict[str, str]] = []
+    try:
+        with csv_path.open(encoding="utf-8", newline="") as fh:
+            for row in csv.DictReader(fh):
+                orig = (row.get("typo_original_domain") or "").strip()
+                corrected = (row.get("corrected_domain") or "").strip()
+                email = (row.get("email") or "").strip()
+                if orig and corrected and orig != corrected:
+                    corrections.append({
+                        "original": orig,
+                        "corrected": corrected,
+                        "email": email,
+                    })
+    except OSError:
+        return {"job_id": job_id, "total": 0, "corrections": []}
+
+    return {"job_id": job_id, "total": len(corrections), "corrections": corrections}
 
 
 @app.get("/jobs/{job_id}/logs")
@@ -547,7 +1157,7 @@ def get_artifacts_zip(job_id: str) -> Response:
             409,
             "job_not_completed",
             "ZIP download is only available for completed jobs.",
-            {"status": result.status.value},
+            {"status": result.status.value if hasattr(result.status, "value") else str(result.status)},
         )
 
     job_output_dir = RUNTIME_ROOT / "jobs" / job_id

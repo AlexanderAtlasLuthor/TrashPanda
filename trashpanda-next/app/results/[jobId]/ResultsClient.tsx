@@ -14,6 +14,7 @@ import {
 import { DownloadArtifacts } from "@/components/DownloadArtifacts";
 import { ExecutiveSummary } from "@/components/ExecutiveSummary";
 import { ClassificationBreakdown } from "@/components/ClassificationBreakdown";
+import { TypoCorrectionsPanel } from "@/components/TypoCorrectionsPanel";
 import { ErrorState } from "@/components/ErrorState";
 
 const POLL_INTERVAL_MS = 2000;
@@ -251,6 +252,9 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
               <ReviewQueueBanner jobId={jobId} count={job.summary!.total_review!} />
             </div>
           )}
+          <div className="fade-up">
+            <TypoCorrectionsPanel jobId={jobId} />
+          </div>
           <div className="fade-up">
             <DownloadArtifacts
               jobId={jobId}

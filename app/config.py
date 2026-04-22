@@ -26,6 +26,51 @@ DEFAULT_CONFIG_VALUES: dict[str, Any] = {
 }
 
 
+DEFAULT_DECISION_VALUES: dict[str, Any] = {
+    "enabled": True,
+    "approve_threshold": 0.80,
+    "review_threshold": 0.50,
+    "enable_bucket_override": False,
+    "write_summary_report": True,
+}
+
+
+DEFAULT_PROBABILITY_VALUES: dict[str, Any] = {
+    "enabled": True,
+    "high_threshold": 0.70,
+    "medium_threshold": 0.40,
+    "write_summary_report": True,
+}
+
+
+DEFAULT_SMTP_PROBE_VALUES: dict[str, Any] = {
+    "enabled": False,
+    "dry_run": True,
+    "sample_size": 50,
+    "max_per_domain": 3,
+    "timeout_seconds": 4.0,
+    "rate_limit_per_second": 2.0,
+    "retries": 0,
+    "negative_adjustment_trigger_threshold": 3,
+    "sender_address": "trashpanda-probe@localhost",
+}
+
+
+DEFAULT_HISTORY_VALUES: dict[str, Any] = {
+    "enabled": True,
+    "backend": "sqlite",
+    "sqlite_path": "runtime/history/domain_history.sqlite",
+    "apply_light_confidence_adjustment": True,
+    "max_positive_adjustment": 3,
+    "max_negative_adjustment": 5,
+    "min_observations_for_labeling": 5,
+    "min_observations_for_adjustment": 5,
+    "allow_bucket_flip_from_history": False,
+    "write_summary_report": True,
+    "write_adjustment_report": True,
+}
+
+
 @dataclass(slots=True)
 class ProjectPaths:
     """Resolved project-level paths used by the bootstrap stage."""
@@ -39,6 +84,75 @@ class ProjectPaths:
     default_config_path: Path
     disposable_domains_path: Path
     typo_map_path: Path
+
+
+@dataclass(slots=True)
+class HistoryConfig:
+    """V2 Domain Historical Memory layer configuration.
+
+    Additive, non-invasive. When ``enabled`` is False the whole layer
+    stays dormant and V1 behaviour is identical.
+    """
+
+    enabled: bool = bool(DEFAULT_HISTORY_VALUES["enabled"])
+    backend: str = str(DEFAULT_HISTORY_VALUES["backend"])
+    sqlite_path: str = str(DEFAULT_HISTORY_VALUES["sqlite_path"])
+    apply_light_confidence_adjustment: bool = bool(
+        DEFAULT_HISTORY_VALUES["apply_light_confidence_adjustment"]
+    )
+    max_positive_adjustment: int = int(DEFAULT_HISTORY_VALUES["max_positive_adjustment"])
+    max_negative_adjustment: int = int(DEFAULT_HISTORY_VALUES["max_negative_adjustment"])
+    min_observations_for_labeling: int = int(
+        DEFAULT_HISTORY_VALUES["min_observations_for_labeling"]
+    )
+    min_observations_for_adjustment: int = int(
+        DEFAULT_HISTORY_VALUES["min_observations_for_adjustment"]
+    )
+    allow_bucket_flip_from_history: bool = bool(
+        DEFAULT_HISTORY_VALUES["allow_bucket_flip_from_history"]
+    )
+    write_summary_report: bool = bool(DEFAULT_HISTORY_VALUES["write_summary_report"])
+    write_adjustment_report: bool = bool(DEFAULT_HISTORY_VALUES["write_adjustment_report"])
+
+
+@dataclass(slots=True)
+class DecisionConfig:
+    """V2 Phase 6 — Decision Engine (automated actions layer)."""
+
+    enabled: bool = bool(DEFAULT_DECISION_VALUES["enabled"])
+    approve_threshold: float = float(DEFAULT_DECISION_VALUES["approve_threshold"])
+    review_threshold: float = float(DEFAULT_DECISION_VALUES["review_threshold"])
+    enable_bucket_override: bool = bool(DEFAULT_DECISION_VALUES["enable_bucket_override"])
+    write_summary_report: bool = bool(DEFAULT_DECISION_VALUES["write_summary_report"])
+
+
+@dataclass(slots=True)
+class ProbabilityConfig:
+    """V2 Phase 5 — per-row deliverability probability model."""
+
+    enabled: bool = bool(DEFAULT_PROBABILITY_VALUES["enabled"])
+    high_threshold: float = float(DEFAULT_PROBABILITY_VALUES["high_threshold"])
+    medium_threshold: float = float(DEFAULT_PROBABILITY_VALUES["medium_threshold"])
+    write_summary_report: bool = bool(DEFAULT_PROBABILITY_VALUES["write_summary_report"])
+
+
+@dataclass(slots=True)
+class SMTPProbeConfig:
+    """V2 Phase 4 selective SMTP probing. Off by default."""
+
+    enabled: bool = bool(DEFAULT_SMTP_PROBE_VALUES["enabled"])
+    dry_run: bool = bool(DEFAULT_SMTP_PROBE_VALUES["dry_run"])
+    sample_size: int = int(DEFAULT_SMTP_PROBE_VALUES["sample_size"])
+    max_per_domain: int = int(DEFAULT_SMTP_PROBE_VALUES["max_per_domain"])
+    timeout_seconds: float = float(DEFAULT_SMTP_PROBE_VALUES["timeout_seconds"])
+    rate_limit_per_second: float = float(
+        DEFAULT_SMTP_PROBE_VALUES["rate_limit_per_second"]
+    )
+    retries: int = int(DEFAULT_SMTP_PROBE_VALUES["retries"])
+    negative_adjustment_trigger_threshold: int = int(
+        DEFAULT_SMTP_PROBE_VALUES["negative_adjustment_trigger_threshold"]
+    )
+    sender_address: str = str(DEFAULT_SMTP_PROBE_VALUES["sender_address"])
 
 
 @dataclass(slots=True)
@@ -58,6 +172,10 @@ class AppConfig:
     log_level: str = str(DEFAULT_CONFIG_VALUES["log_level"])
     staging_db_name: str = str(DEFAULT_CONFIG_VALUES["staging_db_name"])
     temp_dir_name: str = str(DEFAULT_CONFIG_VALUES["temp_dir_name"])
+    history: HistoryConfig = field(default_factory=HistoryConfig)
+    smtp_probe: SMTPProbeConfig = field(default_factory=SMTPProbeConfig)
+    probability: ProbabilityConfig = field(default_factory=ProbabilityConfig)
+    decision: DecisionConfig = field(default_factory=DecisionConfig)
     paths: ProjectPaths | None = field(default=None)
 
 
@@ -88,9 +206,66 @@ def load_config(
     paths = resolve_project_paths(base_dir)
     source_path = Path(config_path).resolve() if config_path else paths.default_config_path
     raw_values = _read_yaml(source_path) if source_path.exists() else {}
+    history_raw = raw_values.pop("history", {}) if isinstance(raw_values, dict) else {}
+    smtp_raw = raw_values.pop("smtp_probe", {}) if isinstance(raw_values, dict) else {}
+    prob_raw = raw_values.pop("probability", {}) if isinstance(raw_values, dict) else {}
+    decision_raw = raw_values.pop("decision", {}) if isinstance(raw_values, dict) else {}
     merged = {**DEFAULT_CONFIG_VALUES, **raw_values}
     if overrides:
         merged.update({key: value for key, value in overrides.items() if value is not None})
+
+    history_merged = {**DEFAULT_HISTORY_VALUES, **(history_raw or {})}
+    history_config = HistoryConfig(
+        enabled=bool(history_merged["enabled"]),
+        backend=str(history_merged["backend"]),
+        sqlite_path=str(history_merged["sqlite_path"]),
+        apply_light_confidence_adjustment=bool(
+            history_merged["apply_light_confidence_adjustment"]
+        ),
+        max_positive_adjustment=int(history_merged["max_positive_adjustment"]),
+        max_negative_adjustment=int(history_merged["max_negative_adjustment"]),
+        min_observations_for_labeling=int(history_merged["min_observations_for_labeling"]),
+        min_observations_for_adjustment=int(
+            history_merged["min_observations_for_adjustment"]
+        ),
+        allow_bucket_flip_from_history=bool(
+            history_merged["allow_bucket_flip_from_history"]
+        ),
+        write_summary_report=bool(history_merged["write_summary_report"]),
+        write_adjustment_report=bool(history_merged["write_adjustment_report"]),
+    )
+
+    prob_merged = {**DEFAULT_PROBABILITY_VALUES, **(prob_raw or {})}
+    probability_config = ProbabilityConfig(
+        enabled=bool(prob_merged["enabled"]),
+        high_threshold=float(prob_merged["high_threshold"]),
+        medium_threshold=float(prob_merged["medium_threshold"]),
+        write_summary_report=bool(prob_merged["write_summary_report"]),
+    )
+
+    decision_merged = {**DEFAULT_DECISION_VALUES, **(decision_raw or {})}
+    decision_config = DecisionConfig(
+        enabled=bool(decision_merged["enabled"]),
+        approve_threshold=float(decision_merged["approve_threshold"]),
+        review_threshold=float(decision_merged["review_threshold"]),
+        enable_bucket_override=bool(decision_merged["enable_bucket_override"]),
+        write_summary_report=bool(decision_merged["write_summary_report"]),
+    )
+
+    smtp_merged = {**DEFAULT_SMTP_PROBE_VALUES, **(smtp_raw or {})}
+    smtp_config = SMTPProbeConfig(
+        enabled=bool(smtp_merged["enabled"]),
+        dry_run=bool(smtp_merged["dry_run"]),
+        sample_size=int(smtp_merged["sample_size"]),
+        max_per_domain=int(smtp_merged["max_per_domain"]),
+        timeout_seconds=float(smtp_merged["timeout_seconds"]),
+        rate_limit_per_second=float(smtp_merged["rate_limit_per_second"]),
+        retries=int(smtp_merged["retries"]),
+        negative_adjustment_trigger_threshold=int(
+            smtp_merged["negative_adjustment_trigger_threshold"]
+        ),
+        sender_address=str(smtp_merged["sender_address"]),
+    )
 
     config = AppConfig(
         chunk_size=int(merged["chunk_size"]),
@@ -106,6 +281,10 @@ def load_config(
         log_level=str(merged["log_level"]).upper(),
         staging_db_name=str(merged["staging_db_name"]),
         temp_dir_name=str(merged["temp_dir_name"]),
+        history=history_config,
+        smtp_probe=smtp_config,
+        probability=probability_config,
+        decision=decision_config,
         paths=paths,
     )
     validate_config(config)
@@ -133,6 +312,60 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("staging_db_name cannot be empty.")
     if not config.temp_dir_name.strip():
         raise ValueError("temp_dir_name cannot be empty.")
+
+    # History layer (V2): validate only when enabled so disabled configs
+    # can leave fields blank without tripping up the loader.
+    h = config.history
+    if h.enabled:
+        if h.backend not in ("sqlite", "memory"):
+            raise ValueError("history.backend must be 'sqlite' or 'memory'.")
+        if h.backend == "sqlite" and not h.sqlite_path.strip():
+            raise ValueError("history.sqlite_path cannot be empty when backend=sqlite.")
+        if h.max_positive_adjustment < 0:
+            raise ValueError("history.max_positive_adjustment must be non-negative.")
+        if h.max_negative_adjustment < 0:
+            raise ValueError("history.max_negative_adjustment must be non-negative.")
+        if h.min_observations_for_labeling < 1:
+            raise ValueError("history.min_observations_for_labeling must be >= 1.")
+        if h.min_observations_for_adjustment < 1:
+            raise ValueError("history.min_observations_for_adjustment must be >= 1.")
+
+    # SMTP probe (V2.4): validated only when enabled.
+    sp = config.smtp_probe
+    if sp.enabled:
+        if sp.sample_size < 1:
+            raise ValueError("smtp_probe.sample_size must be >= 1.")
+        if sp.max_per_domain < 1:
+            raise ValueError("smtp_probe.max_per_domain must be >= 1.")
+        if sp.timeout_seconds <= 0:
+            raise ValueError("smtp_probe.timeout_seconds must be > 0.")
+        if sp.rate_limit_per_second <= 0:
+            raise ValueError("smtp_probe.rate_limit_per_second must be > 0.")
+        if sp.retries < 0:
+            raise ValueError("smtp_probe.retries must be >= 0.")
+        if sp.negative_adjustment_trigger_threshold < 0:
+            raise ValueError(
+                "smtp_probe.negative_adjustment_trigger_threshold must be >= 0."
+            )
+        if not sp.sender_address.strip():
+            raise ValueError("smtp_probe.sender_address cannot be empty.")
+
+    # Probability model (V2.5): validated only when enabled.
+    pc = config.probability
+    if pc.enabled:
+        if not 0.0 <= pc.medium_threshold < pc.high_threshold <= 1.0:
+            raise ValueError(
+                "probability thresholds must satisfy 0.0 <= medium < high <= 1.0."
+            )
+
+    # Decision engine (V2.6): validated only when enabled.
+    dc = config.decision
+    if dc.enabled:
+        if not 0.0 <= dc.review_threshold < dc.approve_threshold <= 1.0:
+            raise ValueError(
+                "decision thresholds must satisfy "
+                "0.0 <= review_threshold < approve_threshold <= 1.0."
+            )
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:

@@ -6,7 +6,15 @@
  * Keep this file server-only (used only from route handlers under app/api).
  */
 
-import type { JobList, JobLogs, JobResult, ReviewQueue } from "./types";
+import type {
+  JobList,
+  JobLogs,
+  JobResult,
+  ReviewDecision,
+  ReviewDecisions,
+  ReviewQueue,
+  TypoCorrections,
+} from "./types";
 import {
   createMockJob,
   getMockJob,
@@ -163,6 +171,62 @@ export async function adapterGetReviewEmails(jobId: string): Promise<ReviewQueue
     return (await res.json()) as ReviewQueue;
   }
   return getMockReviewEmails(jobId);
+}
+
+export async function adapterGetReviewDecisions(jobId: string): Promise<ReviewDecisions> {
+  if (useProxy) {
+    const res = await fetch(
+      `${backendUrl}/jobs/${encodeURIComponent(jobId)}/review/decisions`,
+      { cache: "no-store" },
+    );
+    if (res.status === 404) return { job_id: jobId, decisions: {} };
+    if (!res.ok) throw new Error(`Backend error (${res.status})`);
+    return (await res.json()) as ReviewDecisions;
+  }
+  // Mock mode: decisions live only in localStorage on the client.
+  return { job_id: jobId, decisions: {} };
+}
+
+export async function adapterSaveReviewDecisions(
+  jobId: string,
+  decisions: Record<string, ReviewDecision>,
+): Promise<{ job_id: string; saved: number }> {
+  if (useProxy) {
+    const res = await fetch(
+      `${backendUrl}/jobs/${encodeURIComponent(jobId)}/review/decisions`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decisions }),
+      },
+    );
+    if (!res.ok) throw new Error(`Backend error (${res.status})`);
+    return (await res.json()) as { job_id: string; saved: number };
+  }
+  return { job_id: jobId, saved: Object.keys(decisions).length };
+}
+
+export async function adapterGetReviewExport(jobId: string): Promise<Response> {
+  if (useProxy) {
+    return fetch(`${backendUrl}/jobs/${encodeURIComponent(jobId)}/review/export`);
+  }
+  return new Response(
+    JSON.stringify({ message: "Final export requires the Python backend." }),
+    { status: 501, headers: { "content-type": "application/json" } },
+  );
+}
+
+export async function adapterGetTypoCorrections(jobId: string): Promise<TypoCorrections> {
+  if (useProxy) {
+    const res = await fetch(
+      `${backendUrl}/jobs/${encodeURIComponent(jobId)}/typo-corrections`,
+      { cache: "no-store" },
+    );
+    if (res.status === 404) return { job_id: jobId, total: 0, corrections: [] };
+    if (!res.ok) throw new Error(`Backend error (${res.status})`);
+    return (await res.json()) as TypoCorrections;
+  }
+  return { job_id: jobId, total: 0, corrections: [] };
 }
 
 export const adapterMode = useProxy ? "proxy" : "mock";
