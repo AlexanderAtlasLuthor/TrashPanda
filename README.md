@@ -6,6 +6,37 @@ The project is built around a staged pipeline and a Validation Engine V2 that tr
 
 ---
 
+## Running Locally
+
+**Prerequisites:** Python 3.10+, Node.js 18+, `.venv` with dependencies installed.
+
+```bash
+# First-time setup (if needed)
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+pip install -r requirements.txt
+
+cd trashpanda-next && npm install && cd ..
+```
+
+**Start everything with one command:**
+
+| Option | Command |
+|---|---|
+| Double-click | `start_trashpanda.bat` |
+| PowerShell | `.\start_trashpanda.ps1` |
+| Python (cross-platform) | `python scripts/dev_launcher.py` |
+
+The launcher will:
+1. Validate `.venv` and `node_modules` exist
+2. Start FastAPI on **http://localhost:8000**
+3. Start Next.js on **http://localhost:3000**
+4. Open the browser automatically
+
+**To stop:** close the two terminal windows that open, or press `Ctrl+C` in the Python launcher.
+
+---
+
 ## Current Capabilities
 
 ### Pipeline Engine
