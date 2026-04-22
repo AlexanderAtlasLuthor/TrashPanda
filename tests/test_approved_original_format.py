@@ -3,7 +3,7 @@
 Verifies:
   A. The file is generated after a successful pipeline run.
   B. It preserves the original input column order exactly.
-  C. It contains only approved rows (high_confidence + review).
+  C. It contains only high_confidence (Ready to send) rows — review rows excluded.
   D. It is discoverable via collect_job_artifacts (and therefore enters the ZIP).
   E. Existing client outputs are unaffected.
 """
@@ -68,35 +68,32 @@ def test_approved_original_format_preserves_columns(job: JobResult) -> None:
 
 
 # ---------------------------------------------------------------------------
-# C. Only approved rows (high_confidence + review)
+# C. Only high_confidence rows (review excluded)
 # ---------------------------------------------------------------------------
 
 def test_approved_original_format_row_count_matches_approved(job: JobResult) -> None:
     run_dir = job.artifacts.run_dir
 
     clean_df = pd.read_csv(run_dir / "clean_high_confidence.csv", dtype=str, keep_default_na=False)
-    review_df = pd.read_csv(run_dir / "review_medium_confidence.csv", dtype=str, keep_default_na=False)
     approved_df = pd.read_excel(job.artifacts.client_outputs.approved_original_format, dtype=str)
 
-    expected = len(clean_df) + len(review_df)
+    expected = len(clean_df)
     assert len(approved_df) == expected, (
         f"Row count mismatch: approved_original_format has {len(approved_df)} rows, "
-        f"but clean={len(clean_df)} + review={len(review_df)} = {expected}"
+        f"expected {expected} (clean_high_confidence only)"
     )
 
 
 def test_approved_original_format_emails_match_approved_set(job: JobResult) -> None:
-    """The email values in the output match the approved emails from the pipeline."""
+    """The email values in the output match only the high_confidence emails from the pipeline."""
     run_dir = job.artifacts.run_dir
 
-    # Build the set of approved (normalised) emails from the technical CSVs.
+    # Build the set of approved row numbers from clean_high_confidence only.
     clean_df = pd.read_csv(run_dir / "clean_high_confidence.csv", dtype=str, keep_default_na=False)
-    review_df = pd.read_csv(run_dir / "review_medium_confidence.csv", dtype=str, keep_default_na=False)
 
     approved_row_nums: set[int] = set()
-    for df in (clean_df, review_df):
-        if "source_row_number" in df.columns:
-            approved_row_nums.update(int(v) for v in df["source_row_number"] if v)
+    if "source_row_number" in clean_df.columns:
+        approved_row_nums.update(int(v) for v in clean_df["source_row_number"] if v)
 
     approved_df = pd.read_excel(job.artifacts.client_outputs.approved_original_format, dtype=str)
 

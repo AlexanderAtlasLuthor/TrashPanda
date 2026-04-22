@@ -7,6 +7,7 @@ uploads, in-memory job state, JSON responses, and artifact downloads.
 
 from __future__ import annotations
 
+import csv
 import io
 import shutil
 import threading
@@ -428,6 +429,74 @@ def _tail_log(path: Path, n: int) -> list[str]:
         return [ln.rstrip("\n") for ln in all_lines[-n:] if ln.strip()]
     except OSError:
         return []
+
+
+def _map_review_row(row: dict[str, str], index: int) -> dict[str, Any] | None:
+    email = row.get("email", "").strip()
+    if not email:
+        return None
+
+    row_id = row.get("id", "").strip() or str(index)
+    domain = row.get("domain", "").strip() or email.split("@")[-1]
+
+    reason_codes = row.get("reason_codes_v2", "").lower()
+    if "role" in reason_codes:
+        reason = "role-based"
+    elif "catch_all" in reason_codes or "catch-all" in reason_codes:
+        reason = "catch-all"
+    else:
+        reason = "no-smtp"
+
+    try:
+        conf_float = float(row.get("confidence_v2", "0") or "0")
+    except (ValueError, TypeError):
+        conf_float = 0.0
+    confidence = "medium" if conf_float >= 0.75 else "low"
+
+    return {"id": row_id, "email": email, "domain": domain, "reason": reason, "confidence": confidence}
+
+
+@app.get("/jobs/{job_id}/review")
+def get_job_review(job_id: str) -> dict[str, Any]:
+    job_output_dir = RUNTIME_ROOT / "jobs" / job_id
+
+    # Try artifact path from in-memory store first.
+    csv_path: Path | None = None
+    result = JOB_STORE.get(job_id)
+    if result is not None:
+        csv_path = _artifact_path(result, "review_medium_confidence")
+
+    # Fallback: scan disk (handles server-restart case where JOB_STORE is empty).
+    if csv_path is None:
+        if not job_output_dir.is_dir():
+            _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
+        candidates = sorted(
+            job_output_dir.glob("*/review_medium_confidence.csv"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if candidates and _is_under(candidates[0], job_output_dir):
+            csv_path = candidates[0]
+
+    if csv_path is None:
+        _raise_http_error(
+            404,
+            "artifact_not_found",
+            "Review artifact not found for this job.",
+            {"job_id": job_id},
+        )
+
+    emails: list[dict[str, Any]] = []
+    try:
+        with csv_path.open(encoding="utf-8", newline="") as fh:
+            for i, row in enumerate(csv.DictReader(fh)):
+                item = _map_review_row(row, i)
+                if item is not None:
+                    emails.append(item)
+    except OSError as exc:
+        _raise_http_error(500, "artifact_read_error", "Failed to read review artifact.", {"detail": str(exc)})
+
+    return {"job_id": job_id, "total": len(emails), "emails": emails}
 
 
 @app.get("/jobs/{job_id}/logs")

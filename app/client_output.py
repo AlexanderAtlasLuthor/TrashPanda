@@ -252,9 +252,12 @@ def generate_approved_original_format(
 ) -> Path | None:
     """Write approved_original_format.xlsx with approved rows in the original column layout.
 
-    Reads source_file + source_row_number from clean_high_confidence.csv and
-    review_medium_confidence.csv, then cross-references the original input files
-    to extract those exact rows with all original columns preserved.
+    Reads source_file + source_row_number from clean_high_confidence.csv only,
+    then cross-references the original input files to extract those exact rows
+    with all original columns preserved.
+
+    Only "Ready to send" (high_confidence) rows are included.
+    Review and invalid rows are excluded.
 
     Returns the written path on success, None if skipped.
     Logs warnings and returns None on any error; never raises.
@@ -263,8 +266,9 @@ def generate_approved_original_format(
     log = logger or logging.getLogger(__name__)
 
     # --- Collect approved (source_file → set of source_row_numbers) ---
+    # Only clean_high_confidence rows qualify as "approved / ready to send".
     approved: dict[str, set[int]] = {}
-    for csv_name in ("clean_high_confidence.csv", "review_medium_confidence.csv"):
+    for csv_name in ("clean_high_confidence.csv",):
         df = _read_csv_safe(run_dir / csv_name)
         if df.empty or "source_file" not in df.columns or "source_row_number" not in df.columns:
             continue
@@ -277,7 +281,7 @@ def generate_approved_original_format(
             approved.setdefault(src, set()).add(rn)
 
     if not approved:
-        log.warning("approved_original_format: no approved rows found in pipeline outputs")
+        log.warning("approved_original_format: no high_confidence rows found in pipeline outputs")
         return None
 
     # --- Build name → path lookup for the original input files ---
