@@ -1,0 +1,368 @@
+"""AI assistant for the review queue and job-level summaries.
+
+Two public entrypoints, both deliberately small:
+
+* ``review_queue_suggestions(emails, summary)`` — for each flagged email in the
+  review queue, returns an approve / reject / uncertain recommendation with a
+  confidence score and one-sentence rationale. Humans still take the final call
+  in the UI; we just stack-rank the work.
+
+* ``job_summary_narrative(summary)`` — one paragraph explaining, in plain
+  English, how clean the list is and what the most notable patterns are. Meant
+  as a replacement for generic copy on the Results page.
+
+Both call Claude Haiku 4.5 via the official Anthropic SDK. The system prompt is
+stable and cache-controlled so repeated requests hit the cache instead of
+re-paying for the rules on every call.
+
+Privacy: the local part of every email address is masked before leaving the
+server (``john.doe@ameritrade.com`` → ``j***@ameritrade.com``). Domain and
+V2 signals stay visible because those are the features the model actually uses
+to decide — the local part is not load-bearing for the classification.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any, Literal
+
+try:
+    import anthropic
+    from pydantic import BaseModel, Field
+except ImportError:  # pragma: no cover - dependency is declared in requirements.txt
+    anthropic = None  # type: ignore[assignment]
+    BaseModel = object  # type: ignore[assignment,misc]
+
+logger = logging.getLogger(__name__)
+
+# Haiku 4.5 is the right shape for this: tens of items per job, cheap at
+# $1/$5 per 1M tokens, fast enough for a synchronous UI call. Switching to
+# Sonnet/Opus would give marginal quality gains at 3-5x the cost.
+_MODEL = "claude-haiku-4-5"
+
+# ── System prompt (cache-controlled, frozen) ────────────────────────────────
+#
+# Cache rules: the prefix must be byte-identical across requests for the cache
+# to hit. No timestamps, no per-job IDs, no user names — those all go in the
+# user message below. Opus/Sonnet cacheable prefix is 2048+ tokens; this prompt
+# is intentionally long enough to clear that bar.
+
+_SYSTEM_REVIEW = """You are an email list deliverability assistant embedded in a data-hygiene tool called TrashPanda.
+
+A deterministic engine has already classified each uploaded email address. Everything in the "review queue" is an edge case the engine could not decide with high confidence. Your job is to look at the engine's signals for each address and recommend whether a human should APPROVE (keep and send to) it, REJECT (remove it), or mark it UNCERTAIN (send to manual review).
+
+## How to decide
+
+Use the V2 signals the engine provides. The important ones:
+
+- `reason`: the primary reason for flagging. One of `catch-all`, `role-based`, `no-smtp`.
+- `classification_bucket`: short label from the engine (e.g. "Needs attention").
+- `confidence_v2` (0-1): engine's own confidence in its preliminary bucket.
+- `deliverability_probability` (0-1): model-estimated probability the mailbox actually accepts mail.
+- `deliverability_label`: short human label (e.g. "likely", "uncertain").
+- `possible_catch_all` / `catch_all_confidence`: whether the domain accepts any address.
+- `smtp_tested` / `smtp_confirmed_valid` / `smtp_suspicious` / `smtp_result`: SMTP probe outcome.
+- `historical_label` / `historical_label_friendly`: past behavior of this domain.
+- `review_subclass`: finer-grained subcategory (e.g. "ambiguous_role", "catch_all_unknown").
+- `flags`: boolean map of extra hints.
+
+## Decision guidelines
+
+APPROVE when:
+- `smtp_confirmed_valid` is true, OR
+- `deliverability_probability` >= 0.75 AND no strong contrary signal, OR
+- `historical_label` indicates a reliable/reputable domain AND `reason` is only role-based on a legitimate business role address, OR
+- The engine's `final_action_label` is already "Send" or "Keep" with decent confidence.
+
+REJECT when:
+- `smtp_result` explicitly rejected (hard bounce, no such user), OR
+- `deliverability_probability` <= 0.25 with additional negative signals, OR
+- `historical_label` is "risky" / "blacklisted" / "bouncing", OR
+- `reason_codes_v2` includes `disposable`, `placeholder`, `fake`, or `invalid_domain`.
+
+UNCERTAIN when signals genuinely conflict, or when there are no strong signals either way. Do not force a call when the data is ambiguous — "UNCERTAIN" is a useful signal to the human reviewer too.
+
+Role-based addresses (info@, admin@, support@) are NOT automatic rejects. Many B2B campaigns intentionally target them. Approve when the domain looks healthy; mark uncertain when it doesn't.
+
+Catch-all domains (the server accepts every address) are the opposite: rarely outright rejects, often uncertain. The mailbox may or may not exist. Use secondary signals (SMTP probe, historical data) to decide.
+
+## Output format
+
+For each email in the input list, return one decision object:
+
+- `id`: the email's id field, copied verbatim
+- `decision`: "approve" | "reject" | "uncertain"
+- `confidence`: 0.0 to 1.0 — how sure you are about this specific call
+- `reasoning`: one short sentence (max 140 chars), plain English, no jargon, no emojis. Reference the actual signals you used. Avoid hedging filler like "based on the provided signals".
+
+Be conservative. When in doubt, return "uncertain" with medium confidence. The human will make the final call — you are a first-pass filter that stack-ranks the queue, not an auto-approver.
+"""
+
+_SYSTEM_SUMMARY = """You are a data-hygiene assistant that writes short, plain-English summaries of an email cleaning job.
+
+You will be given the aggregate outputs of a deterministic cleaning pipeline: totals, percentages, and top reason counts. Your job is to turn that into one short paragraph a marketer can read in five seconds.
+
+## What to include
+
+- An overall health verdict ("excellent shape", "good shape", "needs attention", "has serious issues"). Base this on the ready-to-send percentage: ≥95% excellent, 85-95% good, 70-85% needs attention, <70% serious issues.
+- The one or two most actionable numbers — e.g. how many records are ready, how many need review, how many are high-risk.
+- If review queue is non-trivial, mention the dominant reason or dominant domain if provided.
+- A short next-step hint (e.g. "approve the flagged role-based addresses in bulk" or "drop the high-risk removals and send").
+
+## What to avoid
+
+- Robotic phrasing ("based on the provided data…"). Write like a smart colleague.
+- Numbers without context ("2094 records"). Pair numbers with meaning ("2094 high-risk addresses removed — about 1.7% of your list").
+- Multiple paragraphs. ONE paragraph, 2-4 sentences, ~60 words max.
+- Redundant restatement of every number. The UI already shows them as tiles; you're adding the story.
+- Emojis. No emojis.
+- Hedging. No "seems", "appears", "might be". Be direct.
+
+## Output format
+
+Return ONLY the paragraph text. No headings, no bullets, no preamble like "Summary:". Plain prose.
+"""
+
+
+# ── Pydantic schemas for structured output ───────────────────────────────────
+
+if anthropic is not None:
+    class _Suggestion(BaseModel):
+        id: str = Field(description="The id field copied verbatim from the input item.")
+        decision: Literal["approve", "reject", "uncertain"]
+        confidence: float = Field(ge=0.0, le=1.0)
+        reasoning: str = Field(max_length=240)
+
+
+    class _SuggestionList(BaseModel):
+        suggestions: list[_Suggestion]
+
+
+# ── PII masking ──────────────────────────────────────────────────────────────
+
+def _mask_email(email: str) -> str:
+    """Return ``j***@domain.com`` for ``john.doe@domain.com``.
+
+    We keep the domain intact (the model needs it for the decision) and the
+    first letter of the local part (helps recognizably identify personal vs
+    role addresses like ``info@`` vs ``a***@``). Anything else is elided.
+    """
+    if "@" not in email:
+        return email
+    local, _, domain = email.partition("@")
+    if not local:
+        return "***@" + domain
+    return local[0] + "***@" + domain
+
+
+# ── Signal whitelist ─────────────────────────────────────────────────────────
+#
+# Only forward the fields the model actually uses to decide. Don't ship the
+# full row — keeps payloads small, cache-friendly, and less PII-exposing.
+
+_SIGNAL_FIELDS = (
+    "reason",
+    "confidence",
+    "classification_bucket",
+    "bucket_label",
+    "bucket_v2",
+    "confidence_v2",
+    "confidence_tier",
+    "deliverability_probability",
+    "deliverability_label",
+    "deliverability_factors",
+    "final_action",
+    "final_action_label",
+    "decision_reason",
+    "decision_note",
+    "decision_confidence",
+    "historical_label",
+    "historical_label_friendly",
+    "possible_catch_all",
+    "catch_all_confidence",
+    "catch_all_reason",
+    "review_subclass",
+    "smtp_tested",
+    "smtp_confirmed_valid",
+    "smtp_suspicious",
+    "smtp_result",
+    "smtp_code",
+    "smtp_confidence",
+    "reason_codes_v2",
+    "flags",
+)
+
+
+def _compact_email_for_model(email: dict[str, Any]) -> dict[str, Any]:
+    """Strip to just the signals the model should see, with PII masked."""
+    out: dict[str, Any] = {
+        "id": email["id"],
+        "email_masked": _mask_email(email["email"]),
+        "domain": email.get("domain", ""),
+    }
+    for key in _SIGNAL_FIELDS:
+        if key in email and email[key] not in (None, "", [], {}):
+            out[key] = email[key]
+    return out
+
+
+# ── Public entrypoints ───────────────────────────────────────────────────────
+
+
+class AIUnavailable(RuntimeError):
+    """Raised when the AI endpoints can't run — missing SDK or API key."""
+
+
+def _client() -> "anthropic.Anthropic":
+    if anthropic is None:
+        raise AIUnavailable(
+            "anthropic SDK is not installed. Run `pip install anthropic`."
+        )
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise AIUnavailable(
+            "ANTHROPIC_API_KEY is not set in the environment."
+        )
+    return anthropic.Anthropic()
+
+
+def review_queue_suggestions(
+    emails: list[dict[str, Any]],
+    job_summary: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Ask Claude for an approve/reject/uncertain call on each flagged email.
+
+    Returns a list of ``{id, decision, confidence, reasoning}`` dicts in the
+    same order as the input. On total failure raises ``AIUnavailable`` or the
+    underlying anthropic exception — the caller decides how to surface that to
+    the user.
+    """
+    client = _client()
+
+    if not emails:
+        return []
+
+    compact = [_compact_email_for_model(e) for e in emails]
+
+    # User message: the batch. Cache control goes on the *system* prompt (the
+    # frozen part), so the reusable decision rules get cached. The per-job
+    # batch is fresh every request and never caches — which is correct.
+    user_payload = {
+        "job_summary_totals": _compact_summary(job_summary),
+        "review_queue": compact,
+        "instructions": (
+            "Return one suggestion per item in review_queue, in the same order. "
+            "Copy each input item's `id` verbatim into the output."
+        ),
+    }
+
+    import json as _json
+    user_text = _json.dumps(user_payload, sort_keys=True, ensure_ascii=False)
+
+    response = client.messages.parse(
+        model=_MODEL,
+        max_tokens=4096,
+        system=[
+            {
+                "type": "text",
+                "text": _SYSTEM_REVIEW,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        messages=[{"role": "user", "content": user_text}],
+        output_format=_SuggestionList,
+    )
+
+    parsed: _SuggestionList = response.parsed_output
+    _log_cache_usage("ai_review", response)
+
+    # Re-key by id so the UI doesn't have to rely on list order, and drop any
+    # hallucinated ids the model made up that aren't in the original batch.
+    known_ids = {e["id"] for e in emails}
+    out: list[dict[str, Any]] = []
+    for s in parsed.suggestions:
+        if s.id not in known_ids:
+            continue
+        out.append({
+            "id": s.id,
+            "decision": s.decision,
+            "confidence": round(float(s.confidence), 3),
+            "reasoning": s.reasoning,
+        })
+    return out
+
+
+def job_summary_narrative(job_summary: dict[str, Any]) -> str:
+    """One-paragraph plain-English summary of a completed job.
+
+    Input is the same ``summary`` dict the /jobs/{id} endpoint already returns.
+    Output is a single paragraph suitable to render directly in the UI.
+    """
+    client = _client()
+
+    import json as _json
+    user_text = _json.dumps(
+        {"summary": _compact_summary(job_summary)},
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+
+    response = client.messages.create(
+        model=_MODEL,
+        max_tokens=256,
+        system=[
+            {
+                "type": "text",
+                "text": _SYSTEM_SUMMARY,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        messages=[{"role": "user", "content": user_text}],
+    )
+    _log_cache_usage("ai_summary", response)
+
+    text = next(
+        (b.text for b in response.content if getattr(b, "type", None) == "text"),
+        "",
+    ).strip()
+    return text
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _compact_summary(s: dict[str, Any] | None) -> dict[str, Any]:
+    """Trim the job summary to the fields the model cares about.
+
+    The full summary has plenty of internal bookkeeping the model doesn't need.
+    Keeping this narrow also keeps the prompt deterministic across runs.
+    """
+    if not s:
+        return {}
+    keep = (
+        "total_input_rows",
+        "total_valid",
+        "total_review",
+        "total_invalid_or_bounce_risk",
+        "duplicates_removed",
+        "typo_corrections",
+        "disposable_emails",
+        "placeholder_or_fake_emails",
+        "role_based_emails",
+    )
+    return {k: s[k] for k in keep if k in s and s[k] is not None}
+
+
+def _log_cache_usage(tag: str, response: Any) -> None:
+    """Best-effort debug log so we can verify the system prompt is caching."""
+    usage = getattr(response, "usage", None)
+    if not usage:
+        return
+    logger.info(
+        "%s usage: input=%s cache_read=%s cache_write=%s output=%s",
+        tag,
+        getattr(usage, "input_tokens", "?"),
+        getattr(usage, "cache_read_input_tokens", "?"),
+        getattr(usage, "cache_creation_input_tokens", "?"),
+        getattr(usage, "output_tokens", "?"),
+    )

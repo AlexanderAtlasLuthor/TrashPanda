@@ -3,14 +3,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
+  getAIReviewSuggestions,
   getReviewDecisions,
   getReviewEmails,
   reviewExportUrl,
   saveReviewDecisions,
+  type AIReviewSuggestion,
 } from "@/lib/api";
 import { Topbar } from "@/components/Topbar";
 import type { ReviewDecision, ReviewEmail, ReviewReason } from "@/lib/types";
 import styles from "./ReviewQueue.module.css";
+
+type AISuggestionMap = Record<string, AIReviewSuggestion>;
+type AIState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; suggestions: AISuggestionMap }
+  | { status: "error"; message: string };
 
 const REASON_LABELS: Record<ReviewReason, string> = {
   "catch-all": "Catch-all",
@@ -43,11 +52,37 @@ function SkeletonRow() {
   );
 }
 
+function AISuggestionBadge({ suggestion }: { suggestion: AIReviewSuggestion }) {
+  const cls =
+    suggestion.decision === "approve"
+      ? styles.aiBadgeApprove
+      : suggestion.decision === "reject"
+        ? styles.aiBadgeReject
+        : styles.aiBadgeUncertain;
+  const label =
+    suggestion.decision === "approve"
+      ? "Approve"
+      : suggestion.decision === "reject"
+        ? "Reject"
+        : "Uncertain";
+  const pct = Math.round(suggestion.confidence * 100);
+  return (
+    <span
+      className={`${styles.aiBadge} ${cls}`}
+      title={suggestion.reasoning}
+      aria-label={`AI suggests ${label}, ${pct}% confidence. ${suggestion.reasoning}`}
+    >
+      AI: {label} · {pct}%
+    </span>
+  );
+}
+
 interface RowProps {
   email: ReviewEmail;
   decision: ReviewDecision | null;
   selected: boolean;
   expanded: boolean;
+  suggestion: AIReviewSuggestion | null;
   onSelect: () => void;
   onDecide: (d: ReviewDecision) => void;
   onUndo: () => void;
@@ -55,7 +90,7 @@ interface RowProps {
 }
 
 function EmailRow({
-  email, decision, selected, expanded,
+  email, decision, selected, expanded, suggestion,
   onSelect, onDecide, onUndo, onToggleDetails,
 }: RowProps) {
   const rowCls = [
@@ -88,6 +123,7 @@ function EmailRow({
           >
             {expanded ? "Hide details" : "Why?"}
           </button>
+          {suggestion && <AISuggestionBadge suggestion={suggestion} />}
         </td>
         <td className={styles.td}>
           <ReasonPill reason={email.reason} />
@@ -237,6 +273,7 @@ interface GroupBlockProps {
   decisions: Record<string, ReviewDecision>;
   selected: Set<string>;
   expandedId: string | null;
+  suggestions: AISuggestionMap | null;
   onSelect: (id: string) => void;
   onDecide: (id: string, d: ReviewDecision) => void;
   onUndo: (id: string) => void;
@@ -252,6 +289,7 @@ function GroupBlock({
   decisions,
   selected,
   expandedId,
+  suggestions,
   onSelect,
   onDecide,
   onUndo,
@@ -327,6 +365,7 @@ function GroupBlock({
             decision={decisions[e.id] ?? null}
             selected={selected.has(e.id)}
             expanded={expandedId === e.id}
+            suggestion={suggestions?.[e.id] ?? null}
             onSelect={() => onSelect(e.id)}
             onDecide={(d) => onDecide(e.id, d)}
             onUndo={() => onUndo(e.id)}
@@ -355,6 +394,7 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
   // into ~5 domain buckets and the repeating pattern becomes obvious.
   const [viewMode, setViewMode]     = useState<ViewMode>("grouped");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [aiState, setAiState]       = useState<AIState>({ status: "idle" });
 
   // Fetch emails + decisions (backend first, localStorage fallback)
   useEffect(() => {
@@ -528,6 +568,24 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
     if (ids.length) bulkDecide(ids, "removed");
   }, [bulkDecide, decisions]);
 
+  // AI review — one call for the whole queue. Re-runnable, cached on the
+  // server side (system prompt). Disabled while loading.
+  const runAIReview = useCallback(async () => {
+    setAiState({ status: "loading" });
+    try {
+      const result = await getAIReviewSuggestions(jobId);
+      const map: AISuggestionMap = {};
+      for (const s of result.suggestions) map[s.id] = s;
+      setAiState({ status: "ready", suggestions: map });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "AI review failed.";
+      setAiState({ status: "error", message });
+    }
+  }, [jobId]);
+
+  const aiSuggestions =
+    aiState.status === "ready" ? aiState.suggestions : null;
+
   return (
     <>
       {/* ── Header ──────────────────────────────────────────────── */}
@@ -611,6 +669,19 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
           </button>
         </div>
         <div className={styles.quickBtns}>
+          <button
+            type="button"
+            className={styles.aiRunBtn}
+            onClick={runAIReview}
+            disabled={aiState.status === "loading" || emails.length === 0}
+            title="Stack-rank the queue with Claude Haiku — approve/reject/uncertain suggestions per row."
+          >
+            {aiState.status === "loading"
+              ? "Running AI…"
+              : aiState.status === "ready"
+                ? "Re-run AI review"
+                : "Run AI review"}
+          </button>
           {pendingFiltered.length > 0 && (
             <>
               <button className={styles.quickApprove} onClick={bulkApproveAll} type="button">
@@ -623,6 +694,11 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
           )}
         </div>
       </div>
+      {aiState.status === "error" && (
+        <div className={`${styles.aiNotice} fade-up`} role="alert">
+          AI review failed: {aiState.message}
+        </div>
+      )}
 
       {/* ── Table ───────────────────────────────────────────────── */}
       <div className={`${styles.panel} fade-up`}>
@@ -665,6 +741,7 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
                   decisions={decisions}
                   selected={selected}
                   expandedId={expandedId}
+                  suggestions={aiSuggestions}
                   onSelect={toggleSelect}
                   onDecide={decide}
                   onUndo={undecide}
@@ -681,6 +758,7 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
                   decision={decisions[e.id] ?? null}
                   selected={selected.has(e.id)}
                   expanded={expandedId === e.id}
+                  suggestion={aiSuggestions?.[e.id] ?? null}
                   onSelect={() => toggleSelect(e.id)}
                   onDecide={(d) => decide(e.id, d)}
                   onUndo={() => undecide(e.id)}

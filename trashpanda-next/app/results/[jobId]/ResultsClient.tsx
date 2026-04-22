@@ -16,6 +16,7 @@ import { ExecutiveSummary } from "@/components/ExecutiveSummary";
 import { ClassificationBreakdown } from "@/components/ClassificationBreakdown";
 import { TypoCorrectionsPanel } from "@/components/TypoCorrectionsPanel";
 import { ErrorState } from "@/components/ErrorState";
+import { AINarrativePanel } from "@/components/AINarrativePanel";
 
 const POLL_INTERVAL_MS = 2000;
 const LOG_LIMIT = 25;
@@ -238,6 +239,9 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
         <>
           <div className="fade-up">
             <ExecutiveSummary summary={job.summary} />
+          </div>
+          <div className="fade-up">
+            <AINarrativePanel jobId={jobId} />
           </div>
           <div className="fade-up">
             <MetricsCards summary={job.summary} />

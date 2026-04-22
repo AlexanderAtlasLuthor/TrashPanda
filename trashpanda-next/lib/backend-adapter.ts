@@ -230,6 +230,69 @@ export async function adapterGetTypoCorrections(jobId: string): Promise<TypoCorr
   return { job_id: jobId, total: 0, corrections: [] };
 }
 
+export interface AIReviewSuggestion {
+  id: string;
+  decision: "approve" | "reject" | "uncertain";
+  confidence: number;
+  reasoning: string;
+}
+
+export interface AIReviewResponse {
+  job_id: string;
+  total: number;
+  suggestions: AIReviewSuggestion[];
+}
+
+export interface AISummaryResponse {
+  job_id: string;
+  narrative: string;
+}
+
+export class AIDisabledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AIDisabledError";
+  }
+}
+
+async function _callAI<T>(
+  jobId: string,
+  suffix: string,
+): Promise<T> {
+  if (!useProxy) {
+    throw new AIDisabledError(
+      "AI features require the Python backend. Set TRASHPANDA_BACKEND_URL.",
+    );
+  }
+  const res = await fetch(
+    `${backendUrl}/jobs/${encodeURIComponent(jobId)}/${suffix}`,
+    { method: "POST", cache: "no-store" },
+  );
+  if (res.status === 503) {
+    const body = await res.json().catch(() => ({}));
+    throw new AIDisabledError(
+      body?.message ?? "AI features are not configured on the backend.",
+    );
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body?.message ?? `Backend error (${res.status})`);
+  }
+  return (await res.json()) as T;
+}
+
+export async function adapterAIReviewSuggestions(
+  jobId: string,
+): Promise<AIReviewResponse> {
+  return _callAI<AIReviewResponse>(jobId, "ai-review");
+}
+
+export async function adapterAIJobSummary(
+  jobId: string,
+): Promise<AISummaryResponse> {
+  return _callAI<AISummaryResponse>(jobId, "ai-summary");
+}
+
 export async function adapterGetJobInsights(
   jobId: string,
 ): Promise<InsightsResponse> {

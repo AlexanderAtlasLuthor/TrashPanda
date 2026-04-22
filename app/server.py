@@ -1103,6 +1103,71 @@ def get_job_review(job_id: str) -> dict[str, Any]:
     return {"job_id": job_id, "total": len(emails), "emails": emails}
 
 
+@app.post("/jobs/{job_id}/ai-review")
+def post_job_ai_review(job_id: str) -> dict[str, Any]:
+    """Ask Claude to stack-rank the review queue.
+
+    Returns one `{id, decision, confidence, reasoning}` per flagged email so
+    the UI can render "AI suggests Approve · 87%" badges next to each row.
+    Human reviewer still has the final call.
+    """
+    from . import ai_review as _ai
+
+    # Reuse the same loader as /jobs/{id}/review so signals stay in sync.
+    review_payload = get_job_review(job_id)
+    emails = review_payload.get("emails", [])
+
+    result = JOB_STORE.get(job_id)
+    summary = (
+        deepcopy(result.summary.__dict__)
+        if result is not None and getattr(result, "summary", None) is not None
+        else None
+    )
+
+    try:
+        suggestions = _ai.review_queue_suggestions(emails, summary)
+    except _ai.AIUnavailable as exc:
+        _raise_http_error(503, "ai_unavailable", str(exc))
+    except Exception as exc:  # anthropic errors, network errors, schema errors
+        _raise_http_error(502, "ai_error", f"AI review failed: {exc}")
+
+    return {
+        "job_id": job_id,
+        "total": len(suggestions),
+        "suggestions": suggestions,
+    }
+
+
+@app.post("/jobs/{job_id}/ai-summary")
+def post_job_ai_summary(job_id: str) -> dict[str, Any]:
+    """Return a one-paragraph narrative summary of a completed job."""
+    from . import ai_review as _ai
+
+    result = JOB_STORE.get(job_id)
+    if result is None or getattr(result, "summary", None) is None:
+        # Fall back to the persisted job if JOB_STORE was cleared by a restart.
+        job_dir = RUNTIME_ROOT / "jobs" / job_id
+        if not job_dir.is_dir():
+            _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
+        _raise_http_error(
+            409,
+            "job_not_completed",
+            "Summary is only available for completed jobs.",
+            {"job_id": job_id},
+        )
+
+    summary = deepcopy(result.summary.__dict__)
+
+    try:
+        narrative = _ai.job_summary_narrative(summary)
+    except _ai.AIUnavailable as exc:
+        _raise_http_error(503, "ai_unavailable", str(exc))
+    except Exception as exc:
+        _raise_http_error(502, "ai_error", f"AI summary failed: {exc}")
+
+    return {"job_id": job_id, "narrative": narrative}
+
+
 @app.get("/jobs/{job_id}/review/decisions")
 def get_review_decisions(job_id: str) -> dict[str, Any]:
     job_output_dir = RUNTIME_ROOT / "jobs" / job_id

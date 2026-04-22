@@ -179,6 +179,48 @@ export async function getJobInsights(jobId: string): Promise<InsightsResponse> {
   return handleResponse<InsightsResponse>(res);
 }
 
+// ── AI endpoints (Claude Haiku 4.5 via FastAPI backend) ─────────────────────
+
+export interface AIReviewSuggestion {
+  id: string;
+  decision: "approve" | "reject" | "uncertain";
+  confidence: number;
+  reasoning: string;
+}
+
+export interface AIReviewResult {
+  job_id: string;
+  total: number;
+  suggestions: AIReviewSuggestion[];
+}
+
+export interface AISummaryResult {
+  job_id: string;
+  narrative: string;
+}
+
+/** Ask Claude to stack-rank the review queue. */
+export async function getAIReviewSuggestions(
+  jobId: string,
+): Promise<AIReviewResult> {
+  const res = await fetch(
+    `/api/jobs/${encodeURIComponent(jobId)}/ai-review`,
+    { method: "POST", cache: "no-store" },
+  );
+  return handleResponse<AIReviewResult>(res);
+}
+
+/** One-paragraph plain-English summary of a completed job. */
+export async function getAIJobSummary(
+  jobId: string,
+): Promise<AISummaryResult> {
+  const res = await fetch(
+    `/api/jobs/${encodeURIComponent(jobId)}/ai-summary`,
+    { method: "POST", cache: "no-store" },
+  );
+  return handleResponse<AISummaryResult>(res);
+}
+
 /** URL that streams a ZIP of all artifacts for a completed job. */
 export function artifactZipUrl(jobId: string): string {
   return `/api/jobs/${encodeURIComponent(jobId)}/artifacts/zip`;
