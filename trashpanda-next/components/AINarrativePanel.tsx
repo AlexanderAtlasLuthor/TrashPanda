@@ -60,7 +60,7 @@ export function AINarrativePanel({ jobId }: { jobId: string }) {
       )}
 
       {state.status === "loading" && (
-        <p className={styles.loading}>Asking Claude Haiku…</p>
+        <p className={styles.loading}>Asking Gemini…</p>
       )}
 
       {state.status === "ready" && (

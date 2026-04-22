@@ -674,7 +674,7 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
             className={styles.aiRunBtn}
             onClick={runAIReview}
             disabled={aiState.status === "loading" || emails.length === 0}
-            title="Stack-rank the queue with Claude Haiku — approve/reject/uncertain suggestions per row."
+            title="Stack-rank the queue with Gemini Flash — approve/reject/uncertain suggestions per row."
           >
             {aiState.status === "loading"
               ? "Running AI…"

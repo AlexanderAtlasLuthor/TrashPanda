@@ -8,4 +8,4 @@ fastapi
 uvicorn
 python-multipart
 httpx
-anthropic
+google-genai
