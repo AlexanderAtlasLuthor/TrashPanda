@@ -210,10 +210,11 @@
 }
 
 .emptyDesc {
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font-family: var(--font-ui);
+  font-size: 13px;
   color: var(--ink-low);
-  line-height: 1.6;
+  line-height: 1.55;
+  letter-spacing: 0.1px;
 }
 
 /* ── Responsive ───────────────────────────────────────────────────────── */
@@ -303,10 +304,11 @@
 }
 
 .confirmBody {
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-ui);
+  font-size: 13px;
   color: var(--ink-mid);
-  line-height: 1.6;
+  line-height: 1.55;
+  letter-spacing: 0.1px;
   margin-bottom: 18px;
 }
 

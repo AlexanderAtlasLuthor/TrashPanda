@@ -341,9 +341,10 @@
 .emptyCell {
   padding: 40px 16px;
   text-align: center;
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-family: var(--font-ui);
+  font-size: 13px;
   color: var(--ink-low);
+  letter-spacing: 0.1px;
 }
 
 /* ── Skeleton loading ────────────────────────────────────────────────────── */
@@ -368,6 +369,169 @@
   transition: color 0.15s;
 }
 .backLink:hover { color: var(--neon); }
+
+/* ── View toggle (grouped / flat) ────────────────────────────────────────── */
+
+.viewToggle {
+  display: inline-flex;
+  padding: 2px;
+  background: var(--bg-deep);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 3px;
+}
+
+.viewBtn {
+  padding: 6px 12px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  color: var(--ink-low);
+  background: transparent;
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+
+.viewBtn:hover {
+  color: var(--ink-mid);
+}
+
+.viewBtnActive,
+.viewBtnActive:hover {
+  color: var(--neon);
+  background: rgba(142, 255, 58, 0.08);
+}
+
+/* ── Domain group row (grouped view) ─────────────────────────────────────── */
+
+.groupRow {
+  background: var(--bg-deep);
+  border-bottom: 1px solid var(--stroke-steel);
+  border-top: 1px solid var(--stroke-steel);
+}
+
+.groupRow:first-child { border-top: none; }
+
+.groupRowOpen {
+  background: var(--bg-panel-2);
+}
+
+.groupCell {
+  padding: 10px 14px;
+}
+
+.groupRowInner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.groupToggle {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 2px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+
+.groupCaret {
+  display: inline-block;
+  width: 14px;
+  color: var(--ink-low);
+  font-size: 11px;
+  transform: rotate(0deg);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.groupCaretOpen {
+  transform: rotate(90deg);
+  color: var(--neon);
+}
+
+.groupDomain {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-high);
+  letter-spacing: 0.2px;
+}
+
+.groupCount {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-mid);
+  letter-spacing: 0.1px;
+}
+
+.groupReasonExtra {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-low);
+  letter-spacing: 0.1px;
+}
+
+.groupDecided {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--ink-low);
+  padding: 2px 8px;
+  border: 1px solid var(--stroke-steel);
+  border-radius: 2px;
+  letter-spacing: 0.1px;
+}
+
+.groupActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.groupApprove,
+.groupRemove {
+  padding: 6px 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+  white-space: nowrap;
+}
+
+.groupApprove {
+  background: rgba(142, 255, 58, 0.08);
+  border: 1px solid rgba(142, 255, 58, 0.3);
+  color: var(--neon);
+}
+.groupApprove:hover { background: rgba(142, 255, 58, 0.15); }
+
+.groupRemove {
+  background: transparent;
+  border: 1px solid rgba(255, 58, 92, 0.3);
+  color: var(--danger);
+}
+.groupRemove:hover { background: rgba(255, 58, 92, 0.1); }
+
+@media (max-width: 720px) {
+  .groupCell {
+    gap: 8px;
+  }
+  .groupActions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
 
 /* ── "Why?" details button + expandable detail row ───────────────────────── */
 

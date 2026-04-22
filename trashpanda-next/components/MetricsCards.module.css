@@ -1,15 +1,24 @@
+/* ── Primary metrics: hero "Ready to send" + 3 supporting stats ───────── */
+
 .metrics {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* Hero card spans 2 cols; secondary cards each take 1 col. */
+  grid-template-columns: 2fr 1fr 1fr 1fr;
   gap: 16px;
   margin-bottom: 28px;
 }
 
+/* Secondary pipeline counters — neutral, low-contrast by default.
+   Only "flares" red/orange when a counter actually has a non-zero value. */
 .metricsSecondary {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 12px;
+  gap: 10px;
   margin-bottom: 28px;
+  padding: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
 }
 
 .metric {
@@ -19,13 +28,35 @@
   border-radius: 3px;
   padding: 20px 22px;
   overflow: hidden;
-  transition: all 0.2s ease;
+  transition: border-color 0.2s ease, background 0.2s ease;
 }
 
+/* Secondary metrics are flatter — no panel background, no left bar.
+   They sit inside the grey wrapper as tight tiles. */
 .metricSmall {
-  padding: 14px 16px;
+  padding: 12px 14px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
 }
 
+.metricSmall:hover {
+  background: var(--bg-panel-2);
+}
+
+/* Hero card — the single most important number on the page. */
+.metricHero {
+  padding: 28px 28px 26px;
+  background: linear-gradient(
+    135deg,
+    rgba(142, 255, 58, 0.05) 0%,
+    var(--bg-panel) 60%
+  );
+  border-color: rgba(142, 255, 58, 0.22);
+}
+
+/* Left accent bar — primary (hero/ok) only; warn/bad are *muted* unless
+   the metric actually has something to alert on (handled via .alert). */
 .metric::before {
   content: "";
   position: absolute;
@@ -33,33 +64,26 @@
   left: 0;
   width: 3px;
   height: 100%;
-  background: var(--steel-blue);
+  background: var(--stroke-steel);
 }
 
 .ok::before {
   background: var(--neon);
-  box-shadow: 0 0 20px var(--neon-glow);
+  box-shadow: 0 0 14px var(--neon-glow);
 }
 
-.warn::before {
-  background: var(--warn);
-  box-shadow: 0 0 20px var(--warn-glow);
-}
+/* Warn / bad / info bars are present but silent.
+   Only light up when `.alert` is applied (i.e. non-zero count). */
+.warn::before { background: var(--ink-ghost); }
+.bad::before  { background: var(--ink-ghost); }
+.info::before { background: var(--ink-ghost); }
 
-.bad::before {
-  background: var(--danger);
-  box-shadow: 0 0 20px var(--danger-glow);
-}
-
-.info::before {
-  background: var(--info);
-  box-shadow: 0 0 20px var(--info-glow);
-}
+.alert.warn::before { background: var(--warn); }
+.alert.bad::before  { background: var(--danger); }
+.alert.info::before { background: var(--steel-blue); }
 
 .metric:hover {
-  background: var(--bg-panel-2);
   border-color: var(--stroke-strong);
-  transform: translateY(-2px);
 }
 
 .label {
@@ -69,6 +93,11 @@
   color: var(--ink-low);
   text-transform: uppercase;
   margin-bottom: 10px;
+}
+
+.labelHero {
+  color: var(--neon);
+  opacity: 0.9;
 }
 
 .labelSmall {
@@ -84,30 +113,43 @@
   letter-spacing: 0.5px;
 }
 
-.valueSmall {
-  font-size: 22px;
+.valueHero {
+  font-size: 46px;
+  letter-spacing: 0;
 }
 
+.valueSmall {
+  font-size: 20px;
+}
+
+/* Only the hero metric gets a glow — everything else stays neutral. */
 .ok .value {
   color: var(--neon);
   text-shadow: 0 0 16px var(--neon-glow);
 }
-.warn .value {
-  color: var(--warn);
-}
-.bad .value {
-  color: var(--danger);
-}
+
+/* Secondary metric values: neutral ink unless the counter is non-zero. */
+.warn .value,
+.bad .value,
 .info .value {
-  color: var(--info);
+  color: var(--ink-mid);
 }
 
+.alert.warn .value { color: var(--warn); }
+.alert.bad .value  { color: var(--danger); }
+.alert.info .value { color: var(--ink-high); }
+
 .delta {
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-ui);
+  font-size: 12px;
   color: var(--ink-mid);
   margin-top: 8px;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.2px;
+}
+
+.deltaHero {
+  font-size: 13px;
+  color: var(--ink-mid);
 }
 
 .tip {
@@ -136,15 +178,17 @@
   background: var(--bg-elevated);
   border: 1px solid var(--stroke-strong);
   color: var(--ink-mid);
-  font-family: var(--font-mono);
-  font-size: 10px;
+  /* Tooltip text is prose — read it, not scan it — so use the sans face. */
+  font-family: var(--font-ui);
+  font-size: 12px;
   font-weight: 400;
-  letter-spacing: 0.3px;
-  padding: 6px 10px;
+  letter-spacing: 0;
+  line-height: 1.45;
+  padding: 8px 11px;
   border-radius: 3px;
   white-space: normal;
   width: max-content;
-  max-width: 240px;
+  max-width: 260px;
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.15s ease;
@@ -163,9 +207,63 @@
   line-height: 1;
 }
 
+.metricHero .emptyValue {
+  font-size: 46px;
+}
+
+.metricSmall .emptyValue {
+  font-size: 20px;
+}
+
+.emptyHint {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--ink-low);
+  margin-top: 6px;
+  letter-spacing: 0.2px;
+}
+
+.zeroNote {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--ink-low);
+  margin-top: 6px;
+  letter-spacing: 0.2px;
+}
+
+/* Section label sitting above the secondary strip */
+.secondaryHeading {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--ink-low);
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.allClear {
+  padding: 14px 16px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-mid);
+  letter-spacing: 0.2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.allClear::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--neon);
+  box-shadow: 0 0 6px var(--neon-glow);
+}
+
 @media (max-width: 1100px) {
   .metrics {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: 1fr 1fr;
   }
   .metricsSecondary {
     grid-template-columns: repeat(2, 1fr);
@@ -178,6 +276,9 @@
   }
   .metricsSecondary {
     grid-template-columns: 1fr 1fr;
+  }
+  .valueHero {
+    font-size: 34px;
   }
   .value {
     font-size: 24px;

@@ -209,12 +209,13 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
             border: "1px solid rgba(255, 184, 58, 0.4)",
             background: "rgba(255, 184, 58, 0.06)",
             color: "var(--warn)",
-            fontFamily: "var(--font-mono)",
-            fontSize: 11,
+            fontFamily: "var(--font-ui)",
+            fontSize: 13,
+            letterSpacing: 0.1,
             borderRadius: 3,
           }}
         >
-          ⚠ {fetchError} · retrying in 2s
+          ⚠ {fetchError} — retrying in 2s
         </div>
       )}
 
@@ -313,11 +314,11 @@ function ReviewQueueBanner({ jobId, count }: { jobId: string; count: number }) {
       }}
     >
       <div>
-        <div style={{ fontFamily: "var(--font-ui)", fontWeight: 600, fontSize: 14, color: "var(--ink-high)", marginBottom: 2 }}>
+        <div style={{ fontFamily: "var(--font-ui)", fontWeight: 600, fontSize: 15, color: "var(--ink-high)", marginBottom: 3, letterSpacing: 0.1 }}>
           {count.toLocaleString()} emails need manual review
         </div>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-low)" }}>
-          Catch-all domains · role-based addresses · unverified SMTP
+        <div style={{ fontFamily: "var(--font-ui)", fontSize: 13, color: "var(--ink-mid)", letterSpacing: 0.1 }}>
+          Catch-all domains, role-based addresses, and unverified SMTP.
         </div>
       </div>
       <Link
@@ -412,11 +413,11 @@ function InsightsBanner({ jobId }: { jobId: string }) {
       }}
     >
       <div>
-        <div style={{ fontFamily: "var(--font-ui)", fontWeight: 600, fontSize: 14, color: "var(--ink-high)", marginBottom: 2 }}>
+        <div style={{ fontFamily: "var(--font-ui)", fontWeight: 600, fontSize: 15, color: "var(--ink-high)", marginBottom: 3, letterSpacing: 0.1 }}>
           See the full intelligence behind every record
         </div>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-low)" }}>
-          Deliverability probability · catch-all detection · SMTP probe · domain history
+        <div style={{ fontFamily: "var(--font-ui)", fontSize: 13, color: "var(--ink-mid)", letterSpacing: 0.1 }}>
+          Deliverability probability, catch-all detection, SMTP probe, and domain history.
         </div>
       </div>
       <Link

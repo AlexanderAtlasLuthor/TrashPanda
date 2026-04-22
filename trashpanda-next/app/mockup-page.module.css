@@ -47,12 +47,12 @@
 }
 
 .heroDesc {
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-family: var(--font-ui);
+  font-size: 14px;
   color: var(--ink-mid);
-  line-height: 1.7;
+  line-height: 1.6;
   max-width: 640px;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.1px;
 }
 
 /* ── Stats row ────────────────────────────────────────────────────── */
@@ -196,11 +196,11 @@
 }
 
 .cardDesc {
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font-family: var(--font-ui);
+  font-size: 13px;
   color: var(--ink-mid);
-  line-height: 1.6;
-  letter-spacing: 0.2px;
+  line-height: 1.55;
+  letter-spacing: 0.1px;
 }
 
 .cardBadge {
@@ -284,11 +284,12 @@
 }
 
 .emptyDesc {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--ink-low);
-  line-height: 1.6;
-  max-width: 380px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--ink-mid);
+  line-height: 1.55;
+  max-width: 420px;
+  letter-spacing: 0.1px;
 }
 
 /* ── Check row (for audit results) ───────────────────────────────── */
@@ -511,10 +512,11 @@
 }
 
 .scoreDesc {
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-ui);
+  font-size: 13px;
   color: var(--ink-mid);
-  line-height: 1.6;
+  line-height: 1.55;
+  letter-spacing: 0.1px;
 }
 
 /* ── Responsive ───────────────────────────────────────────────────── */
