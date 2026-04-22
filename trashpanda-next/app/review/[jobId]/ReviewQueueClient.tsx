@@ -201,25 +201,20 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
     });
   }, [visible]);
 
-  // Smart bulk: approve all role-based, remove all no-smtp in current filter
-  const smartBulkApproveAll = useCallback(() => {
-    const ids = filtered.filter((e) => e.reason === "role-based" && !decisions[e.id]).map((e) => e.id);
+  const pendingFiltered = useMemo(
+    () => filtered.filter((e) => !decisions[e.id]),
+    [filtered, decisions],
+  );
+
+  const bulkApproveAll = useCallback(() => {
+    const ids = pendingFiltered.map((e) => e.id);
     if (ids.length) bulkDecide(ids, "approved");
-  }, [filtered, decisions, bulkDecide]);
+  }, [pendingFiltered, bulkDecide]);
 
-  const smartBulkRemoveAll = useCallback(() => {
-    const ids = filtered.filter((e) => e.reason === "no-smtp" && !decisions[e.id]).map((e) => e.id);
+  const bulkRemoveAll = useCallback(() => {
+    const ids = pendingFiltered.map((e) => e.id);
     if (ids.length) bulkDecide(ids, "removed");
-  }, [filtered, decisions, bulkDecide]);
-
-  const roleBasedPending = useMemo(
-    () => filtered.filter((e) => e.reason === "role-based" && !decisions[e.id]).length,
-    [filtered, decisions],
-  );
-  const noSmtpPending = useMemo(
-    () => filtered.filter((e) => e.reason === "no-smtp" && !decisions[e.id]).length,
-    [filtered, decisions],
-  );
+  }, [pendingFiltered, bulkDecide]);
 
   return (
     <>
@@ -276,15 +271,15 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
           <option value="no-smtp">No SMTP</option>
         </select>
         <div className={styles.quickBtns}>
-          {roleBasedPending > 0 && (
-            <button className={styles.quickApprove} onClick={smartBulkApproveAll} type="button">
-              Approve all role-based ({roleBasedPending})
-            </button>
-          )}
-          {noSmtpPending > 0 && (
-            <button className={styles.quickRemove} onClick={smartBulkRemoveAll} type="button">
-              Remove all no-smtp ({noSmtpPending})
-            </button>
+          {pendingFiltered.length > 0 && (
+            <>
+              <button className={styles.quickApprove} onClick={bulkApproveAll} type="button">
+                Approve all ({pendingFiltered.length})
+              </button>
+              <button className={styles.quickRemove} onClick={bulkRemoveAll} type="button">
+                Remove all ({pendingFiltered.length})
+              </button>
+            </>
           )}
         </div>
       </div>
