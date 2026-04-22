@@ -104,20 +104,34 @@
   flex-shrink: 0;
 }
 
+/* Default icons are quiet — steel ink with no glow.
+   Only the primary tile and warn-toned tiles earn coloured strokes. */
 .iconWrap svg {
   width: 16px;
   height: 16px;
-  stroke: var(--neon);
+  stroke: var(--ink-mid);
   stroke-width: 1.75;
   fill: none;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.tilePrimary .iconWrap svg {
+  stroke: var(--neon);
   filter: drop-shadow(0 0 4px var(--neon-glow));
 }
 
 .toneWarn .iconWrap svg {
   stroke: var(--warn);
-  filter: drop-shadow(0 0 4px var(--warn-glow));
+}
+
+.tile:hover .iconWrap svg {
+  stroke: var(--neon);
+}
+
+.tileDisabled .iconWrap svg {
+  stroke: var(--ink-low);
+  filter: none;
 }
 
 .labelWrap {
@@ -132,14 +146,15 @@
   font-size: 13px;
   font-weight: 600;
   color: var(--ink-high);
-  letter-spacing: 0.2px;
+  letter-spacing: 0.1px;
 }
 
+/* Hint is a short descriptive sentence — sans reads it easier. */
 .tileHint {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.3px;
-  color: var(--ink-low);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  letter-spacing: 0.1px;
+  color: var(--ink-mid);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

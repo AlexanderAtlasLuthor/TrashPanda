@@ -5,10 +5,12 @@ import styles from "./WorkspaceMetrics.module.css";
 
 /**
  * "Recent performance" block — workspace-level counters aggregated across
- * the most recent completed jobs. No charts; just clear, scannable tiles.
+ * the most recent completed jobs.
  *
- * When the backend has not produced enough data yet, values degrade to
- * "0" or "—" without breaking the layout.
+ * Visual rules:
+ *   - "Avg list quality" is the hero tile (wide, accented).
+ *   - Every other tile is neutral until its counter actually has something
+ *     to say. A disposable/catch-all counter at 0 shouldn't glow red.
  */
 
 interface Props {
@@ -26,66 +28,92 @@ function fmtPct(n: number | null): string {
 }
 
 export function WorkspaceMetrics({ stats }: Props) {
+  const avgQuality = stats.avgReadyPctThisWeek ?? stats.avgReadyPct;
+
+  // No jobs at all — one friendly empty tile instead of six zeros.
+  if (!stats.loading && !stats.hasAnyJobs) {
+    return (
+      <section className={styles.section}>
+        <SectionHead stats={stats} />
+        <div className={styles.empty}>
+          <div className={styles.emptyTitle}>No performance data yet</div>
+          <div className={styles.emptyBody}>
+            Upload your first CSV or XLSX file to see list quality, review
+            queue volume, and workspace-level signals here.
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className={styles.section}>
-      <div className={styles.head}>
-        <span className={styles.title}>Recent performance</span>
-        <span className={styles.sub}>
-          {stats.loading
-            ? "Loading workspace signals…"
-            : stats.totalCompleted === 0
-              ? "No completed jobs yet"
-              : `Based on your last ${stats.recentCompletedSummaries.length} completed job${stats.recentCompletedSummaries.length !== 1 ? "s" : ""}`}
-        </span>
-      </div>
+      <SectionHead stats={stats} />
 
       <div className={styles.grid}>
         <Tile
+          hero
+          label="Avg list quality"
+          value={fmtPct(avgQuality)}
+          hint="ready-to-send share, recent jobs"
+        />
+        <Tile
           label="Jobs this week"
           value={fmt(stats.jobsThisWeek)}
-          hint={stats.jobsThisWeek === 0 ? "no recent activity" : "last 7 days"}
+          hint={
+            stats.jobsThisWeek === 0 ? "No activity in the last 7 days" : "Last 7 days"
+          }
         />
         <Tile
           label="Emails cleaned"
           value={fmt(stats.recordsThisWeek)}
-          hint="this week"
-        />
-        <Tile
-          label="Avg list quality"
-          value={fmtPct(stats.avgReadyPctThisWeek ?? stats.avgReadyPct)}
-          tone="ok"
-          hint="ready-to-send share"
-        />
-        <Tile
-          label="High-risk removed"
-          value={fmt(stats.invalidThisWeek || stats.totalInvalid)}
-          tone="bad"
-          hint={stats.invalidThisWeek ? "this week" : "recent total"}
+          hint="This week"
         />
         <Tile
           label="Review queue volume"
           value={fmt(stats.totalReview)}
-          tone="warn"
-          hint="needs attention"
+          tone={stats.totalReview > 0 ? "warn" : undefined}
+          hint={
+            stats.totalReview > 0
+              ? "Needs your attention"
+              : "No records flagged for review"
+          }
+        />
+        <Tile
+          label="High-risk removed"
+          value={fmt(stats.invalidThisWeek || stats.totalInvalid)}
+          tone={
+            (stats.invalidThisWeek || stats.totalInvalid) > 0 ? "bad" : undefined
+          }
+          hint={
+            (stats.invalidThisWeek || stats.totalInvalid) === 0
+              ? "No high-risk addresses removed"
+              : stats.invalidThisWeek
+                ? "This week"
+                : "Recent total"
+          }
         />
         <Tile
           label="Duplicates removed"
           value={fmt(stats.duplicatesRemoved)}
-          hint="across recent jobs"
+          hint={
+            stats.duplicatesRemoved > 0
+              ? "Across recent jobs"
+              : "No duplicates found"
+          }
         />
         {stats.latestInsights ? (
           <>
             <Tile
               label="Catch-all detected"
               value={fmt(stats.catchAllDetectedCount)}
-              tone="warn"
-              hint="latest job · V2 signal"
+              tone={stats.catchAllDetectedCount > 0 ? "warn" : undefined}
+              hint="Latest job, V2 signal"
             />
             <Tile
               label="SMTP tested"
               value={fmt(stats.smtpTestedCount)}
-              tone="info"
-              hint="latest job · V2 signal"
+              hint="Latest job, V2 signal"
             />
           </>
         ) : (
@@ -93,13 +121,12 @@ export function WorkspaceMetrics({ stats }: Props) {
             <Tile
               label="Typo corrections"
               value={fmt(stats.typoCorrections)}
-              tone="ok"
-              hint="domain typos auto-fixed"
+              hint="Domain typos auto-fixed"
             />
             <Tile
               label="Role-based"
               value={fmt(stats.roleBasedEmails)}
-              tone="warn"
+              tone={stats.roleBasedEmails > 0 ? "warn" : undefined}
               hint="info@, admin@, support@"
             />
           </>
@@ -109,16 +136,33 @@ export function WorkspaceMetrics({ stats }: Props) {
   );
 }
 
+function SectionHead({ stats }: { stats: WorkspaceStats }) {
+  return (
+    <div className={styles.head}>
+      <span className={styles.title}>Recent performance</span>
+      <span className={styles.sub}>
+        {stats.loading
+          ? "Loading workspace signals…"
+          : stats.totalCompleted === 0
+            ? "No completed jobs yet"
+            : `Based on your last ${stats.recentCompletedSummaries.length} completed job${stats.recentCompletedSummaries.length !== 1 ? "s" : ""}`}
+      </span>
+    </div>
+  );
+}
+
 function Tile({
   label,
   value,
   hint,
   tone,
+  hero,
 }: {
   label: string;
   value: string;
   hint?: string;
   tone?: "ok" | "warn" | "bad" | "info";
+  hero?: boolean;
 }) {
   const toneClass =
     tone === "ok"
@@ -131,9 +175,17 @@ function Tile({
             ? styles.toneInfo
             : "";
   return (
-    <div className={[styles.tile, toneClass].filter(Boolean).join(" ")}>
+    <div
+      className={[
+        styles.tile,
+        hero && styles.tileHero,
+        toneClass,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       <div className={styles.tileLabel}>// {label}</div>
-      <div className={styles.tileValue}>{value}</div>
+      <div className={hero ? styles.tileValueHero : styles.tileValue}>{value}</div>
       {hint && <div className={styles.tileHint}>{hint}</div>}
     </div>
   );

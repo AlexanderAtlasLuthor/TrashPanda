@@ -4,11 +4,12 @@ import type { WorkspaceStats } from "./useWorkspaceStats";
 import styles from "./WelcomeHero.module.css";
 
 /**
- * Premium welcome block shown at the top of the Home/Dashboard.
- * Keeps the existing dark/neon/industrial visual language — no new tokens.
+ * Welcome block at the top of the Home dashboard.
  *
- * The "headline" picks its copy from the current workspace state so it
- * always feels relevant (not a generic admin greeting).
+ * Holds the greeting + headline + a single hero metric. The supporting
+ * stats live in <WorkspaceMetrics/> below — duplicating them here would
+ * flatten the hierarchy and force the reader to scan the same numbers
+ * twice.
  */
 
 interface Props {
@@ -36,8 +37,17 @@ function pickHeadline(stats: WorkspaceStats): string {
   return "Your latest jobs, insights, and recommendations are ready.";
 }
 
+function formatPct(n: number | null): string | null {
+  if (n === null) return null;
+  const s = n.toFixed(1);
+  return `${s.endsWith(".0") ? s.slice(0, -2) : s}%`;
+}
+
 export function WelcomeHero({ userName, stats }: Props) {
   const headline = pickHeadline(stats);
+  const pct = formatPct(stats.avgReadyPct);
+  const showHeroStat = !stats.loading && stats.totalCompleted > 0 && pct !== null;
+
   return (
     <div className={styles.hero}>
       <div className={styles.left}>
@@ -48,61 +58,17 @@ export function WelcomeHero({ userName, stats }: Props) {
         <p className={styles.subtitle}>{headline}</p>
       </div>
 
-      <div className={styles.right}>
-        <HeroStat
-          label="Jobs processed"
-          value={stats.loading ? "—" : String(stats.filesProcessed)}
-        />
-        <HeroStat
-          label="Records cleaned"
-          value={stats.loading ? "—" : stats.totalRecords.toLocaleString("en-US")}
-        />
-        <HeroStat
-          label="Avg ready-to-send"
-          value={
-            stats.loading
-              ? "—"
-              : stats.avgReadyPct === null
-                ? "—"
-                : `${stats.avgReadyPct.toFixed(1).replace(/\.0$/, "")}%`
-          }
-          accent
-        />
-        <HeroStat
-          label="High-risk removed"
-          value={stats.loading ? "—" : stats.totalInvalid.toLocaleString("en-US")}
-          danger
-        />
-      </div>
-    </div>
-  );
-}
-
-function HeroStat({
-  label,
-  value,
-  accent,
-  danger,
-}: {
-  label: string;
-  value: string;
-  accent?: boolean;
-  danger?: boolean;
-}) {
-  return (
-    <div className={styles.stat}>
-      <div
-        className={[
-          styles.statValue,
-          accent && styles.valueAccent,
-          danger && styles.valueDanger,
-        ]
-          .filter(Boolean)
-          .join(" ")}
-      >
-        {value}
-      </div>
-      <div className={styles.statLabel}>// {label}</div>
+      {showHeroStat && (
+        <div className={styles.heroStat}>
+          <div className={styles.heroValue}>{pct}</div>
+          <div className={styles.heroLabel}>Average ready-to-send</div>
+          <div className={styles.heroSub}>
+            across your last{" "}
+            {stats.recentCompletedSummaries.length} completed job
+            {stats.recentCompletedSummaries.length !== 1 ? "s" : ""}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

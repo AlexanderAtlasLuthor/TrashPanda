@@ -36,11 +36,12 @@
   display: inline-block;
 }
 
+/* Subhead is a short sentence — sans reads it faster. */
 .sub {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--ink-low);
-  letter-spacing: 0.8px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-mid);
+  letter-spacing: 0.1px;
 }
 
 .body {
@@ -61,10 +62,19 @@
   background: var(--bg-deep);
 }
 
-.toneOk   { border-left-color: var(--neon);   }
-.toneWarn { border-left-color: var(--warn);   }
-.toneBad  { border-left-color: var(--danger); }
-.toneInfo { border-left-color: var(--info);   }
+/* Left bars show what kind of signal this is — muted by default,
+   only the ok row always glows, warn/bad only glow when alerting. */
+.toneOk   { border-left-color: var(--neon); }
+.toneWarn { border-left-color: rgba(255, 184, 58, 0.35); }
+.toneBad  { border-left-color: rgba(255, 58, 92, 0.35); }
+.toneInfo { border-left-color: var(--steel-blue); }
+
+.rowAlert.toneWarn { border-left-color: var(--warn); }
+.rowAlert.toneBad  { border-left-color: var(--danger); }
+
+.rowMuted {
+  opacity: 0.7;
+}
 
 .rowLeft {
   display: flex;
@@ -81,6 +91,7 @@
   color: var(--ink-low);
 }
 
+/* Domain samples are identifiers — mono is correct. */
 .rowSample {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -91,42 +102,57 @@
   text-overflow: ellipsis;
 }
 
+/* Empty-state message inside a row is a sentence, not an ID — use sans. */
+.rowEmpty {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-low);
+  letter-spacing: 0.1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-style: italic;
+}
+
 .rowValue {
   font-family: var(--font-display);
   font-size: 20px;
   line-height: 1;
-  color: var(--ink-high);
+  color: var(--ink-mid);
   letter-spacing: -0.3px;
 }
 
-.toneOk   .rowValue { color: var(--neon);   }
-.toneWarn .rowValue { color: var(--warn);   }
-.toneBad  .rowValue { color: var(--danger); }
-.toneInfo .rowValue { color: var(--info);   }
+/* Only "ok" always earns its colour. warn/bad light up only when the
+   row is alerting; a zero count stays neutral. */
+.toneOk .rowValue { color: var(--neon); }
+.rowAlert.toneWarn .rowValue { color: var(--warn); }
+.rowAlert.toneBad  .rowValue { color: var(--danger); }
 
 .empty {
-  padding: 14px 12px;
+  padding: 16px 14px;
   border: 1px dashed var(--stroke-steel);
   border-radius: 3px;
   background: var(--bg-deep);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .emptyTitle {
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--ink-mid);
   letter-spacing: 0.2px;
 }
 
+/* Empty-state body is prose — sans reads better than mono. */
 .emptyBody {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-family: var(--font-ui);
+  font-size: 12px;
   color: var(--ink-low);
   line-height: 1.55;
+  letter-spacing: 0.1px;
 }
 
 .cta {
