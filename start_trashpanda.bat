@@ -35,6 +35,34 @@ if not exist "!ROOT!\trashpanda-next\node_modules" (
     popd
 )
 
+:: --- Port checks (abort early rather than launching silently on wrong port) ---
+::
+:: Strategy: try a TCP connect to localhost:PORT. If it succeeds, something is
+:: already listening there and we must stop. If the connection is refused we
+:: know the port is free. This is reliable and instant on localhost.
+
+echo [Check]    Verifying ports are available...
+
+powershell -NoProfile -Command "try{$t=New-Object Net.Sockets.TcpClient('localhost',8000);$t.Close();exit 1}catch{exit 0}" >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Port 8000 is already in use.
+    echo         Run stop_trashpanda.bat to stop existing servers, then try again.
+    echo.
+    pause
+    exit /b 1
+)
+
+powershell -NoProfile -Command "try{$t=New-Object Net.Sockets.TcpClient('localhost',3000);$t.Close();exit 1}catch{exit 0}" >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Port 3000 is already in use.
+    echo         Run stop_trashpanda.bat to stop existing servers, then try again.
+    echo.
+    pause
+    exit /b 1
+)
+
 :: --- Start Backend ---
 :: /d sets working directory so relative paths work even with spaces in ROOT
 echo [Backend]  Starting FastAPI on http://localhost:8000 ...

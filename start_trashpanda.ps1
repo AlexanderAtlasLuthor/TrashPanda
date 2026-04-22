@@ -38,6 +38,40 @@ if (-not (Test-Path "$root\trashpanda-next\node_modules")) {
     Pop-Location
 }
 
+# --- Port checks ---
+# Try a TCP connect to localhost:PORT. Succeeds = something is already listening
+# = abort. Connection refused = port is free = continue.
+
+function Test-PortInUse {
+    param([int]$Port)
+    $t = New-Object System.Net.Sockets.TcpClient
+    try {
+        $t.Connect('localhost', $Port)
+        $t.Close()
+        return $true   # connected → port is occupied
+    } catch {
+        return $false  # refused → port is free
+    }
+}
+
+Write-Host "[Check]    Verifying ports are available..." -ForegroundColor Cyan
+
+if (Test-PortInUse -Port 8000) {
+    Write-Host ""
+    Write-Host "[ERROR] Port 8000 is already in use." -ForegroundColor Red
+    Write-Host "        Run .\stop_trashpanda.ps1 to stop existing servers, then try again." -ForegroundColor Yellow
+    Read-Host "Press Enter to exit"
+    exit 1
+}
+
+if (Test-PortInUse -Port 3000) {
+    Write-Host ""
+    Write-Host "[ERROR] Port 3000 is already in use." -ForegroundColor Red
+    Write-Host "        Run .\stop_trashpanda.ps1 to stop existing servers, then try again." -ForegroundColor Yellow
+    Read-Host "Press Enter to exit"
+    exit 1
+}
+
 # --- Start Backend in a new window ---
 Write-Host "[Backend]  Starting FastAPI on http://localhost:8000 ..." -ForegroundColor Green
 

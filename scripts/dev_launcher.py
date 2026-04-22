@@ -1,11 +1,11 @@
 """TrashPanda dev launcher — starts FastAPI + Next.js in parallel."""
 
-import os
-import sys
 import shutil
+import socket
 import subprocess
-import webbrowser
+import sys
 import time
+import webbrowser
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
@@ -32,6 +32,17 @@ def info(msg: str) -> None:
     print(f"{CYAN}[INFO]{RESET}  {msg}")
 
 
+def is_port_in_use(port: int) -> bool:
+    """Return True if something is already listening on localhost:port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        try:
+            s.connect(("localhost", port))
+            return True   # connected → port is occupied
+        except (ConnectionRefusedError, TimeoutError, OSError):
+            return False  # refused → port is free
+
+
 def validate() -> None:
     is_windows = sys.platform == "win32"
     activate = VENV / ("Scripts/activate" if is_windows else "bin/activate")
@@ -44,6 +55,14 @@ def validate() -> None:
     if not (FRONTEND / "node_modules").exists():
         warn("node_modules not found. Running npm install...")
         subprocess.run(["npm", "install"], cwd=FRONTEND, check=True)
+
+    info("Verifying ports are available...")
+
+    if is_port_in_use(8000):
+        fail("Port 8000 is already in use. Please close the existing backend process and try again.")
+
+    if is_port_in_use(3000):
+        fail("Port 3000 is already in use. Please close the existing frontend process and try again.")
 
 
 def uvicorn_cmd() -> list[str]:
@@ -75,6 +94,15 @@ def start_frontend() -> subprocess.Popen:
     return subprocess.Popen([npm, "run", "dev"], cwd=FRONTEND)
 
 
+def wait_for_frontend(timeout: int = 60) -> None:
+    """Poll localhost:3000 until it responds or timeout is reached."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if is_port_in_use(3000):
+            return
+        time.sleep(2)
+
+
 def main() -> None:
     print(f"\n{CYAN} =========================================")
     print(f"  TrashPanda - Local Dev Launcher")
@@ -89,7 +117,8 @@ def main() -> None:
     print(f" Open: {CYAN}http://localhost:3000{RESET}")
     print(f" Press Ctrl+C to stop both.\n")
 
-    time.sleep(5)
+    info("Waiting for http://localhost:3000 to be ready...")
+    wait_for_frontend()
     webbrowser.open("http://localhost:3000")
 
     try:
