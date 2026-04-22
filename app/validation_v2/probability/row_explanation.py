@@ -13,6 +13,11 @@ from .row_model import DeliverabilityComputation, Factor
 # Short human phrases for each factor key. Preserving these in a
 # central dict lets the summary report reuse the same names.
 _FACTOR_PHRASES: dict[str, str] = {
+    "mx_present": "valid mail routing",
+    "a_fallback": "A-record fallback",
+    "no_dns": "missing DNS records",
+    "domain_match": "domain matches input column",
+    "typo_detected": "possible domain typo",
     "smtp:deliverable": "strong SMTP signal",
     "smtp:undeliverable": "SMTP rejection",
     "smtp:catch_all": "SMTP catch-all signal",
@@ -20,14 +25,19 @@ _FACTOR_PHRASES: dict[str, str] = {
     "history:historically_reliable": "reliable domain history",
     "history:historically_unstable": "unstable domain history",
     "history:historically_risky": "risky domain history",
+    "catch_all:flag": "catch-all flag set",
     "catch_all:strong": "strong catch-all heuristic",
     "catch_all:moderate": "moderate catch-all heuristic",
+    "smoothing:noise": "smoothing",
 }
 
 
 _OVERRIDE_TEXT: dict[str, str] = {
     "hard_fail": "Zero probability: row was hard-failed by validation.",
     "duplicate": "Zero probability: row was removed as a duplicate.",
+    # Retained for historical compatibility; the new additive model no
+    # longer produces this override, but older runs may still carry it
+    # in their CSVs and reports.
     "no_mx_record": "Zero probability: domain has no mail server.",
 }
 
@@ -45,8 +55,12 @@ def explain_deliverability(computation: DeliverabilityComputation) -> str:
         )
 
     label = computation.label.capitalize()
-    positives = tuple(f for f in computation.factors if f.multiplier > 1.0)
-    negatives = tuple(f for f in computation.factors if f.multiplier < 1.0)
+    # ``Factor.multiplier`` in the additive model holds a signed delta.
+    # Strict-signed filtering also skips the ``smoothing:noise`` factor
+    # when its magnitude is negligible.
+    relevant = tuple(f for f in computation.factors if f.name != "smoothing:noise")
+    positives = tuple(f for f in relevant if f.multiplier > 0.0)
+    negatives = tuple(f for f in relevant if f.multiplier < 0.0)
 
     # Sort so the strongest signal is first in either direction.
     positives = tuple(sorted(positives, key=lambda f: f.multiplier, reverse=True))

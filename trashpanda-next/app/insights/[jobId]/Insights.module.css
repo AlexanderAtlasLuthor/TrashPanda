@@ -1,0 +1,679 @@
+/* Insights — V2 Deliverability Intelligence
+   Reuses the global design tokens from globals.css.
+   All new class names are scoped to this module. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ── Executive premium summary ──────────────────────────────────────────── */
+
+.heroPanel {
+  background: linear-gradient(
+    135deg,
+    rgba(142, 255, 58, 0.04) 0%,
+    rgba(15, 20, 28, 0.9) 60%
+  );
+  border: 1px solid var(--stroke);
+  border-left: 3px solid var(--neon);
+  border-radius: 3px;
+  padding: 24px 28px;
+  position: relative;
+  overflow: hidden;
+}
+
+.heroPanel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    circle at top right,
+    var(--neon-glow) 0%,
+    transparent 55%
+  );
+  opacity: 0.15;
+  pointer-events: none;
+}
+
+.heroHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  position: relative;
+  z-index: 1;
+  flex-wrap: wrap;
+}
+
+.heroTitle {
+  font-family: var(--font-display);
+  font-size: 22px;
+  letter-spacing: 1px;
+  color: var(--ink-high);
+  margin: 0;
+}
+
+.heroSlice {
+  color: var(--neon);
+  text-shadow: 0 0 14px var(--neon-glow);
+}
+
+.heroTag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--ink-low);
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+
+.heroBadge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  padding: 6px 10px;
+  border: 1px solid var(--stroke-strong);
+  color: var(--neon);
+  border-radius: 2px;
+  background: rgba(142, 255, 58, 0.04);
+}
+
+.heroHeadline {
+  font-family: var(--font-ui);
+  font-size: 15px;
+  color: var(--ink-mid);
+  line-height: 1.55;
+  max-width: 760px;
+  margin: 0 0 18px;
+  position: relative;
+  z-index: 1;
+}
+
+.heroHeadline strong {
+  color: var(--ink-high);
+  font-weight: 600;
+}
+
+.heroMetrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px;
+  position: relative;
+  z-index: 1;
+}
+
+.heroMetric {
+  background: rgba(5, 7, 10, 0.5);
+  border: 1px solid var(--stroke);
+  border-radius: 2px;
+  padding: 12px 14px;
+}
+
+.heroMetric.ok    { border-left: 2px solid var(--neon); }
+.heroMetric.warn  { border-left: 2px solid var(--warn); }
+.heroMetric.bad   { border-left: 2px solid var(--danger); }
+.heroMetric.info  { border-left: 2px solid var(--info); }
+.heroMetric.steel { border-left: 2px solid var(--ink-low); }
+
+.metricValue {
+  font-family: var(--font-display);
+  font-size: 22px;
+  color: var(--ink-high);
+  line-height: 1.1;
+}
+.heroMetric.ok   .metricValue { color: var(--neon); }
+.heroMetric.warn .metricValue { color: var(--warn); }
+.heroMetric.bad  .metricValue { color: var(--danger); }
+.heroMetric.info .metricValue { color: var(--info); }
+
+.metricLabel {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  color: var(--ink-low);
+  text-transform: uppercase;
+  margin-top: 6px;
+}
+
+.metricSub {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--ink-mid);
+  margin-top: 2px;
+}
+
+/* ── Generic panel (mirrors mockup) ─────────────────────────────────────── */
+
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--stroke);
+  border-radius: 3px;
+}
+
+.panelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--stroke);
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.panelTitle {
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 1.5px;
+  color: var(--ink-high);
+  text-transform: uppercase;
+}
+
+.panelBadge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  color: var(--ink-low);
+  text-transform: uppercase;
+  padding: 4px 8px;
+  border: 1px solid var(--stroke);
+  border-radius: 2px;
+}
+
+.panelBody {
+  padding: 16px 18px;
+}
+
+/* ── Filter chips ───────────────────────────────────────────────────────── */
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  padding: 7px 12px;
+  background: transparent;
+  color: var(--ink-mid);
+  border: 1px solid var(--stroke);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.chip:hover {
+  color: var(--ink-high);
+  border-color: var(--stroke-strong);
+}
+
+.chipActive {
+  background: rgba(142, 255, 58, 0.08);
+  color: var(--neon);
+  border-color: var(--stroke-strong);
+}
+
+.chipCount {
+  margin-left: 6px;
+  color: var(--ink-low);
+  font-weight: 400;
+}
+
+.chipActive .chipCount {
+  color: var(--neon-deep);
+}
+
+/* ── Enriched data table ────────────────────────────────────────────────── */
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  color: var(--ink-mid);
+  font-family: var(--font-ui);
+}
+
+.table thead th {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--ink-low);
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--stroke);
+  background: var(--bg-deep);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.table tbody tr {
+  border-bottom: 1px solid var(--stroke-steel);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.table tbody tr:hover {
+  background: rgba(142, 255, 58, 0.03);
+}
+
+.table tbody td {
+  padding: 10px 14px;
+  vertical-align: middle;
+}
+
+.emailCell {
+  color: var(--ink-high);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.domainCell {
+  color: var(--ink-mid);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* ── Badges / tags ──────────────────────────────────────────────────────── */
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 2px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+
+.tagOk    { color: var(--neon);   border-color: rgba(142, 255, 58, 0.35); background: rgba(142, 255, 58, 0.06); }
+.tagWarn  { color: var(--warn);   border-color: rgba(255, 184, 58, 0.35); background: rgba(255, 184, 58, 0.06); }
+.tagBad   { color: var(--danger); border-color: rgba(255, 58, 92, 0.35);  background: rgba(255, 58, 92, 0.06); }
+.tagInfo  { color: var(--info);   border-color: rgba(95, 180, 255, 0.35); background: rgba(95, 180, 255, 0.06); }
+.tagSteel { color: var(--ink-mid); border-color: var(--stroke-steel); background: rgba(125, 168, 208, 0.04); }
+
+/* Confidence bar */
+.confBar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 120px;
+}
+
+.confBarTrack {
+  width: 72px;
+  height: 4px;
+  background: var(--bg-void);
+  border-radius: 2px;
+  overflow: hidden;
+  border: 1px solid var(--stroke-steel);
+}
+
+.confBarFill {
+  height: 100%;
+  transition: width 0.2s ease;
+}
+
+.confBarFill.high   { background: var(--neon); box-shadow: 0 0 6px var(--neon-glow); }
+.confBarFill.medium { background: var(--warn); }
+.confBarFill.low    { background: var(--danger); }
+
+.confBarLabel {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-mid);
+  min-width: 38px;
+}
+
+/* ── "Why this email is here" modal ─────────────────────────────────────── */
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 7, 10, 0.72);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fadeIn 0.18s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.modalCard {
+  background: var(--bg-panel);
+  border: 1px solid var(--stroke-strong);
+  border-left: 3px solid var(--neon);
+  border-radius: 3px;
+  max-width: 680px;
+  width: 100%;
+  max-height: 86vh;
+  overflow-y: auto;
+  box-shadow: 0 0 48px rgba(142, 255, 58, 0.08);
+  animation: slideUp 0.2s ease;
+}
+
+@keyframes slideUp {
+  from { transform: translateY(12px); opacity: 0; }
+  to   { transform: translateY(0);   opacity: 1; }
+}
+
+.modalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--stroke);
+  position: sticky;
+  top: 0;
+  background: var(--bg-panel);
+  z-index: 1;
+}
+
+.modalTitle {
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 1.5px;
+  color: var(--ink-high);
+  text-transform: uppercase;
+}
+
+.modalTitle .slice {
+  color: var(--neon);
+}
+
+.modalClose {
+  background: transparent;
+  border: 1px solid var(--stroke);
+  color: var(--ink-mid);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: all 0.15s;
+}
+.modalClose:hover { color: var(--ink-high); border-color: var(--stroke-strong); }
+
+.modalBody {
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.modalEmailBlock {
+  padding: 14px 16px;
+  background: var(--bg-deep);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 2px;
+}
+.modalEmailAddr {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  color: var(--ink-high);
+  word-break: break-all;
+}
+.modalDomain {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-low);
+  margin-top: 4px;
+}
+
+.modalSection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modalSectionTitle {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--ink-low);
+  text-transform: uppercase;
+}
+
+.detailGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.detailRow {
+  background: var(--bg-deep);
+  padding: 10px 12px;
+  border-radius: 2px;
+  border: 1px solid var(--stroke-steel);
+}
+
+.detailLabel {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  color: var(--ink-low);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.detailValue {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--ink-high);
+  line-height: 1.5;
+}
+
+.detailValue.muted {
+  color: var(--ink-mid);
+}
+
+/* ── Domain intelligence lists ──────────────────────────────────────────── */
+
+.domainGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.domainGroup {
+  background: var(--bg-deep);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 2px;
+  padding: 14px 16px;
+}
+
+.domainGroupTitle {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.domainGroupTitle.ok    { color: var(--neon); }
+.domainGroupTitle.warn  { color: var(--warn); }
+.domainGroupTitle.bad   { color: var(--danger); }
+.domainGroupTitle.info  { color: var(--info); }
+
+.domainRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--stroke-steel);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.domainRow:last-child { border-bottom: none; }
+
+.domainName {
+  color: var(--ink-high);
+}
+
+.domainStats {
+  color: var(--ink-low);
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.domainVolume {
+  color: var(--ink-mid);
+  align-self: center;
+}
+
+.emptyGroup {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-low);
+  padding: 10px 0;
+  font-style: italic;
+}
+
+/* ── Empty state (no V2) ───────────────────────────────────────────────── */
+
+.emptyState {
+  text-align: center;
+  padding: 60px 24px;
+  color: var(--ink-mid);
+}
+.emptyState h3 {
+  font-family: var(--font-display);
+  font-size: 18px;
+  letter-spacing: 1px;
+  color: var(--ink-high);
+  margin: 0 0 12px;
+}
+.emptyState p {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 0 auto 20px;
+  max-width: 520px;
+  color: var(--ink-mid);
+}
+.emptyState .hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-low);
+  letter-spacing: 1.2px;
+}
+
+/* ── Search input ──────────────────────────────────────────────────────── */
+
+.searchRow {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.searchInput {
+  flex: 1 1 260px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 9px 12px;
+  background: var(--bg-deep);
+  color: var(--ink-high);
+  border: 1px solid var(--stroke);
+  border-radius: 2px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.searchInput:focus { border-color: var(--stroke-strong); }
+
+/* ── Loading / skeleton ────────────────────────────────────────────────── */
+
+.skeletonBlock {
+  height: 14px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-deep) 0%,
+    var(--bg-elevated) 50%,
+    var(--bg-deep) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s infinite linear;
+  border-radius: 2px;
+}
+
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
+/* ── Source badge ──────────────────────────────────────────────────────── */
+
+.sourceBadge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1px;
+  padding: 2px 6px;
+  border-radius: 2px;
+  text-transform: uppercase;
+}
+.sourceValid  { color: var(--neon);   background: rgba(142, 255, 58, 0.08); }
+.sourceReview { color: var(--warn);   background: rgba(255, 184, 58, 0.08); }
+.sourceInvalid{ color: var(--danger); background: rgba(255, 58, 92, 0.08); }
+
+/* ── Utility ───────────────────────────────────────────────────────────── */
+
+.whyBtn {
+  background: transparent;
+  border: 1px solid var(--stroke);
+  color: var(--neon);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  padding: 4px 10px;
+  cursor: pointer;
+  border-radius: 2px;
+  text-transform: uppercase;
+  transition: all 0.15s;
+}
+.whyBtn:hover {
+  border-color: var(--stroke-strong);
+  background: rgba(142, 255, 58, 0.06);
+}
+
+.loadMoreBtn {
+  display: block;
+  margin: 16px auto 0;
+  padding: 9px 22px;
+  background: transparent;
+  border: 1px solid var(--stroke-strong);
+  color: var(--neon);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: all 0.15s;
+}
+.loadMoreBtn:hover { background: rgba(142, 255, 58, 0.06); }

@@ -22,6 +22,7 @@ from .enrichment import (
     CompletenessStage,
     DNSEnrichmentStage,
     ScoringStage,
+    TypoSuggestionValidationStage,
 )
 from .postprocessing import (
     DedupeStage,
@@ -49,6 +50,7 @@ __all__ = [
     "DomainComparisonStage",
     # Enrichment
     "DNSEnrichmentStage",
+    "TypoSuggestionValidationStage",
     "ScoringStage",
     "ScoringV2Stage",
     "ScoringComparisonStage",

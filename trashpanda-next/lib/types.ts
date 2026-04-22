@@ -85,6 +85,37 @@ export interface ReviewEmail {
   risk?: string;
   recommended_action?: string;
   flags?: ReviewEmailFlags;
+
+  // ── V2 Deliverability Intelligence (all optional; absent on legacy runs).
+  bucket_v2?: string;
+  bucket_label?: string;
+  confidence_v2?: number;
+  confidence_tier?: "high" | "medium" | "low";
+  final_action?: string;
+  final_action_label?: string;
+  decision_reason?: string;
+  decision_note?: string;
+  decision_confidence?: number;
+  deliverability_probability?: number;
+  deliverability_label?: string;
+  deliverability_factors?: string;
+  human_reason?: string;
+  human_risk?: string;
+  human_recommendation?: string;
+  historical_label?: string;
+  historical_label_friendly?: string;
+  confidence_adjustment_applied?: boolean;
+  possible_catch_all?: boolean;
+  catch_all_confidence?: number;
+  catch_all_reason?: string;
+  review_subclass?: string;
+  smtp_tested?: boolean;
+  smtp_confirmed_valid?: boolean;
+  smtp_suspicious?: boolean;
+  smtp_result?: string;
+  smtp_code?: string;
+  smtp_confidence?: number;
+  reason_codes_v2?: string;
 }
 
 export interface ReviewQueue {
@@ -157,3 +188,40 @@ export const CLIENT_OUTPUT_MANIFEST: ReadonlyArray<{
     severity: "ok",
   },
 ];
+
+// ── V2 Deliverability Intelligence payload ─────────────────────────────────
+
+export interface InsightRow extends ReviewEmail {
+  source: "valid" | "review" | "invalid";
+  reason_codes?: string;
+}
+
+export interface InsightDomain {
+  domain: string;
+  count: number;
+  avg_deliverability: number | null;
+  historical_label: string | null;
+  catch_all_count: number;
+  smtp_suspicious_count: number;
+  valid: number;
+  review: number;
+  invalid: number;
+}
+
+export interface InsightsResponse {
+  job_id: string;
+  v2_available: boolean;
+  totals: { all: number; valid: number; review: number; invalid: number };
+  confidence_tiers: { high: number; medium: number; low: number; unknown: number };
+  final_actions: Record<string, number>;
+  catch_all_count: number;
+  smtp_tested_count: number;
+  smtp_suspicious_count: number;
+  domain_intelligence: {
+    reliable: InsightDomain[];
+    risky: InsightDomain[];
+    unstable: InsightDomain[];
+    catch_all_suspected: InsightDomain[];
+  };
+  rows: InsightRow[];
+}

@@ -27,7 +27,7 @@ SCORE_MX_PRESENT: int = 50      # domain has MX records (strong email signal)
 SCORE_A_FALLBACK: int = 20      # domain has A/AAAA but no MX (weaker signal)
 
 PENALTY_DOMAIN_MISMATCH: int = -5   # corrected_domain != input domain column (explicit mismatch)
-PENALTY_TYPO_CORRECTED: int = -3    # domain needed correction (mild, not structural)
+PENALTY_TYPO_CORRECTED: int = 0     # typo DETECTION no longer contributes score (kept at 0 for backward-compat exports).
 PENALTY_DNS_TRANSIENT: int = -15    # timeout / no_nameservers / generic error (uncertain, not definitive)
 PENALTY_DNS_NO_RECORDS: int = -10   # no_mx / no_mx_no_a (domain exists but no useful records)
 
@@ -81,7 +81,8 @@ CLIENT_REASON_MAP: dict[str, str] = {
     "dns_no_records": "No mail server (MX) found",
     "dns_error": "Mail server check inconclusive",
     "domain_mismatch": "Domain does not match input",
-    "typo_corrected": "Domain was autocorrected",
+    "typo_corrected": "Possible domain typo",
+    "typo_suggested": "Possible domain typo",
 }
 
 # Priority order used to select the primary client-facing reason.
@@ -95,6 +96,7 @@ _CLIENT_REASON_PRIORITY: tuple[str, ...] = (
     "dns_no_records",
     "dns_error",
     "domain_mismatch",
+    "typo_suggested",
     "typo_corrected",
 )
 
@@ -162,6 +164,24 @@ def score_row(
         invalid_if_disposable=invalid_if_disposable,
     )
     if hard_fail_reason:
+        # Safety net for the redesigned typo-suggestion engine: when the
+        # original domain looks like a plausible typo of a trusted
+        # provider *and* the only thing killing the row is the original
+        # domain not resolving (nxdomain / no_domain), we downgrade the
+        # hard-fail to a manual REVIEW so a human can approve the
+        # suggestion instead of silently discarding the contact.
+        # Syntax/placeholder/disposable hard fails are never downgraded.
+        if (
+            typo_corrected is True
+            and hard_fail_reason in ("nxdomain", "no_domain")
+        ):
+            return ScoringResult(
+                hard_fail=False,
+                score=0,
+                score_reasons="typo_suggested",
+                preliminary_bucket="review",
+                client_reason=CLIENT_REASON_MAP.get("typo_suggested", ""),
+            )
         return ScoringResult(
             hard_fail=True,
             score=0,
@@ -194,8 +214,12 @@ def score_row(
         reasons.append("dns_no_records")
 
     if typo_corrected is True:
-        score += PENALTY_TYPO_CORRECTED
-        reasons.append("typo_corrected")
+        # The redesigned engine treats ``typo_corrected`` as a
+        # *suggestion-detected* flag, not a silent rewrite. We no longer
+        # add a numeric penalty for it (PENALTY_TYPO_CORRECTED is 0); we
+        # emit a ``typo_suggested`` token and force the row to REVIEW so
+        # a human can confirm the correction before any data is changed.
+        reasons.append("typo_suggested")
 
     if domain_matches_input_column is False:
         score += PENALTY_DOMAIN_MISMATCH
@@ -209,6 +233,14 @@ def score_row(
         bucket = "review"
     else:
         bucket = "invalid"
+
+    # --- Typo suggestion override: always force REVIEW when detected ---
+    # (even if the score would otherwise land in high_confidence or
+    # invalid) so a reviewer can decide whether to accept the
+    # suggestion. This is the "→ enviar a REVIEW" rule from the
+    # redesign spec.
+    if typo_corrected is True:
+        bucket = "review"
 
     # --- Role account detection: always force to "review" and tag reason ---
     if local_part is not None and local_part.lower() in ROLE_ACCOUNT_LOCAL_PARTS:

@@ -14,6 +14,7 @@ import type {
   ReviewDecisions,
   ReviewQueue,
   TypoCorrections,
+  InsightsResponse,
 } from "./types";
 import {
   createMockJob,
@@ -227,6 +228,40 @@ export async function adapterGetTypoCorrections(jobId: string): Promise<TypoCorr
     return (await res.json()) as TypoCorrections;
   }
   return { job_id: jobId, total: 0, corrections: [] };
+}
+
+export async function adapterGetJobInsights(
+  jobId: string,
+): Promise<InsightsResponse> {
+  if (useProxy) {
+    const res = await fetch(
+      `${backendUrl}/jobs/${encodeURIComponent(jobId)}/insights`,
+      { cache: "no-store" },
+    );
+    if (res.status === 404) {
+      return _emptyInsights(jobId);
+    }
+    if (!res.ok) throw new Error(`Backend error (${res.status})`);
+    return (await res.json()) as InsightsResponse;
+  }
+  return _emptyInsights(jobId);
+}
+
+function _emptyInsights(jobId: string): InsightsResponse {
+  return {
+    job_id: jobId,
+    v2_available: false,
+    totals: { all: 0, valid: 0, review: 0, invalid: 0 },
+    confidence_tiers: { high: 0, medium: 0, low: 0, unknown: 0 },
+    final_actions: {},
+    catch_all_count: 0,
+    smtp_tested_count: 0,
+    smtp_suspicious_count: 0,
+    domain_intelligence: {
+      reliable: [], risky: [], unstable: [], catch_all_suspected: [],
+    },
+    rows: [],
+  };
 }
 
 export const adapterMode = useProxy ? "proxy" : "mock";

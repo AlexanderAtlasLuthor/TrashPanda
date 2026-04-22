@@ -12,26 +12,63 @@ Execution order assumed by downstream stages:
     DomainExtractionStage       (needs: email, syntax_valid)
       ↳ adds local_part_from_email / domain_from_email
     TypoCorrectionStage         (needs: domain_from_email)
-      ↳ adds typo_corrected / typo_original_domain / corrected_domain
+      ↳ adds typo_detected / original_domain / suggested_domain /
+             suggested_email / typo_type / typo_confidence
+             plus legacy mirrors typo_corrected / typo_original_domain /
+             corrected_domain (always equal to the original domain in
+             suggest-only mode — we never auto-rewrite the user's input).
     DomainComparisonStage       (needs: corrected_domain, domain)
       ↳ adds domain_matches_input_column
 
+A second, post-DNS safety pass lives in ``enrichment`` as
+``TypoSuggestionValidationStage``: once DNS has resolved the original
+domain we suppress any suggestion for domains that already have a valid
+MX record, so live domains are never "corrected" on top of real data.
+
 The only dependency any of these stages has on ``PipelineContext`` is
-``TypoCorrectionStage``, which reads ``context.typo_map``. Nothing is
-stashed on the payload metadata in this batch.
+``TypoCorrectionStage``, which reads ``context.typo_map`` and, when
+available, ``context.config.typo_correction``.
 """
 
 from __future__ import annotations
 
 from ...normalizers import (
-    apply_domain_typo_correction_column,
+    apply_domain_typo_suggestion_column,
     compare_domain_with_input_column,
     extract_email_components,
 )
+from ...typo_suggestions import DEFAULT_PROVIDER_WHITELIST, TypoDetectorConfig
 from ...validators import validate_email_syntax_column
 from ..context import PipelineContext
 from ..payload import ChunkPayload
 from ..stage import Stage
+
+
+def _detector_config_from_context(context: PipelineContext) -> TypoDetectorConfig:
+    """Build a :class:`TypoDetectorConfig` from the run-wide context.
+
+    Falls back to safe defaults when the context was constructed without
+    an :class:`AppConfig` (e.g. in unit tests that exercise stages in
+    isolation). Those defaults match the shipped ``configs/default.yaml``.
+    """
+
+    cfg = getattr(context, "config", None)
+    typo_cfg = getattr(cfg, "typo_correction", None) if cfg is not None else None
+    if typo_cfg is None:
+        return TypoDetectorConfig(
+            mode="suggest_only",
+            max_edit_distance=2,
+            whitelist=DEFAULT_PROVIDER_WHITELIST,
+            require_original_no_mx=True,
+        )
+
+    whitelist = getattr(typo_cfg, "whitelist", None) or DEFAULT_PROVIDER_WHITELIST
+    return TypoDetectorConfig(
+        mode=str(getattr(typo_cfg, "mode", "suggest_only")),
+        max_edit_distance=int(getattr(typo_cfg, "max_edit_distance", 2)),
+        whitelist=frozenset(whitelist),
+        require_original_no_mx=bool(getattr(typo_cfg, "require_original_no_mx", True)),
+    )
 
 
 class EmailSyntaxValidationStage(Stage):
@@ -65,21 +102,40 @@ class DomainExtractionStage(Stage):
 
 
 class TypoCorrectionStage(Stage):
-    """Apply the closed typo map to the extracted domain column.
+    """Detect *possible* domain typos non-destructively.
 
-    Reads the typo map from ``context.typo_map`` (populated once per run
-    in ``pipeline.run``). No fallback is applied — if the context was
-    configured without a typo map, the underlying function will raise,
-    matching the pre-refactor inline behavior.
+    Reads the legacy typo map from ``context.typo_map`` (populated once
+    per run in ``pipeline.run``) as a curated candidate source, and the
+    detector configuration (mode, whitelist, max edit distance) from
+    ``context.config.typo_correction`` when available. Produces the full
+    set of suggestion columns plus legacy mirrors so every downstream
+    consumer keeps working. **The original email and its domain are
+    never modified here** — see ``TypoSuggestionValidationStage`` for the
+    post-DNS safety check.
     """
 
     name = "typo_correction"
     requires = ("domain_from_email",)
-    produces = ("typo_corrected", "typo_original_domain", "corrected_domain")
+    produces = (
+        "typo_detected",
+        "original_domain",
+        "suggested_domain",
+        "suggested_email",
+        "typo_type",
+        "typo_confidence",
+        "typo_corrected",
+        "typo_original_domain",
+        "corrected_domain",
+    )
 
     def run(self, payload: ChunkPayload, context: PipelineContext) -> ChunkPayload:
+        detector_config = _detector_config_from_context(context)
         return payload.with_frame(
-            apply_domain_typo_correction_column(payload.frame, context.typo_map)
+            apply_domain_typo_suggestion_column(
+                payload.frame,
+                detector_config=detector_config,
+                typo_map=context.typo_map or {},
+            )
         )
 
 

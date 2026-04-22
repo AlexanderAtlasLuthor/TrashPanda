@@ -253,6 +253,9 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
             </div>
           )}
           <div className="fade-up">
+            <InsightsBanner jobId={jobId} />
+          </div>
+          <div className="fade-up">
             <TypoCorrectionsPanel jobId={jobId} />
           </div>
           <div className="fade-up">
@@ -385,6 +388,58 @@ function ProcessAnotherButton() {
         }}
       >
         ↩ Process another file
+      </Link>
+    </div>
+  );
+}
+
+// ── Insights CTA banner (links to /insights/[jobId]) ─────────────────────────
+
+function InsightsBanner({ jobId }: { jobId: string }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 16,
+        padding: "14px 20px",
+        marginBottom: 28,
+        background: "linear-gradient(135deg, rgba(142,255,58,0.04), rgba(95,180,255,0.03))",
+        border: "1px solid rgba(142, 255, 58, 0.22)",
+        borderLeft: "3px solid var(--neon)",
+        borderRadius: 3,
+      }}
+    >
+      <div>
+        <div style={{ fontFamily: "var(--font-ui)", fontWeight: 600, fontSize: 14, color: "var(--ink-high)", marginBottom: 2 }}>
+          See the full intelligence behind every record
+        </div>
+        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-low)" }}>
+          Deliverability probability · catch-all detection · SMTP probe · domain history
+        </div>
+      </div>
+      <Link
+        href={`/insights/${encodeURIComponent(jobId)}`}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "9px 18px",
+          fontFamily: "var(--font-mono)",
+          fontSize: 11,
+          letterSpacing: "1px",
+          textTransform: "uppercase",
+          color: "var(--neon)",
+          background: "transparent",
+          border: "1px solid rgba(142, 255, 58, 0.5)",
+          borderRadius: 3,
+          textDecoration: "none",
+          whiteSpace: "nowrap",
+          flexShrink: 0,
+        }}
+      >
+        Open insights →
       </Link>
     </div>
   );

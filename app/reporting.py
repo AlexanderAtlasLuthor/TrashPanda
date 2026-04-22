@@ -138,13 +138,25 @@ def generate_reports(stats: ReportingStats, output_dir: Path) -> dict[str, Path]
             ])
     paths["domain_summary"] = domain_path
 
-    # 4. typo_corrections.csv
+    # 4. typo_corrections.csv — conservative, non-destructive audit trail.
+    # Each row records a *suggestion* the pipeline produced for an email
+    # whose original domain looked like a typo. The email was never
+    # rewritten by the pipeline; downstream reviewers decide what to do
+    # with it. Legacy columns (``typo_original_domain``, ``corrected_domain``)
+    # are kept so older consumers keep parsing the file.
     typo_path = output_dir / "typo_corrections.csv"
     with typo_path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow([
             "source_file",
             "source_row_number",
+            "email_original",
+            "suggested_email",
+            "original_domain",
+            "suggested_domain",
+            "typo_type",
+            "confidence",
+            # Legacy (backward-compat) columns:
             "email",
             "typo_original_domain",
             "corrected_domain",
@@ -153,6 +165,13 @@ def generate_reports(stats: ReportingStats, output_dir: Path) -> dict[str, Path]
             writer.writerow([
                 correction.get("source_file", ""),
                 correction.get("source_row_number", ""),
+                correction.get("email_original", correction.get("email", "")),
+                correction.get("suggested_email", ""),
+                correction.get("original_domain", ""),
+                correction.get("suggested_domain", ""),
+                correction.get("typo_type", ""),
+                correction.get("confidence", ""),
+                # Legacy mirrors
                 correction.get("email", ""),
                 correction.get("typo_original_domain", ""),
                 correction.get("corrected_domain", ""),

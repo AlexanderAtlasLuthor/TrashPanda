@@ -29,6 +29,7 @@ from .engine.stages import (
     StructuralValidationStage,
     TechnicalMetadataStage,
     TypoCorrectionStage,
+    TypoSuggestionValidationStage,
     ValueNormalizationStage,
 )
 from .io_utils import build_run_context, discover_input_files, prepare_input_file, read_csv_in_chunks
@@ -106,6 +107,7 @@ class EmailCleaningPipeline:
                 TypoCorrectionStage(),
                 DomainComparisonStage(),
                 DNSEnrichmentStage(),
+                TypoSuggestionValidationStage(),
                 ScoringStage(),
                 ScoringV2Stage(),
                 ScoringComparisonStage(),
@@ -494,16 +496,40 @@ class EmailCleaningPipeline:
                         removed_writer.writerow(row_dict)
 
                     if bool(row_dict.get("typo_corrected")):
+                        original_domain = (
+                            row_dict.get("original_domain")
+                            or row_dict.get("typo_original_domain")
+                            or row_dict.get("domain_from_email")
+                            or ""
+                        )
+                        suggested_domain = row_dict.get("suggested_domain") or ""
+                        suggested_email = row_dict.get("suggested_email") or ""
+                        typo_type = row_dict.get("typo_type") or ""
+                        confidence_raw = row_dict.get("typo_confidence")
+                        try:
+                            confidence = (
+                                float(confidence_raw)
+                                if confidence_raw not in (None, "")
+                                else ""
+                            )
+                        except (TypeError, ValueError):
+                            confidence = ""
                         stats.typo_corrections.append({
                             "source_file": source_file,
                             "source_row_number": source_row_number,
                             "email": row_dict.get("email") or "",
-                            "typo_original_domain": (
-                                row_dict.get("typo_original_domain")
-                                or row_dict.get("domain_from_email")
-                                or ""
+                            "email_original": row_dict.get("email") or "",
+                            "original_domain": original_domain,
+                            "suggested_domain": suggested_domain,
+                            "suggested_email": suggested_email,
+                            "typo_type": typo_type,
+                            "confidence": confidence,
+                            # Legacy keys kept for backward-compat with any
+                            # external consumer that already parses this file.
+                            "typo_original_domain": original_domain,
+                            "corrected_domain": (
+                                row_dict.get("corrected_domain") or original_domain
                             ),
-                            "corrected_domain": row_dict.get("corrected_domain") or "",
                         })
 
                     if email_norm and not is_canonical_final:

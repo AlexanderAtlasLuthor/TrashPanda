@@ -140,21 +140,78 @@ function EmailRow({
               <div>
                 <div className={styles.detailLabel}>Reason</div>
                 <div className={styles.detailValue}>
-                  {email.friendly_reason ?? REASON_LABELS[email.reason]}
+                  {email.human_reason ?? email.friendly_reason ?? REASON_LABELS[email.reason]}
                 </div>
               </div>
               <div>
                 <div className={styles.detailLabel}>Risk</div>
                 <div className={styles.detailValue}>
-                  {email.risk ?? "Deliverability could not be fully verified."}
+                  {email.human_risk ?? email.risk ?? "Deliverability could not be fully verified."}
                 </div>
               </div>
               <div>
                 <div className={styles.detailLabel}>Recommendation</div>
                 <div className={styles.detailValue}>
-                  {email.recommended_action ?? "Review manually before sending."}
+                  {email.human_recommendation ?? email.recommended_action ?? "Review manually before sending."}
                 </div>
               </div>
+              {email.deliverability_probability != null && (
+                <div>
+                  <div className={styles.detailLabel}>Deliverability probability</div>
+                  <div className={styles.detailValue}>
+                    {Math.round(email.deliverability_probability * 100)}%
+                    {email.deliverability_label ? ` · ${email.deliverability_label}` : ""}
+                  </div>
+                </div>
+              )}
+              {email.confidence_v2 != null && (
+                <div>
+                  <div className={styles.detailLabel}>Engine confidence</div>
+                  <div className={styles.detailValue}>
+                    {Math.round(email.confidence_v2 * 100)}%
+                    {email.confidence_tier ? ` (${email.confidence_tier})` : ""}
+                  </div>
+                </div>
+              )}
+              {email.final_action_label && (
+                <div>
+                  <div className={styles.detailLabel}>Engine decision</div>
+                  <div className={styles.detailValue}>{email.final_action_label}</div>
+                </div>
+              )}
+              {email.historical_label_friendly && (
+                <div>
+                  <div className={styles.detailLabel}>Domain history</div>
+                  <div className={styles.detailValue}>{email.historical_label_friendly}</div>
+                </div>
+              )}
+              {email.possible_catch_all && (
+                <div>
+                  <div className={styles.detailLabel}>Catch-all</div>
+                  <div className={styles.detailValue}>
+                    Yes
+                    {email.catch_all_confidence != null ? ` · ${Math.round(email.catch_all_confidence * 100)}% confidence` : ""}
+                  </div>
+                </div>
+              )}
+              {email.smtp_tested && (
+                <div>
+                  <div className={styles.detailLabel}>SMTP probe</div>
+                  <div className={styles.detailValue}>
+                    {email.smtp_confirmed_valid
+                      ? "Confirmed valid"
+                      : email.smtp_suspicious
+                        ? "Suspicious response"
+                        : (email.smtp_result ?? "Tested")}
+                  </div>
+                </div>
+              )}
+              {email.review_subclass && (
+                <div>
+                  <div className={styles.detailLabel}>Subclass</div>
+                  <div className={styles.detailValue}>{email.review_subclass}</div>
+                </div>
+              )}
             </div>
           </td>
         </tr>

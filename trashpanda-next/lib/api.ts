@@ -21,6 +21,7 @@ import type {
   ReviewDecisions,
   ReviewQueue,
   TypoCorrections,
+  InsightsResponse,
 } from "./types";
 
 export interface UploadResponse {
@@ -163,6 +164,19 @@ export async function getTypoCorrections(jobId: string): Promise<TypoCorrections
     { cache: "no-store" },
   );
   return handleResponse<TypoCorrections>(res);
+}
+
+/**
+ * Fetch V2 Deliverability Intelligence aggregate + per-row feed.
+ * Safe to call on legacy runs: response.v2_available will be false and the UI
+ * should render an empty-state panel.
+ */
+export async function getJobInsights(jobId: string): Promise<InsightsResponse> {
+  const res = await fetch(
+    `/api/jobs/${encodeURIComponent(jobId)}/insights`,
+    { cache: "no-store" },
+  );
+  return handleResponse<InsightsResponse>(res);
 }
 
 /** URL that streams a ZIP of all artifacts for a completed job. */

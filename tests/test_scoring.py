@@ -520,8 +520,11 @@ class TestScoreRowReasons:
         assert "a_fallback" not in tokens
 
     def test_typo_corrected_token_present(self):
+        # After the typo-correction redesign the emitted token is
+        # ``typo_suggested`` (reflecting that the row carries a
+        # *suggestion*, not an applied rewrite).
         r = _score(typo_corrected=True)
-        assert "typo_corrected" in r.score_reasons
+        assert "typo_suggested" in r.score_reasons
 
     def test_domain_mismatch_token_present(self):
         r = _score(domain_matches_input_column=False)

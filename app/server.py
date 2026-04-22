@@ -854,6 +854,170 @@ def _derive_flags(reason_codes: str) -> dict[str, bool]:
     }
 
 
+# --------------------------------------------------------------------------- #
+# V2 field passthrough helpers (back-compat safe).                            #
+# --------------------------------------------------------------------------- #
+
+def _safe_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def _safe_bool(value: Any) -> bool | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    if s in ("true", "1", "yes", "y", "t"):
+        return True
+    if s in ("false", "0", "no", "n", "f"):
+        return False
+    return None
+
+
+def _nonempty(value: Any) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s or None
+
+
+# friendly copy mappings for V2 signals
+_FINAL_ACTION_LABELS: dict[str, str] = {
+    "auto_approve": "Auto-approved",
+    "manual_review": "Manual review",
+    "auto_reject": "Auto-rejected",
+}
+
+_BUCKET_FRIENDLY: dict[str, str] = {
+    "valid": "Ready to send",
+    "review": "Needs attention",
+    "invalid": "Do not use",
+    "invalid_or_bounce_risk": "Do not use",
+}
+
+_HISTORICAL_LABELS: dict[str, str] = {
+    "reliable": "Historically reliable",
+    "risky": "Historically risky",
+    "unstable": "Historically unstable",
+    "catch_all_suspected": "Catch-all suspected",
+    "unknown": "No historical signal",
+}
+
+
+def _confidence_tier(value: float | None) -> str | None:
+    if value is None:
+        return None
+    if value >= 0.85:
+        return "high"
+    if value >= 0.60:
+        return "medium"
+    return "low"
+
+
+def _v2_passthrough(row: dict[str, str]) -> dict[str, Any]:
+    """Extract V2 columns that may or may not exist in the CSV.
+
+    Returns only keys whose underlying value is present (non-empty), so the
+    UI can feature-detect and degrade gracefully on legacy runs.
+    """
+    out: dict[str, Any] = {}
+
+    bucket = _nonempty(row.get("bucket_v2")) or _nonempty(row.get("preliminary_bucket"))
+    if bucket:
+        out["bucket_v2"] = bucket
+        out["bucket_label"] = _BUCKET_FRIENDLY.get(bucket.lower(), bucket.title())
+
+    conf_v2 = _safe_float(row.get("confidence_v2"))
+    if conf_v2 is not None:
+        out["confidence_v2"] = conf_v2
+        tier = _confidence_tier(conf_v2)
+        if tier:
+            out["confidence_tier"] = tier
+
+    # Decision layer (validation_v2.decision.aggregator)
+    final_action = _nonempty(row.get("final_action"))
+    if final_action:
+        out["final_action"] = final_action
+        out["final_action_label"] = _FINAL_ACTION_LABELS.get(
+            final_action, final_action.replace("_", " ").title()
+        )
+    for key in ("decision_reason", "decision_note"):
+        v = _nonempty(row.get(key))
+        if v:
+            out[key] = v
+    dec_conf = _safe_float(row.get("decision_confidence"))
+    if dec_conf is not None:
+        out["decision_confidence"] = dec_conf
+
+    # Deliverability signal
+    deliv_prob = _safe_float(row.get("deliverability_probability"))
+    if deliv_prob is not None:
+        out["deliverability_probability"] = deliv_prob
+    deliv_label = _nonempty(row.get("deliverability_label"))
+    if deliv_label:
+        out["deliverability_label"] = deliv_label
+    deliv_factors = _nonempty(row.get("deliverability_factors"))
+    if deliv_factors:
+        out["deliverability_factors"] = deliv_factors
+
+    # Human-readable explanation
+    for key in ("human_reason", "human_risk", "human_recommendation"):
+        v = _nonempty(row.get(key))
+        if v:
+            out[key] = v
+
+    # Historical / reputation
+    hist = _nonempty(row.get("historical_label"))
+    if hist:
+        out["historical_label"] = hist
+        out["historical_label_friendly"] = _HISTORICAL_LABELS.get(hist.lower(), hist)
+    conf_adj = _safe_bool(row.get("confidence_adjustment_applied"))
+    if conf_adj is not None:
+        out["confidence_adjustment_applied"] = conf_adj
+
+    # Catch-all
+    possible_catch_all = _safe_bool(row.get("possible_catch_all"))
+    if possible_catch_all is not None:
+        out["possible_catch_all"] = possible_catch_all
+    cc = _safe_float(row.get("catch_all_confidence"))
+    if cc is not None:
+        out["catch_all_confidence"] = cc
+    cc_reason = _nonempty(row.get("catch_all_reason"))
+    if cc_reason:
+        out["catch_all_reason"] = cc_reason
+
+    # Review subclass
+    subclass = _nonempty(row.get("review_subclass"))
+    if subclass:
+        out["review_subclass"] = subclass
+
+    # SMTP probe
+    for key in ("smtp_tested", "smtp_confirmed_valid", "smtp_suspicious"):
+        b = _safe_bool(row.get(key))
+        if b is not None:
+            out[key] = b
+    for key in ("smtp_result", "smtp_code"):
+        v = _nonempty(row.get(key))
+        if v:
+            out[key] = v
+    smtp_conf = _safe_float(row.get("smtp_confidence"))
+    if smtp_conf is not None:
+        out["smtp_confidence"] = smtp_conf
+
+    # Reason codes (raw, useful for debug badges)
+    rc = _nonempty(row.get("reason_codes_v2"))
+    if rc:
+        out["reason_codes_v2"] = rc
+
+    return out
+
+
 def _map_review_row(row: dict[str, str], index: int) -> dict[str, Any] | None:
     email = row.get("email", "").strip()
     if not email:
@@ -879,7 +1043,7 @@ def _map_review_row(row: dict[str, str], index: int) -> dict[str, Any] | None:
     friendly_reason, risk, recommendation = _REVIEW_EXPLANATIONS[reason]
     flags = _derive_flags(reason_codes)
 
-    return {
+    base = {
         "id": row_id,
         "email": email,
         "domain": domain,
@@ -891,6 +1055,9 @@ def _map_review_row(row: dict[str, str], index: int) -> dict[str, Any] | None:
         "recommended_action": recommendation,
         "flags": flags,
     }
+    # Pass through V2 intelligence when available (back-compat safe).
+    base.update(_v2_passthrough(row))
+    return base
 
 
 @app.get("/jobs/{job_id}/review")
@@ -1074,6 +1241,218 @@ def get_review_export(job_id: str) -> Response:
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# --------------------------------------------------------------------------- #
+# /jobs/{id}/insights — V2 Deliverability Intelligence aggregate + row-level  #
+# feed. Back-compat: v2_available=False for legacy runs, UI will render an    #
+# empty-state panel.                                                          #
+# --------------------------------------------------------------------------- #
+
+_V2_MARKER_COLS = (
+    "bucket_v2",
+    "confidence_v2",
+    "final_action",
+    "deliverability_probability",
+    "human_reason",
+    "possible_catch_all",
+    "smtp_tested",
+)
+
+
+def _row_iter(csv_path: Path):
+    try:
+        with csv_path.open(encoding="utf-8", newline="") as fh:
+            for row in csv.DictReader(fh):
+                yield row
+    except OSError:
+        return
+
+
+def _build_insight_row(row: dict[str, str], index: int, source: str) -> dict[str, Any] | None:
+    email = (row.get("email") or "").strip()
+    if not email:
+        return None
+    row_id = (row.get("id") or "").strip() or f"{source}-{index}"
+    domain = (row.get("domain") or "").strip() or email.split("@")[-1]
+    item: dict[str, Any] = {
+        "id": row_id,
+        "email": email,
+        "domain": domain,
+        "source": source,  # "valid" | "review" | "invalid"
+    }
+    item.update(_v2_passthrough(row))
+    # Also include basic reason codes for table chips
+    rc = (row.get("reason_codes_v2") or row.get("reason_codes") or "").strip()
+    if rc:
+        item["reason_codes"] = rc
+    return item
+
+
+@app.get("/jobs/{job_id}/insights")
+def get_job_insights(job_id: str) -> dict[str, Any]:
+    """Aggregate V2 deliverability intelligence for a completed job.
+
+    Reads clean_high_confidence.csv, review_medium_confidence.csv and
+    removed_invalid.csv. Returns per-row V2 fields + roll-up counts + domain
+    intelligence. Sets ``v2_available=False`` for legacy runs.
+    """
+    job_output_dir = RUNTIME_ROOT / "jobs" / job_id
+    if not job_output_dir.is_dir():
+        _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
+
+    run_dir = _latest_run_dir(job_output_dir)
+    if run_dir is None or not _is_under(run_dir, job_output_dir):
+        return {
+            "job_id": job_id,
+            "v2_available": False,
+            "totals": {"all": 0, "valid": 0, "review": 0, "invalid": 0},
+            "rows": [],
+            "domain_intelligence": {
+                "reliable": [], "risky": [], "unstable": [], "catch_all_suspected": [],
+            },
+            "confidence_tiers": {"high": 0, "medium": 0, "low": 0, "unknown": 0},
+            "final_actions": {},
+            "catch_all_count": 0,
+            "smtp_tested_count": 0,
+            "smtp_suspicious_count": 0,
+        }
+
+    sources = [
+        ("valid", run_dir / "clean_high_confidence.csv"),
+        ("review", run_dir / "review_medium_confidence.csv"),
+        ("invalid", run_dir / "removed_invalid.csv"),
+    ]
+
+    rows: list[dict[str, Any]] = []
+    v2_available = False
+    source_counts = {"valid": 0, "review": 0, "invalid": 0}
+
+    conf_tiers = {"high": 0, "medium": 0, "low": 0, "unknown": 0}
+    final_actions: dict[str, int] = {}
+    catch_all_count = 0
+    smtp_tested_count = 0
+    smtp_suspicious_count = 0
+
+    # domain aggregation: domain -> {count, deliv_sum, deliv_n, label_counts}
+    domain_stats: dict[str, dict[str, Any]] = {}
+
+    for source_name, path in sources:
+        if not path.is_file() or not _is_under(path, job_output_dir):
+            continue
+        for idx, raw in enumerate(_row_iter(path)):
+            if not v2_available:
+                for marker in _V2_MARKER_COLS:
+                    if (raw.get(marker) or "").strip():
+                        v2_available = True
+                        break
+            item = _build_insight_row(raw, idx, source_name)
+            if item is None:
+                continue
+            rows.append(item)
+            source_counts[source_name] += 1
+
+            # aggregate
+            tier = item.get("confidence_tier")
+            if tier in conf_tiers:
+                conf_tiers[tier] += 1
+            else:
+                conf_tiers["unknown"] += 1
+
+            fa = item.get("final_action")
+            if fa:
+                final_actions[fa] = final_actions.get(fa, 0) + 1
+
+            if item.get("possible_catch_all"):
+                catch_all_count += 1
+            if item.get("smtp_tested"):
+                smtp_tested_count += 1
+            if item.get("smtp_suspicious"):
+                smtp_suspicious_count += 1
+
+            d = item["domain"].lower()
+            ds = domain_stats.setdefault(
+                d,
+                {
+                    "domain": d,
+                    "count": 0,
+                    "deliv_sum": 0.0,
+                    "deliv_n": 0,
+                    "historical": {},
+                    "catch_all": 0,
+                    "smtp_suspicious": 0,
+                    "invalid": 0,
+                    "valid": 0,
+                    "review": 0,
+                },
+            )
+            ds["count"] += 1
+            ds[source_name] += 1
+            dp = item.get("deliverability_probability")
+            if isinstance(dp, (int, float)):
+                ds["deliv_sum"] += float(dp)
+                ds["deliv_n"] += 1
+            hl = item.get("historical_label")
+            if hl:
+                ds["historical"][hl] = ds["historical"].get(hl, 0) + 1
+            if item.get("possible_catch_all"):
+                ds["catch_all"] += 1
+            if item.get("smtp_suspicious"):
+                ds["smtp_suspicious"] += 1
+
+    # classify domains
+    reliable: list[dict[str, Any]] = []
+    risky: list[dict[str, Any]] = []
+    unstable: list[dict[str, Any]] = []
+    catch_all_suspected: list[dict[str, Any]] = []
+
+    for ds in domain_stats.values():
+        avg_deliv = (ds["deliv_sum"] / ds["deliv_n"]) if ds["deliv_n"] else None
+        hist = ds["historical"]
+        primary_hist = max(hist, key=hist.get) if hist else None
+        entry = {
+            "domain": ds["domain"],
+            "count": ds["count"],
+            "avg_deliverability": round(avg_deliv, 3) if avg_deliv is not None else None,
+            "historical_label": primary_hist,
+            "catch_all_count": ds["catch_all"],
+            "smtp_suspicious_count": ds["smtp_suspicious"],
+            "valid": ds["valid"],
+            "review": ds["review"],
+            "invalid": ds["invalid"],
+        }
+        # classification (priority order)
+        if primary_hist == "catch_all_suspected" or (ds["count"] >= 3 and ds["catch_all"] / max(ds["count"], 1) >= 0.5):
+            catch_all_suspected.append(entry)
+        elif primary_hist == "risky" or (avg_deliv is not None and avg_deliv < 0.4 and ds["count"] >= 2):
+            risky.append(entry)
+        elif primary_hist == "unstable" or ds["smtp_suspicious"] > 0:
+            unstable.append(entry)
+        elif primary_hist == "reliable" or (avg_deliv is not None and avg_deliv >= 0.8):
+            reliable.append(entry)
+
+    # top-N per list, by volume
+    def _top(lst: list[dict[str, Any]], n: int = 15) -> list[dict[str, Any]]:
+        return sorted(lst, key=lambda e: e["count"], reverse=True)[:n]
+
+    total_all = sum(source_counts.values())
+    return {
+        "job_id": job_id,
+        "v2_available": v2_available,
+        "totals": {"all": total_all, **source_counts},
+        "confidence_tiers": conf_tiers,
+        "final_actions": final_actions,
+        "catch_all_count": catch_all_count,
+        "smtp_tested_count": smtp_tested_count,
+        "smtp_suspicious_count": smtp_suspicious_count,
+        "domain_intelligence": {
+            "reliable": _top(reliable),
+            "risky": _top(risky),
+            "unstable": _top(unstable),
+            "catch_all_suspected": _top(catch_all_suspected),
+        },
+        "rows": rows,
+    }
 
 
 @app.get("/jobs/{job_id}/typo-corrections")

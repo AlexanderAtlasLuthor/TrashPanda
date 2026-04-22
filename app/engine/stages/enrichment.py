@@ -32,6 +32,7 @@ from typing import Any
 from ...dedupe import apply_completeness_column
 from ...dns_utils import apply_dns_enrichment_column
 from ...scoring import apply_scoring_column
+from ...typo_suggestions import clear_typo_suggestion_when_original_has_mx
 from ..context import PipelineContext
 from ..payload import ChunkPayload
 from ..stage import Stage
@@ -91,6 +92,27 @@ class DNSEnrichmentStage(Stage):
                 fallback_to_a_record=cfg.fallback_to_a_record,
                 max_workers=cfg.max_workers,
             )
+        )
+
+
+class TypoSuggestionValidationStage(Stage):
+    """Suppress typo suggestions for domains that have a live MX record.
+
+    Runs *after* :class:`DNSEnrichmentStage`. Implements the
+    "si el dominio original tiene MX → NO sugerir" rule: when the user's
+    original domain resolves with a valid MX record the row is clearly
+    deliverable and any candidate suggestion is dropped before scoring
+    sees it. Rows without DNS data (syntax_invalid, no domain, etc.)
+    pass through untouched, as do rows whose original domain has no MX.
+    """
+
+    name = "typo_suggestion_validation"
+    requires = ("typo_detected", "has_mx_record")
+    produces = ()
+
+    def run(self, payload: ChunkPayload, context: PipelineContext) -> ChunkPayload:
+        return payload.with_frame(
+            clear_typo_suggestion_when_original_has_mx(payload.frame)
         )
 
 

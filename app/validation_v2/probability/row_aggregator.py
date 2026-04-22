@@ -117,21 +117,35 @@ class ProbabilityPassResult:
 
 
 def _thresholds_from_config(config: ProbabilityConfig) -> ProbabilityThresholds:
+    """Map the YAML-configurable knobs onto the model's threshold struct.
+
+    Only the label boundaries are user-tunable today; the additive
+    weights use the model's defaults. Keeping the indirection lets
+    future config schemas expose more knobs without changing callers.
+    """
+    defaults = DEFAULT_PROBABILITY_THRESHOLDS
     return ProbabilityThresholds(
         high_threshold=config.high_threshold,
         medium_threshold=config.medium_threshold,
-        # Remaining defaults come from the model's own defaults.
-        smtp_deliverable_multiplier=DEFAULT_PROBABILITY_THRESHOLDS.smtp_deliverable_multiplier,
-        smtp_undeliverable_multiplier=DEFAULT_PROBABILITY_THRESHOLDS.smtp_undeliverable_multiplier,
-        smtp_catch_all_multiplier=DEFAULT_PROBABILITY_THRESHOLDS.smtp_catch_all_multiplier,
-        smtp_inconclusive_multiplier=DEFAULT_PROBABILITY_THRESHOLDS.smtp_inconclusive_multiplier,
-        historical_reliable_multiplier=DEFAULT_PROBABILITY_THRESHOLDS.historical_reliable_multiplier,
-        historical_unstable_multiplier=DEFAULT_PROBABILITY_THRESHOLDS.historical_unstable_multiplier,
-        historical_risky_multiplier=DEFAULT_PROBABILITY_THRESHOLDS.historical_risky_multiplier,
-        catch_all_strong_threshold=DEFAULT_PROBABILITY_THRESHOLDS.catch_all_strong_threshold,
-        catch_all_strong_multiplier=DEFAULT_PROBABILITY_THRESHOLDS.catch_all_strong_multiplier,
-        catch_all_moderate_threshold=DEFAULT_PROBABILITY_THRESHOLDS.catch_all_moderate_threshold,
-        catch_all_moderate_multiplier=DEFAULT_PROBABILITY_THRESHOLDS.catch_all_moderate_multiplier,
+        base_score=defaults.base_score,
+        mx_present_weight=defaults.mx_present_weight,
+        a_fallback_weight=defaults.a_fallback_weight,
+        no_dns_weight=defaults.no_dns_weight,
+        domain_match_weight=defaults.domain_match_weight,
+        typo_detected_weight=defaults.typo_detected_weight,
+        historical_reliable_weight=defaults.historical_reliable_weight,
+        historical_unstable_weight=defaults.historical_unstable_weight,
+        historical_risky_weight=defaults.historical_risky_weight,
+        smtp_deliverable_weight=defaults.smtp_deliverable_weight,
+        smtp_undeliverable_weight=defaults.smtp_undeliverable_weight,
+        smtp_catch_all_weight=defaults.smtp_catch_all_weight,
+        smtp_inconclusive_weight=defaults.smtp_inconclusive_weight,
+        catch_all_flag_weight=defaults.catch_all_flag_weight,
+        catch_all_strong_threshold=defaults.catch_all_strong_threshold,
+        catch_all_strong_weight=defaults.catch_all_strong_weight,
+        catch_all_moderate_threshold=defaults.catch_all_moderate_threshold,
+        catch_all_moderate_weight=defaults.catch_all_moderate_weight,
+        noise_amplitude=defaults.noise_amplitude,
     )
 
 

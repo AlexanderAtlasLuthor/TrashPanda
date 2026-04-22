@@ -46,6 +46,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname();
   const isConsole = pathname === "/";
   const isResults = pathname?.startsWith("/results");
+  const isInsights = pathname?.startsWith("/insights");
   const isLeadDiscovery = pathname?.startsWith("/lead-discovery");
   const isDomainAudit = pathname?.startsWith("/domain-audit");
   const isPipelines = pathname?.startsWith("/pipelines");
@@ -102,6 +103,22 @@ export function Sidebar({ open, onClose }: SidebarProps) {
               </svg>
             }
             disabled={!isResults}
+          />
+          <NavLink
+            href={isInsights ? pathname : undefined}
+            active={!!isInsights}
+            label="Insights"
+            icon={
+              <svg viewBox="0 0 24 24">
+                <path d="M3 3v18h18" />
+                <path d="M7 15l4-4 3 3 5-6" />
+                <circle cx="7" cy="15" r="1.2" />
+                <circle cx="11" cy="11" r="1.2" />
+                <circle cx="14" cy="14" r="1.2" />
+                <circle cx="19" cy="8" r="1.2" />
+              </svg>
+            }
+            disabled={!isInsights}
           />
         </div>
 

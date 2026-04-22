@@ -37,8 +37,11 @@ DEFAULT_DECISION_VALUES: dict[str, Any] = {
 
 DEFAULT_PROBABILITY_VALUES: dict[str, Any] = {
     "enabled": True,
-    "high_threshold": 0.70,
-    "medium_threshold": 0.40,
+    # Additive model v2: high ≥ 0.80, medium ≥ 0.50, low < 0.50.
+    # Aligned with DEFAULT_DECISION_VALUES so label boundaries match
+    # the decision engine's approve/review thresholds.
+    "high_threshold": 0.80,
+    "medium_threshold": 0.50,
     "write_summary_report": True,
 }
 
@@ -53,6 +56,24 @@ DEFAULT_SMTP_PROBE_VALUES: dict[str, Any] = {
     "retries": 0,
     "negative_adjustment_trigger_threshold": 3,
     "sender_address": "trashpanda-probe@localhost",
+}
+
+
+DEFAULT_TYPO_CORRECTION_VALUES: dict[str, Any] = {
+    # "suggest_only" (default, safe) never modifies the row; it only
+    # populates the new ``typo_detected`` / ``suggested_*`` columns.
+    # "auto_apply_safe" is reserved for a future rollout and currently
+    # behaves like "suggest_only".
+    "mode": "suggest_only",
+    "max_edit_distance": 2,
+    "whitelist": [
+        "gmail.com",
+        "yahoo.com",
+        "outlook.com",
+        "hotmail.com",
+        "icloud.com",
+    ],
+    "require_original_no_mx": True,
 }
 
 
@@ -84,6 +105,26 @@ class ProjectPaths:
     default_config_path: Path
     disposable_domains_path: Path
     typo_map_path: Path
+
+
+@dataclass(slots=True)
+class TypoCorrectionConfig:
+    """Configuration for the conservative domain-typo *suggestion* engine.
+
+    In ``suggest_only`` mode (the default) the pipeline never rewrites
+    the original domain. It only populates the new suggestion columns
+    and routes candidate rows to REVIEW. ``auto_apply_safe`` is reserved
+    for a future rollout and currently behaves like ``suggest_only``.
+    """
+
+    mode: str = str(DEFAULT_TYPO_CORRECTION_VALUES["mode"])
+    max_edit_distance: int = int(DEFAULT_TYPO_CORRECTION_VALUES["max_edit_distance"])
+    whitelist: tuple[str, ...] = field(
+        default_factory=lambda: tuple(DEFAULT_TYPO_CORRECTION_VALUES["whitelist"])
+    )
+    require_original_no_mx: bool = bool(
+        DEFAULT_TYPO_CORRECTION_VALUES["require_original_no_mx"]
+    )
 
 
 @dataclass(slots=True)
@@ -176,6 +217,7 @@ class AppConfig:
     smtp_probe: SMTPProbeConfig = field(default_factory=SMTPProbeConfig)
     probability: ProbabilityConfig = field(default_factory=ProbabilityConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
+    typo_correction: TypoCorrectionConfig = field(default_factory=TypoCorrectionConfig)
     paths: ProjectPaths | None = field(default=None)
 
 
@@ -210,6 +252,7 @@ def load_config(
     smtp_raw = raw_values.pop("smtp_probe", {}) if isinstance(raw_values, dict) else {}
     prob_raw = raw_values.pop("probability", {}) if isinstance(raw_values, dict) else {}
     decision_raw = raw_values.pop("decision", {}) if isinstance(raw_values, dict) else {}
+    typo_raw = raw_values.pop("typo_correction", {}) if isinstance(raw_values, dict) else {}
     merged = {**DEFAULT_CONFIG_VALUES, **raw_values}
     if overrides:
         merged.update({key: value for key, value in overrides.items() if value is not None})
@@ -252,6 +295,21 @@ def load_config(
         write_summary_report=bool(decision_merged["write_summary_report"]),
     )
 
+    typo_merged = {**DEFAULT_TYPO_CORRECTION_VALUES, **(typo_raw or {})}
+    typo_whitelist_raw = typo_merged.get("whitelist") or []
+    if isinstance(typo_whitelist_raw, str):
+        typo_whitelist_raw = [typo_whitelist_raw]
+    typo_config = TypoCorrectionConfig(
+        mode=str(typo_merged["mode"]),
+        max_edit_distance=int(typo_merged["max_edit_distance"]),
+        whitelist=tuple(
+            str(d).strip().lower()
+            for d in typo_whitelist_raw
+            if isinstance(d, str) and d.strip()
+        ),
+        require_original_no_mx=bool(typo_merged["require_original_no_mx"]),
+    )
+
     smtp_merged = {**DEFAULT_SMTP_PROBE_VALUES, **(smtp_raw or {})}
     smtp_config = SMTPProbeConfig(
         enabled=bool(smtp_merged["enabled"]),
@@ -285,6 +343,7 @@ def load_config(
         smtp_probe=smtp_config,
         probability=probability_config,
         decision=decision_config,
+        typo_correction=typo_config,
         paths=paths,
     )
     validate_config(config)

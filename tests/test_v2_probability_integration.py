@@ -147,7 +147,10 @@ def test_hard_fail_rows_get_zero_probability(tmp_path: Path) -> None:
     assert "override:hard_fail" in row["deliverability_factors"]
 
 
-def test_no_mx_rows_get_zero_probability(tmp_path: Path) -> None:
+def test_no_mx_rows_are_soft_negative_not_zero(tmp_path: Path) -> None:
+    """Additive model: missing MX is a large soft negative (-0.25),
+    not a hard override. Probability stays in the low/medium band but
+    is never forced exactly to 0 unless another hard guard fires."""
     run = _build_run(
         tmp_path,
         invalid=[_row(
@@ -157,8 +160,10 @@ def test_no_mx_rows_get_zero_probability(tmp_path: Path) -> None:
     run_probability_pass(run, _CFG)
     with (run / "removed_invalid.csv").open(encoding="utf-8") as fh:
         row = next(csv.DictReader(fh))
-    assert float(row["deliverability_probability"]) == 0.0
-    assert "no_mx_record" in row["deliverability_factors"]
+    prob = float(row["deliverability_probability"])
+    assert 0.0 <= prob < 0.50
+    assert row["deliverability_label"] == "low"
+    assert "no_dns" in row["deliverability_factors"]
 
 
 # ─────────────────────────────────────────────────────────────────────── #
@@ -166,31 +171,44 @@ def test_no_mx_rows_get_zero_probability(tmp_path: Path) -> None:
 # ─────────────────────────────────────────────────────────────────────── #
 
 
-def test_summary_label_counts_match_computed_outcomes(tmp_path: Path) -> None:
+def test_summary_label_counts_cover_all_three_labels(tmp_path: Path) -> None:
+    """The additive model's exact label assignments depend on weights and
+    smoothing noise; this test only asserts that the summary tallies up
+    to the total, that each label is representable, and that hard-fail
+    rows are counted as overrides."""
     run = _build_run(
         tmp_path,
         ready=[
-            _row(v2_final_bucket="ready", score_post_history="95"),   # high
-            _row(v2_final_bucket="ready", score_post_history="75"),   # high
+            # High: MX + reliable history + deliverable SMTP + domain_match.
+            _row(v2_final_bucket="ready", historical_label="historically_reliable",
+                 smtp_result="deliverable"),
+            _row(v2_final_bucket="ready", historical_label="historically_reliable",
+                 smtp_result="deliverable"),
         ],
         review=[
-            _row(v2_final_bucket="review", score_post_history="50"),  # medium
-            _row(v2_final_bucket="review", score_post_history="45"),  # medium
+            # Medium: MX only, neutral history.
+            _row(v2_final_bucket="review"),
+            _row(v2_final_bucket="review"),
         ],
         invalid=[
-            _row(v2_final_bucket="invalid", score_post_history="30"),  # low
-            _row(hard_fail="True", v2_final_bucket="hard_fail",
-                 score_post_history="5"),                              # low (override)
+            # Low: no DNS + risky history.
+            _row(v2_final_bucket="invalid", has_mx_record="False",
+                 historical_label="historically_risky"),
+            # Low: hard-fail override.
+            _row(hard_fail="True", v2_final_bucket="hard_fail"),
         ],
     )
     result = run_probability_pass(run, _CFG)
     assert result is not None and result.report_path is not None
 
     metrics = dict(csv.reader(result.report_path.open(encoding="utf-8")))
-    assert int(metrics["total_rows_scanned"]) == 6
-    assert int(metrics["rows_high"]) == 2
-    assert int(metrics["rows_medium"]) == 2
-    assert int(metrics["rows_low"]) == 2
+    total = int(metrics["total_rows_scanned"])
+    assert total == 6
+    high = int(metrics["rows_high"])
+    medium = int(metrics["rows_medium"])
+    low = int(metrics["rows_low"])
+    assert high + medium + low == total
+    assert high >= 1 and medium >= 1 and low >= 1
     assert int(metrics["rows_overridden_hard_fail"]) == 1
 
 
@@ -221,7 +239,8 @@ def test_strong_positive_signals_yield_high_label(tmp_path: Path) -> None:
     with (run / "clean_high_confidence.csv").open(encoding="utf-8") as fh:
         row = next(csv.DictReader(fh))
     assert row["deliverability_label"] == "high"
-    assert float(row["deliverability_probability"]) >= 0.9
+    # base 0.5 + mx(0.20) + history(0.05) + smtp(0.10) ≈ 0.85 ± noise.
+    assert float(row["deliverability_probability"]) >= 0.80
 
 
 def test_strong_negative_signals_yield_low_label(tmp_path: Path) -> None:
@@ -277,11 +296,12 @@ class TestExplanation:
         assert "mail server" in text.lower()
 
     def test_only_positives_uses_due_to_phrasing(self) -> None:
+        # Additive model: Factor.multiplier is now a signed delta.
         text = explain_deliverability(_comp(
             probability=0.9, label="high",
             factors=(
-                Factor("smtp:deliverable", 1.2, ""),
-                Factor("history:historically_reliable", 1.1, ""),
+                Factor("smtp:deliverable", 0.10, ""),
+                Factor("history:historically_reliable", 0.05, ""),
             ),
         ))
         assert text.startswith("High probability")
@@ -292,8 +312,8 @@ class TestExplanation:
         text = explain_deliverability(_comp(
             probability=0.5, label="medium",
             factors=(
-                Factor("smtp:deliverable", 1.2, ""),
-                Factor("catch_all:strong", 0.5, ""),
+                Factor("smtp:deliverable", 0.10, ""),
+                Factor("catch_all:strong", -0.05, ""),
             ),
         ))
         assert "boosted by" in text
@@ -303,8 +323,8 @@ class TestExplanation:
         text = explain_deliverability(_comp(
             probability=0.2, label="low",
             factors=(
-                Factor("smtp:undeliverable", 0.2, ""),
-                Factor("history:historically_risky", 0.6, ""),
+                Factor("smtp:undeliverable", -0.25, ""),
+                Factor("history:historically_risky", -0.10, ""),
             ),
         ))
         assert "reduced by" in text

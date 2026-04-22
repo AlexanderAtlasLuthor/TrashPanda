@@ -4,3 +4,4 @@ id,email,domain,fname,lname,state,address,county,city,zip,website,ip
 3,test@test.com,test.com,,,TX,3 Oak St,Travis,Austin,73301,,3.3.3.3
 4,alice@example.com,example.com,Alice,Stone,NY,1 Main St,Albany,Albany,12207,example.com,1.1.1.1
 5,noatsymbol.example.com,example.com,Chris,West,FL,4 Pine St,Miami-Dade,Miami,33101,,4.4.4.4
+6,diane@gmail.com,gmail.com,Diane,Park,WA,6 Birch Ln,King,Seattle,98101,dianepark.dev,6.6.6.6

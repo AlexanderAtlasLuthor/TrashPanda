@@ -12,6 +12,30 @@ log_level: INFO
 staging_db_name: staging.sqlite3
 temp_dir_name: temp
 
+# Conservative, non-destructive domain typo *suggestion* engine.
+# In the default "suggest_only" mode the pipeline never rewrites an email
+# or its domain: it only populates the new typo_detected / suggested_*
+# columns and routes candidate rows to the REVIEW bucket. The future
+# "auto_apply_safe" mode (not yet enabled) is a placeholder for an opt-in
+# rollout where validated suggestions could be applied automatically.
+#
+# Rules:
+#   * Only domains in `whitelist` are ever proposed as a suggestion.
+#   * Candidates must be within `max_edit_distance` of the original.
+#   * When `require_original_no_mx` is true (default) a suggestion is
+#     suppressed post-DNS if the original domain has a valid MX record,
+#     so live domains are never "corrected" on top of real data.
+typo_correction:
+  mode: "suggest_only"
+  max_edit_distance: 2
+  whitelist:
+    - gmail.com
+    - yahoo.com
+    - outlook.com
+    - hotmail.com
+    - icloud.com
+  require_original_no_mx: true
+
 # V2 Domain Historical Memory.
 # Purely additive: reads outputs after a run finishes, upserts per-domain
 # counts into a local SQLite, writes domain_history_summary.csv, and
@@ -56,8 +80,10 @@ smtp_probe:
 # is never altered by this stage.
 probability:
   enabled: true
-  high_threshold: 0.70
-  medium_threshold: 0.40
+  # Additive model v2: 0.80 / 0.50 align with the decision engine
+  # thresholds so 'high' and 'auto_approve' describe the same cohort.
+  high_threshold: 0.80
+  medium_threshold: 0.50
   write_summary_report: true
 
 # V2 Phase 6: Decision Engine (automated actions layer).

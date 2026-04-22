@@ -12,6 +12,11 @@ import pandas as pd
 from .models import ChunkContext, InputFile
 from .rules import COLUMN_ALIASES
 from .typo_rules import DomainTypoCorrectionResult, apply_domain_typo_correction
+from .typo_suggestions import (
+    TypoDetectorConfig,
+    TypoSuggestion,
+    detect_typo_suggestion,
+)
 
 
 _WHITESPACE_REGEX = re.compile(r"\s+")
@@ -129,6 +134,15 @@ def apply_domain_typo_correction_column(
 ) -> pd.DataFrame:
     """Apply the closed typo map to the domain_from_email column.
 
+    .. deprecated::
+        Kept for backward compatibility with callers and tests that rely on
+        the pre-redesign *destructive* semantics (``corrected_domain`` being
+        overwritten with the mapped target). New code should call
+        :func:`apply_domain_typo_suggestion_column`, which is
+        non-destructive: it never modifies ``corrected_domain`` and
+        instead populates the new ``typo_detected`` / ``suggested_*``
+        columns.
+
     Adds three columns:
     - typo_corrected: True if a correction was applied, False if not, pd.NA if no domain.
     - typo_original_domain: the domain before correction (or None if no domain).
@@ -156,6 +170,127 @@ def apply_domain_typo_correction_column(
 
     result["typo_corrected"] = result["typo_corrected"].astype("boolean")
     return result
+
+
+# ---------------------------------------------------------------------------
+# Non-destructive typo *suggestion* column applier (new safe default).
+# ---------------------------------------------------------------------------
+
+
+# Columns added by ``apply_domain_typo_suggestion_column``. Exported so
+# tests and downstream reporting can reference the exact output schema.
+TYPO_SUGGESTION_COLUMNS: tuple[str, ...] = (
+    "typo_detected",
+    "original_domain",
+    "suggested_domain",
+    "suggested_email",
+    "typo_type",
+    "typo_confidence",
+    # Backward-compatible mirrors (populated so pre-redesign consumers keep
+    # working; they carry the *suggestion* semantics now, not a rewrite).
+    "typo_corrected",
+    "typo_original_domain",
+    "corrected_domain",
+)
+
+
+def apply_domain_typo_suggestion_column(
+    frame: pd.DataFrame,
+    detector_config: TypoDetectorConfig,
+    typo_map: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    """Populate non-destructive typo-suggestion columns on ``frame``.
+
+    This function is the safe, redesigned replacement for
+    :func:`apply_domain_typo_correction_column`. It never modifies the
+    original email or its domain. For every row it writes:
+
+    * ``typo_detected`` — bool, ``pd.NA`` when no domain was extracted.
+    * ``original_domain`` — the domain as extracted by
+      :func:`extract_email_components` (mirrors ``domain_from_email``).
+    * ``suggested_domain`` — the safe correction candidate, or ``None``.
+    * ``suggested_email`` — ``local_part @ suggested_domain`` or ``None``.
+    * ``typo_type`` — classification token
+      (``common_provider_typo`` / ``tld_typo`` / ``keyboard_typo`` /
+      ``unknown``).
+    * ``typo_confidence`` — numeric confidence in ``[0, 1]``.
+
+    The legacy columns ``typo_corrected`` / ``typo_original_domain`` /
+    ``corrected_domain`` are also populated so downstream validation
+    and CSV consumers continue to work, but with *safe* semantics:
+
+    * ``typo_corrected`` mirrors ``typo_detected`` (i.e. "a suggestion
+      exists"), it does **not** mean the domain was rewritten.
+    * ``corrected_domain`` is always equal to the *original* domain when
+      the detector runs in ``suggest_only`` mode, so every downstream
+      stage validates the real user input, not a guess.
+    """
+
+    result = frame.copy()
+
+    # Initialise columns so downstream stages can rely on their presence
+    # even when every row is a no-op.
+    result["typo_detected"] = pd.NA
+    result["original_domain"] = None
+    result["suggested_domain"] = None
+    result["suggested_email"] = None
+    result["typo_type"] = None
+    result["typo_confidence"] = pd.NA
+
+    result["typo_corrected"] = pd.NA
+    result["typo_original_domain"] = None
+    result["corrected_domain"] = None
+
+    has_local = "local_part_from_email" in result.columns
+
+    for idx in result.index:
+        domain = result.loc[idx, "domain_from_email"]
+
+        if domain is None or (isinstance(domain, float) and pd.isna(domain)):
+            # No domain available (email was syntactically invalid).
+            continue
+
+        local_part = None
+        if has_local:
+            raw_local = result.loc[idx, "local_part_from_email"]
+            if isinstance(raw_local, str) and raw_local:
+                local_part = raw_local
+
+        suggestion: TypoSuggestion = detect_typo_suggestion(
+            local_part=local_part,
+            domain=domain,
+            config=detector_config,
+            typo_map=typo_map or {},
+        )
+
+        # Non-destructive: ``corrected_domain`` always mirrors the original
+        # domain in suggest-only mode. Even in ``auto_apply_safe`` we keep
+        # this invariant until a dedicated post-DNS applier flips it
+        # safely; that stage is intentionally out of scope of this module.
+        result.loc[idx, "original_domain"] = domain
+        result.loc[idx, "typo_original_domain"] = domain
+        result.loc[idx, "corrected_domain"] = domain
+
+        result.loc[idx, "typo_detected"] = bool(suggestion.detected)
+        result.loc[idx, "typo_corrected"] = bool(suggestion.detected)
+
+        if suggestion.detected:
+            result.loc[idx, "suggested_domain"] = suggestion.suggested_domain
+            result.loc[idx, "suggested_email"] = suggestion.suggested_email
+            result.loc[idx, "typo_type"] = suggestion.typo_type
+            if suggestion.confidence is not None:
+                result.loc[idx, "typo_confidence"] = float(suggestion.confidence)
+
+    result["typo_detected"] = result["typo_detected"].astype("boolean")
+    result["typo_corrected"] = result["typo_corrected"].astype("boolean")
+    # ``typo_confidence`` is left as object/Float so pd.NA is preserved
+    # without forcing NaN float semantics on consumers that check for None.
+    return result
+
+
+# The post-DNS safety pass (previously defined here) now lives in
+# ``app.typo_suggestions`` so this module remains free of any
+# deliverability-record concerns (enforced by contamination tests).
 
 
 def compare_domain_with_input_column(frame: pd.DataFrame) -> pd.DataFrame:
