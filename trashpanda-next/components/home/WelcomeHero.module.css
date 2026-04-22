@@ -1,6 +1,6 @@
 .hero {
   display: grid;
-  grid-template-columns: 1.1fr 1.6fr;
+  grid-template-columns: 1.4fr 1fr;
   gap: 28px;
   align-items: center;
   padding: 28px 30px;
@@ -56,59 +56,50 @@
   font-family: var(--font-ui);
   font-size: 14px;
   color: var(--ink-mid);
-  letter-spacing: 0.2px;
-  max-width: 520px;
+  letter-spacing: 0.1px;
+  line-height: 1.5;
+  max-width: 540px;
 }
 
-.right {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 1px;
-  background: var(--stroke-steel);
-  border: 1px solid var(--stroke-steel);
-  border-radius: 4px;
-  overflow: hidden;
-}
-
-.stat {
-  padding: 14px 14px 12px;
+.heroStat {
+  padding: 18px 22px;
   background: var(--bg-deep);
+  border: 1px solid rgba(142, 255, 58, 0.18);
+  border-radius: 3px;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.statValue {
+.heroValue {
   font-family: var(--font-display);
-  font-size: 24px;
+  font-size: 48px;
   line-height: 1;
-  color: var(--ink-high);
-  letter-spacing: -0.3px;
-}
-
-.valueAccent {
+  letter-spacing: -0.5px;
   color: var(--neon);
+  text-shadow: 0 0 18px var(--neon-glow);
 }
 
-.valueDanger {
-  color: var(--danger);
-}
-
-.statLabel {
+.heroLabel {
   font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 1.4px;
+  font-size: 10px;
+  letter-spacing: 1.6px;
   text-transform: uppercase;
   color: var(--ink-low);
+  margin-top: 6px;
+}
+
+.heroSub {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-mid);
+  letter-spacing: 0.1px;
 }
 
 @media (max-width: 1100px) {
   .hero {
     grid-template-columns: 1fr;
     gap: 20px;
-  }
-  .right {
-    grid-template-columns: repeat(4, 1fr);
   }
 }
 
@@ -119,7 +110,7 @@
   .title {
     font-size: 24px;
   }
-  .right {
-    grid-template-columns: repeat(2, 1fr);
+  .heroValue {
+    font-size: 36px;
   }
 }
