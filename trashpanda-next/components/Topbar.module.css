@@ -74,11 +74,12 @@
 }
 
 .subtitle {
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-family: var(--font-ui);
+  font-size: 14px;
   color: var(--ink-mid);
-  letter-spacing: 0.4px;
-  margin-top: 5px;
+  letter-spacing: 0.1px;
+  margin-top: 6px;
+  line-height: 1.45;
 }
 
 .mobileToggle {

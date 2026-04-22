@@ -120,16 +120,26 @@
   position: relative;
 }
 
-.disabled::after {
-  content: "SOON";
-  font-family: var(--font-mono);
-  font-size: 8px;
-  letter-spacing: 1.5px;
-  color: var(--steel-deep);
+/* Contextual hint (e.g. "Pick a job") for job-scoped links when no job
+   is selected. Replaces the old "SOON" badge, which was misleading —
+   the module works, it just needs a job context. */
+.navHint {
   margin-left: auto;
-  padding: 2px 6px;
+  padding: 2px 7px;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  color: var(--ink-low);
   border: 1px solid var(--ink-ghost);
   border-radius: 2px;
+  text-transform: none;
+}
+
+.navLabel {
+  /* The label shares the row with icon and (optionally) a hint pill. */
+  flex: 1;
+  min-width: 0;
 }
 
 .icon {

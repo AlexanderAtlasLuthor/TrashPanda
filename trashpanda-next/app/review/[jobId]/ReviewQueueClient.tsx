@@ -220,7 +220,126 @@ function EmailRow({
   );
 }
 
+// ── Domain group header ──────────────────────────────────────────────────
+
+interface GroupBlockProps {
+  group: {
+    domain: string;
+    emails: ReviewEmail[];
+    pendingCount: number;
+    reasons: Record<ReviewReason, number>;
+    dominantReason: ReviewReason;
+  };
+  expanded: boolean;
+  onToggle: () => void;
+  onApproveAll: () => void;
+  onRemoveAll: () => void;
+  decisions: Record<string, ReviewDecision>;
+  selected: Set<string>;
+  expandedId: string | null;
+  onSelect: (id: string) => void;
+  onDecide: (id: string, d: ReviewDecision) => void;
+  onUndo: (id: string) => void;
+  onToggleDetails: (id: string) => void;
+}
+
+function GroupBlock({
+  group,
+  expanded,
+  onToggle,
+  onApproveAll,
+  onRemoveAll,
+  decisions,
+  selected,
+  expandedId,
+  onSelect,
+  onDecide,
+  onUndo,
+  onToggleDetails,
+}: GroupBlockProps) {
+  const { domain, emails, pendingCount, reasons, dominantReason } = group;
+
+  // Build a short human summary: "No SMTP", "Catch-all + Role-based", etc.
+  const reasonSummary = (Object.entries(reasons) as [ReviewReason, number][])
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([r]) => REASON_LABELS[r])
+    .join(" · ");
+
+  return (
+    <>
+      <tr className={`${styles.groupRow} ${expanded ? styles.groupRowOpen : ""}`}>
+        <td className={styles.groupCell} colSpan={5}>
+          <div className={styles.groupRowInner}>
+            <button
+              type="button"
+              className={styles.groupToggle}
+              onClick={onToggle}
+              aria-expanded={expanded}
+              aria-label={`${expanded ? "Collapse" : "Expand"} ${domain}`}
+            >
+              <span
+                className={`${styles.groupCaret} ${expanded ? styles.groupCaretOpen : ""}`}
+                aria-hidden
+              >
+                ▸
+              </span>
+              <span className={styles.groupDomain}>{domain}</span>
+              <span className={styles.groupCount}>
+                {emails.length} email{emails.length !== 1 ? "s" : ""}
+              </span>
+              <ReasonPill reason={dominantReason} />
+              {reasonSummary !== REASON_LABELS[dominantReason] && (
+                <span className={styles.groupReasonExtra}>{reasonSummary}</span>
+              )}
+              {pendingCount < emails.length && (
+                <span className={styles.groupDecided}>
+                  {emails.length - pendingCount} decided
+                </span>
+              )}
+            </button>
+            {pendingCount > 0 && (
+              <div className={styles.groupActions}>
+                <button
+                  type="button"
+                  className={styles.groupApprove}
+                  onClick={onApproveAll}
+                >
+                  Approve {pendingCount}
+                </button>
+                <button
+                  type="button"
+                  className={styles.groupRemove}
+                  onClick={onRemoveAll}
+                >
+                  Remove {pendingCount}
+                </button>
+              </div>
+            )}
+          </div>
+        </td>
+      </tr>
+      {expanded &&
+        emails.map((e) => (
+          <EmailRow
+            key={e.id}
+            email={e}
+            decision={decisions[e.id] ?? null}
+            selected={selected.has(e.id)}
+            expanded={expandedId === e.id}
+            onSelect={() => onSelect(e.id)}
+            onDecide={(d) => onDecide(e.id, d)}
+            onUndo={() => onUndo(e.id)}
+            onToggleDetails={() => onToggleDetails(e.id)}
+          />
+        ))}
+    </>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────
+
+type ViewMode = "grouped" | "flat";
 
 export function ReviewQueueClient({ jobId }: { jobId: string }) {
   const [emails, setEmails]         = useState<ReviewEmail[]>([]);
@@ -232,6 +351,10 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [decisionsLoaded, setDecisionsLoaded] = useState(false);
+  // Default to grouped: a queue of 21 "No SMTP / Medium" rows compresses
+  // into ~5 domain buckets and the repeating pattern becomes obvious.
+  const [viewMode, setViewMode]     = useState<ViewMode>("grouped");
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   // Fetch emails + decisions (backend first, localStorage fallback)
   useEffect(() => {
@@ -351,6 +474,60 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
     if (ids.length) bulkDecide(ids, "removed");
   }, [pendingFiltered, bulkDecide]);
 
+  // Group filtered emails by domain for the default "grouped" view.
+  // Each group carries the dominant reason + counts by reason so we can
+  // render a one-line summary that collapses N rows of the same kind.
+  interface DomainGroup {
+    domain: string;
+    emails: ReviewEmail[];
+    pendingCount: number;
+    reasons: Record<ReviewReason, number>;
+    dominantReason: ReviewReason;
+  }
+
+  const groups = useMemo<DomainGroup[]>(() => {
+    const byDomain = new Map<string, ReviewEmail[]>();
+    for (const e of filtered) {
+      const arr = byDomain.get(e.domain);
+      if (arr) arr.push(e);
+      else byDomain.set(e.domain, [e]);
+    }
+    const list: DomainGroup[] = [];
+    for (const [domain, groupEmails] of byDomain.entries()) {
+      const reasons = { "catch-all": 0, "role-based": 0, "no-smtp": 0 } as Record<ReviewReason, number>;
+      let pendingCount = 0;
+      for (const e of groupEmails) {
+        reasons[e.reason] = (reasons[e.reason] ?? 0) + 1;
+        if (!decisions[e.id]) pendingCount += 1;
+      }
+      const dominantReason = (Object.entries(reasons) as [ReviewReason, number][])
+        .sort((a, b) => b[1] - a[1])[0][0];
+      list.push({ domain, emails: groupEmails, pendingCount, reasons, dominantReason });
+    }
+    // Biggest pending buckets first — that's where bulk action pays off.
+    list.sort((a, b) => b.pendingCount - a.pendingCount || b.emails.length - a.emails.length);
+    return list;
+  }, [filtered, decisions]);
+
+  const toggleGroup = useCallback((domain: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(domain)) next.delete(domain);
+      else next.add(domain);
+      return next;
+    });
+  }, []);
+
+  const approveGroup = useCallback((group: DomainGroup) => {
+    const ids = group.emails.filter((e) => !decisions[e.id]).map((e) => e.id);
+    if (ids.length) bulkDecide(ids, "approved");
+  }, [bulkDecide, decisions]);
+
+  const removeGroup = useCallback((group: DomainGroup) => {
+    const ids = group.emails.filter((e) => !decisions[e.id]).map((e) => e.id);
+    if (ids.length) bulkDecide(ids, "removed");
+  }, [bulkDecide, decisions]);
+
   return (
     <>
       {/* ── Header ──────────────────────────────────────────────── */}
@@ -409,6 +586,30 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
           <option value="role-based">Role-based</option>
           <option value="no-smtp">No SMTP</option>
         </select>
+        <div
+          className={styles.viewToggle}
+          role="tablist"
+          aria-label="View mode"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={viewMode === "grouped"}
+            className={`${styles.viewBtn} ${viewMode === "grouped" ? styles.viewBtnActive : ""}`}
+            onClick={() => setViewMode("grouped")}
+          >
+            By domain
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={viewMode === "flat"}
+            className={`${styles.viewBtn} ${viewMode === "flat" ? styles.viewBtnActive : ""}`}
+            onClick={() => setViewMode("flat")}
+          >
+            Flat list
+          </button>
+        </div>
         <div className={styles.quickBtns}>
           {pendingFiltered.length > 0 && (
             <>
@@ -444,36 +645,55 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
             </tr>
           </thead>
           <tbody>
-            {loading
-              ? Array.from({ length: 8 }, (_, i) => <SkeletonRow key={i} />)
-              : visible.length === 0
-                ? (
-                  <tr>
-                    <td colSpan={5} className={styles.emptyCell}>
-                      No emails match your filters.
-                    </td>
-                  </tr>
-                )
-                : visible.map((e) => (
-                  <EmailRow
-                    key={e.id}
-                    email={e}
-                    decision={decisions[e.id] ?? null}
-                    selected={selected.has(e.id)}
-                    expanded={expandedId === e.id}
-                    onSelect={() => toggleSelect(e.id)}
-                    onDecide={(d) => decide(e.id, d)}
-                    onUndo={() => undecide(e.id)}
-                    onToggleDetails={() =>
-                      setExpandedId((prev) => (prev === e.id ? null : e.id))
-                    }
-                  />
-                ))
-            }
+            {loading ? (
+              Array.from({ length: 8 }, (_, i) => <SkeletonRow key={i} />)
+            ) : filtered.length === 0 ? (
+              <tr>
+                <td colSpan={5} className={styles.emptyCell}>
+                  No emails match your filters.
+                </td>
+              </tr>
+            ) : viewMode === "grouped" ? (
+              groups.map((g) => (
+                <GroupBlock
+                  key={g.domain}
+                  group={g}
+                  expanded={expandedGroups.has(g.domain)}
+                  onToggle={() => toggleGroup(g.domain)}
+                  onApproveAll={() => approveGroup(g)}
+                  onRemoveAll={() => removeGroup(g)}
+                  decisions={decisions}
+                  selected={selected}
+                  expandedId={expandedId}
+                  onSelect={toggleSelect}
+                  onDecide={decide}
+                  onUndo={undecide}
+                  onToggleDetails={(id) =>
+                    setExpandedId((prev) => (prev === id ? null : id))
+                  }
+                />
+              ))
+            ) : (
+              visible.map((e) => (
+                <EmailRow
+                  key={e.id}
+                  email={e}
+                  decision={decisions[e.id] ?? null}
+                  selected={selected.has(e.id)}
+                  expanded={expandedId === e.id}
+                  onSelect={() => toggleSelect(e.id)}
+                  onDecide={(d) => decide(e.id, d)}
+                  onUndo={() => undecide(e.id)}
+                  onToggleDetails={() =>
+                    setExpandedId((prev) => (prev === e.id ? null : e.id))
+                  }
+                />
+              ))
+            )}
           </tbody>
         </table>
 
-        {!loading && filtered.length > visibleCount && (
+        {!loading && viewMode === "flat" && filtered.length > visibleCount && (
           <div className={styles.tableFooter}>
             <span className={styles.footerCount}>
               Showing {visibleCount} of {filtered.length}
@@ -485,6 +705,15 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
             >
               Load {Math.min(PAGE_SIZE, filtered.length - visibleCount)} more
             </button>
+          </div>
+        )}
+
+        {!loading && viewMode === "grouped" && groups.length > 0 && (
+          <div className={styles.tableFooter}>
+            <span className={styles.footerCount}>
+              {groups.length} domain{groups.length !== 1 ? "s" : ""} · {filtered.length} email
+              {filtered.length !== 1 ? "s" : ""}
+            </span>
           </div>
         )}
       </div>

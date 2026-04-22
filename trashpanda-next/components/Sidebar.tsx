@@ -10,9 +10,11 @@ interface NavLinkProps {
   icon: React.ReactNode;
   disabled?: boolean;
   active?: boolean;
+  /** Short hint rendered in the disabled pill (e.g. "Pick a job"). */
+  disabledHint?: string;
 }
 
-function NavLink({ href, label, icon, disabled, active }: NavLinkProps) {
+function NavLink({ href, label, icon, disabled, active, disabledHint }: NavLinkProps) {
   const className = [
     styles.navItem,
     active && styles.navItemActive,
@@ -25,14 +27,17 @@ function NavLink({ href, label, icon, disabled, active }: NavLinkProps) {
     return (
       <button className={className} disabled aria-disabled>
         <span className={styles.icon}>{icon}</span>
-        {label}
+        <span className={styles.navLabel}>{label}</span>
+        {disabledHint && (
+          <span className={styles.navHint}>{disabledHint}</span>
+        )}
       </button>
     );
   }
   return (
     <Link href={href} className={className}>
       <span className={styles.icon}>{icon}</span>
-      {label}
+      <span className={styles.navLabel}>{label}</span>
     </Link>
   );
 }
@@ -47,9 +52,28 @@ export function Sidebar({ open, onClose }: SidebarProps) {
   const isHome = pathname === "/";
   const isResults = pathname?.startsWith("/results");
   const isInsights = pathname?.startsWith("/insights");
+  const isReview = pathname?.startsWith("/review");
   const isLeadDiscovery = pathname?.startsWith("/lead-discovery");
   const isDomainAudit = pathname?.startsWith("/domain-audit");
   const isPipelines = pathname?.startsWith("/pipelines");
+
+  // Results / Insights / Review are all job-scoped. If we're inside any one
+  // of them we can pull the jobId from the path and keep the other two
+  // links live — that way a user reviewing a queue can jump to its Results
+  // or Insights without going Home first.
+  const jobContextMatch = pathname?.match(/^\/(results|insights|review)\/([^/]+)/);
+  const jobId = jobContextMatch?.[2] ?? null;
+
+  const resultsHref = isResults
+    ? pathname
+    : jobId
+      ? `/results/${jobId}`
+      : undefined;
+  const insightsHref = isInsights
+    ? pathname
+    : jobId
+      ? `/insights/${jobId}`
+      : undefined;
 
   return (
     <>
@@ -92,7 +116,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
             }
           />
           <NavLink
-            href={isResults ? pathname : undefined}
+            href={resultsHref}
             active={!!isResults}
             label="Results"
             icon={
@@ -102,10 +126,11 @@ export function Sidebar({ open, onClose }: SidebarProps) {
                 <path d="M3 11v6c0 1.66 4 3 9 3s9-1.34 9-3v-6" />
               </svg>
             }
-            disabled={!isResults}
+            disabled={!resultsHref}
+            disabledHint={!resultsHref ? "Pick a job" : undefined}
           />
           <NavLink
-            href={isInsights ? pathname : undefined}
+            href={insightsHref}
             active={!!isInsights}
             label="Insights"
             icon={
@@ -118,7 +143,8 @@ export function Sidebar({ open, onClose }: SidebarProps) {
                 <circle cx="19" cy="8" r="1.2" />
               </svg>
             }
-            disabled={!isInsights}
+            disabled={!insightsHref}
+            disabledHint={!insightsHref ? "Pick a job" : undefined}
           />
         </div>
 
