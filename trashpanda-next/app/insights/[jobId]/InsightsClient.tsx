@@ -173,12 +173,22 @@ export function InsightsClient({ jobId, initial, inputFilename }: Props) {
     <>
       <div className="fade-up">
         <Topbar
-          breadcrumb={["WORKSPACE", "INSIGHTS"]}
+          breadcrumb={[
+            "WORKSPACE",
+            { label: "RESULTS", href: `/results/${encodeURIComponent(jobId)}` },
+            "INSIGHTS",
+          ]}
           title="DELIVERABILITY/INTELLIGENCE"
           titleSlice="/"
           subtitle={inputFilename ?? undefined}
           meta={meta}
         />
+        <Link
+          href={`/results/${encodeURIComponent(jobId)}`}
+          className={styles.backLink}
+        >
+          ← Back to Results
+        </Link>
       </div>
 
       {loading && !data && (
@@ -364,7 +374,13 @@ function ExecutiveHero({ data }: { data: InsightsResponse }) {
       </p>
 
       <div className={styles.heroMetrics}>
-        <HeroMetric tone="ok"  value={fmtPct(data.confidence_tiers.high, total)}   label="High confidence"   sub={fmtCount(data.confidence_tiers.high)} />
+        <HeroMetric
+          tone="ok"
+          value={fmtPct(data.confidence_tiers.high, total)}
+          label="High confidence score"
+          sub={fmtCount(data.confidence_tiers.high)}
+          tooltip="Uses probabilistic scoring based on multiple deliverability signals."
+        />
         <HeroMetric tone="warn" value={fmtPct(data.confidence_tiers.medium, total)} label="Medium confidence" sub={fmtCount(data.confidence_tiers.medium)} />
         <HeroMetric tone="bad" value={fmtPct(data.confidence_tiers.low, total)}    label="Low confidence"    sub={fmtCount(data.confidence_tiers.low)} />
         <HeroMetric tone="ok"  value={fmtCount(data.final_actions.auto_approve ?? 0)} label="Auto-approved" sub="Passed all checks" />
@@ -377,11 +393,22 @@ function ExecutiveHero({ data }: { data: InsightsResponse }) {
   );
 }
 
-function HeroMetric({ tone, value, label, sub }: { tone: "ok" | "warn" | "bad" | "info" | "steel"; value: string; label: string; sub?: string }) {
+function HeroMetric({ tone, value, label, sub, tooltip }: { tone: "ok" | "warn" | "bad" | "info" | "steel"; value: string; label: string; sub?: string; tooltip?: string }) {
   return (
     <div className={[styles.heroMetric, styles[tone]].filter(Boolean).join(" ")}>
       <div className={styles.metricValue}>{value}</div>
-      <div className={styles.metricLabel}>// {label}</div>
+      <div className={styles.metricLabel}>
+        // {label}
+        {tooltip && (
+          <span
+            className={styles.metricTip}
+            data-tip={tooltip}
+            aria-label={tooltip}
+          >
+            ⓘ
+          </span>
+        )}
+      </div>
       {sub && <div className={styles.metricSub}>{sub}</div>}
     </div>
   );

@@ -356,7 +356,11 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
       {/* ── Header ──────────────────────────────────────────────── */}
       <div className="fade-up">
         <Topbar
-          breadcrumb={["WORKSPACE", "RESULTS", "REVIEW QUEUE"]}
+          breadcrumb={[
+            "WORKSPACE",
+            { label: "RESULTS", href: `/results/${encodeURIComponent(jobId)}` },
+            "REVIEW QUEUE",
+          ]}
           title="REVIEW/QUEUE"
           titleSlice="/"
           meta={[

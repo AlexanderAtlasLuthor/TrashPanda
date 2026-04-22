@@ -1,12 +1,39 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getJobList } from "@/lib/api";
 import type { JobListItem } from "@/lib/types";
 import styles from "./RecentJobs.module.css";
 
 const POLL_MS = 3000;
+
+// localStorage key for the list of job IDs the user chose to hide from the UI.
+// NOTE: this only hides jobs in the UI. No backend files or job metadata are
+// deleted. Clearing browser storage brings them back.
+const HIDDEN_JOBS_KEY = "trashpanda_recent_jobs";
+
+function loadHiddenIds(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.localStorage.getItem(HIDDEN_JOBS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return new Set(parsed.filter((x) => typeof x === "string"));
+    return new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveHiddenIds(ids: Set<string>): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(HIDDEN_JOBS_KEY, JSON.stringify(Array.from(ids)));
+  } catch {
+    // storage may be unavailable (private mode, quota) — fail silently
+  }
+}
 
 function isActive(status: JobListItem["status"]): boolean {
   return status === "queued" || status === "running";
@@ -65,6 +92,14 @@ function FileIcon({ filename }: { filename: string }) {
 export function RecentJobs() {
   const [jobs, setJobs] = useState<JobListItem[] | null>(null);
   const jobsRef = useRef<JobListItem[] | null>(null);
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(() => new Set());
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [toastOpen, setToastOpen] = useState(false);
+
+  // Load hidden IDs from localStorage after mount (avoids SSR hydration issues).
+  useEffect(() => {
+    setHiddenIds(loadHiddenIds());
+  }, []);
 
   useEffect(() => {
     jobsRef.current = jobs;
@@ -103,39 +138,91 @@ export function RecentJobs() {
     };
   }, []);
 
+  // Jobs the user has not chosen to hide from their view.
+  const visibleJobs = useMemo(() => {
+    if (!jobs) return null;
+    if (hiddenIds.size === 0) return jobs;
+    return jobs.filter((j) => !hiddenIds.has(j.job_id));
+  }, [jobs, hiddenIds]);
+
+  const canClear = !!visibleJobs && visibleJobs.length > 0;
+
+  const handleClear = useCallback(() => {
+    setConfirmOpen(false);
+    const current = jobsRef.current ?? [];
+    // Hide every job currently visible from server — purely client-side.
+    setHiddenIds((prev) => {
+      const next = new Set(prev);
+      for (const j of current) next.add(j.job_id);
+      saveHiddenIds(next);
+      return next;
+    });
+    setToastOpen(true);
+  }, []);
+
+  // Auto-dismiss the confirmation toast after a short delay.
+  useEffect(() => {
+    if (!toastOpen) return;
+    const t = setTimeout(() => setToastOpen(false), 2500);
+    return () => clearTimeout(t);
+  }, [toastOpen]);
+
   return (
     <section style={{ marginBottom: 0 }}>
       <div className={styles.sectionHead}>
         <span className={styles.sectionTitle}>Recent Jobs</span>
-        {jobs && jobs.length > 0 && (
-          <span className={styles.count}>{jobs.length} job{jobs.length !== 1 ? "s" : ""}</span>
-        )}
+        <div className={styles.sectionActions}>
+          {visibleJobs && visibleJobs.length > 0 && (
+            <span className={styles.count}>
+              {visibleJobs.length} job{visibleJobs.length !== 1 ? "s" : ""}
+            </span>
+          )}
+          {canClear && (
+            <button
+              type="button"
+              className={styles.clearBtn}
+              onClick={() => setConfirmOpen(true)}
+              aria-label="Clear recent jobs from this view"
+            >
+              Clear recent jobs
+            </button>
+          )}
+        </div>
       </div>
 
-      {jobs === null ? (
+      {visibleJobs === null ? (
         <div className={styles.list}>
           {[0, 1, 2].map((i) => (
             <SkeletonRow key={i} />
           ))}
         </div>
-      ) : jobs.length === 0 ? (
+      ) : visibleJobs.length === 0 ? (
         <div className={styles.empty}>
           <svg className={styles.emptyIcon} viewBox="0 0 24 24">
             <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
             <polyline points="14 2 14 8 20 8" />
           </svg>
-          <div className={styles.emptyTitle}>No jobs yet</div>
+          <div className={styles.emptyTitle}>No recent jobs yet</div>
           <div className={styles.emptyDesc}>
-            Upload a CSV or XLSX above to start your first cleaning run.
+            Process a file to see results here
           </div>
         </div>
       ) : (
         <div className={styles.list}>
-          {jobs.map((job) => (
+          {visibleJobs.map((job) => (
             <JobRow key={job.job_id} job={job} />
           ))}
         </div>
       )}
+
+      {confirmOpen && (
+        <ClearConfirmDialog
+          onCancel={() => setConfirmOpen(false)}
+          onConfirm={handleClear}
+        />
+      )}
+
+      {toastOpen && <ClearToast message="Job history cleared" />}
     </section>
   );
 }
@@ -185,6 +272,74 @@ function SkeletonRow() {
       </div>
       <div style={{ width: 46, height: 20, background: "var(--bg-elevated)", borderRadius: 2 }} />
       <div style={{ width: 52, height: 24, background: "var(--bg-elevated)", borderRadius: 2 }} />
+    </div>
+  );
+}
+
+// ── Clear confirmation dialog ────────────────────────────────────────────────
+
+function ClearConfirmDialog({
+  onCancel,
+  onConfirm,
+}: {
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  // Dismiss on Escape key for keyboard users.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  return (
+    <div
+      className={styles.confirmBackdrop}
+      onClick={onCancel}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="clear-jobs-title"
+    >
+      <div
+        className={styles.confirmCard}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className={styles.confirmTitle} id="clear-jobs-title">
+          Clear job history from this view?
+        </div>
+        <div className={styles.confirmBody}>
+          This only hides jobs in your browser. No files or results are deleted.
+        </div>
+        <div className={styles.confirmActions}>
+          <button
+            type="button"
+            className={styles.confirmCancel}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className={styles.confirmOk}
+            onClick={onConfirm}
+            autoFocus
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Toast (transient confirmation) ───────────────────────────────────────────
+
+function ClearToast({ message }: { message: string }) {
+  return (
+    <div className={styles.toast} role="status" aria-live="polite">
+      {message}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import styles from "./Topbar.module.css";
 import { useShell } from "./AppShell";
 
@@ -10,8 +11,14 @@ interface MetaItem {
   danger?: boolean;
 }
 
+/**
+ * Breadcrumb items are either plain strings (current/static)
+ * or `{ label, href }` objects to render a clickable link.
+ */
+export type BreadcrumbItem = string | { label: string; href: string };
+
 interface TopbarProps {
-  breadcrumb: string[];
+  breadcrumb: BreadcrumbItem[];
   title: string;
   titleSlice?: string;
   subtitle?: string;
@@ -51,14 +58,23 @@ export function Topbar({
         </button>
         <div className={styles.pageTitle}>
           <div className={styles.breadcrumb}>
-            {breadcrumb.map((crumb, i) => (
-              <span key={i}>
-                {crumb}
-                {i < breadcrumb.length - 1 && (
-                  <span className={styles.slash}>/</span>
-                )}
-              </span>
-            ))}
+            {breadcrumb.map((crumb, i) => {
+              const isLast = i === breadcrumb.length - 1;
+              const label = typeof crumb === "string" ? crumb : crumb.label;
+              const href = typeof crumb === "string" ? null : crumb.href;
+              return (
+                <span key={i}>
+                  {href ? (
+                    <Link href={href} className={styles.crumbLink}>
+                      {label}
+                    </Link>
+                  ) : (
+                    label
+                  )}
+                  {!isLast && <span className={styles.slash}>/</span>}
+                </span>
+              );
+            })}
           </div>
           <h1 className={styles.title}>
             {before}

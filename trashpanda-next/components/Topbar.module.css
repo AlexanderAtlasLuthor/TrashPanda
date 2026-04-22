@@ -27,6 +27,16 @@
   margin: 0 6px;
 }
 
+.crumbLink {
+  color: var(--ink-low);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.crumbLink:hover {
+  color: var(--neon);
+}
+
 .title {
   font-family: var(--font-display);
   font-size: 32px;

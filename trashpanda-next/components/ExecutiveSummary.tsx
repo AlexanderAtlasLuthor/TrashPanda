@@ -83,12 +83,13 @@ export function ExecutiveSummary({ summary }: Props) {
       ? Math.round(invalidPct * 10) / 10
       : null;
 
-  const metrics: Array<{ value: string; label: string; color: string }> = [];
+  const metrics: Array<{ value: string; label: string; color: string; tooltip?: string }> = [];
   if (validPct !== null) {
     metrics.push({
       value: `${fmt(validPct)}%`,
       label: "ready to send",
       color: "var(--neon)",
+      tooltip: "Based on strict validation rules.",
     });
   }
   if (invalidPct !== null && invalidPct > 0) {
@@ -132,7 +133,18 @@ export function ExecutiveSummary({ summary }: Props) {
               >
                 {m.value}
               </div>
-              <div className={styles.metricLabel}>{m.label}</div>
+              <div className={styles.metricLabel}>
+                {m.label}
+                {m.tooltip && (
+                  <span
+                    className={styles.metricTip}
+                    data-tip={m.tooltip}
+                    aria-label={m.tooltip}
+                  >
+                    ⓘ
+                  </span>
+                )}
+              </div>
             </div>
           ))}
         </div>

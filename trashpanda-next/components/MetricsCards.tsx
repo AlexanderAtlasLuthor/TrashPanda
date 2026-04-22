@@ -96,7 +96,7 @@ export function MetricsCards({ summary }: MetricsCardsProps) {
         value={valid}
         severity="ok"
         delta={validPct}
-        tooltip="Safe to use in campaigns"
+        tooltip="Uses strict validation rules to determine if an email is safe to send."
       />
       <Metric
         label="Needs attention"
