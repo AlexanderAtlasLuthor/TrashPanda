@@ -9,3 +9,5 @@ uvicorn
 python-multipart
 httpx
 google-genai
+pydantic
+

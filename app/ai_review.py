@@ -225,7 +225,7 @@ def _client() -> "genai.Client":
     if not api_key:
         raise AIUnavailable(
             "GEMINI_API_KEY is not set in the environment. "
-            "Get a free key at https://aistudio.google.com/apikey"
+            "Grab a free key at https://aistudio.google.com/apikey and set it in the .env file at the repo root."
         )
     return genai.Client(api_key=api_key)
 
@@ -238,8 +238,8 @@ def review_queue_suggestions(
 
     Returns a list of ``{id, decision, confidence, reasoning}`` dicts in the
     same order as the input. On total failure raises ``AIUnavailable`` or the
-    underlying SDK exception — the caller decides how to surface that to the
-    user.
+    underlying google-genai exception — the caller decides how to surface that
+    to the user.
     """
     client = _client()
 
@@ -248,6 +248,9 @@ def review_queue_suggestions(
 
     compact = [_compact_email_for_model(e) for e in emails]
 
+    # User message: the batch. The reusable decision rules live in the system
+    # instruction, so Gemini's implicit prefix cache hits them across calls.
+    # The per-job batch is fresh every request and never caches — correct.
     user_payload = {
         "job_summary_totals": _compact_summary(job_summary),
         "review_queue": compact,
@@ -264,13 +267,18 @@ def review_queue_suggestions(
         config=genai_types.GenerateContentConfig(
             system_instruction=_SYSTEM_REVIEW,
             response_mime_type="application/json",
-            response_json_schema=_SuggestionList.model_json_schema(),
-            temperature=0.2,
+            response_schema=_SuggestionList,
+            max_output_tokens=4096,
+            temperature=0.0,
         ),
     )
 
-    parsed = _SuggestionList.model_validate_json(response.text)
-    _log_usage("ai_review", response)
+    parsed = response.parsed
+    if parsed is None:
+        # Fall back to parsing response.text if the SDK didn't auto-parse.
+        raw = (response.text or "").strip()
+        parsed = _SuggestionList.model_validate_json(raw) if raw else _SuggestionList(suggestions=[])
+    _log_cache_usage("ai_review", response)
 
     # Re-key by id so the UI doesn't have to rely on list order, and drop any
     # hallucinated ids the model made up that aren't in the original batch.
@@ -307,11 +315,12 @@ def job_summary_narrative(job_summary: dict[str, Any]) -> str:
         contents=user_text,
         config=genai_types.GenerateContentConfig(
             system_instruction=_SYSTEM_SUMMARY,
-            temperature=0.4,
             max_output_tokens=256,
+            temperature=0.3,
         ),
     )
-    _log_usage("ai_summary", response)
+    _log_cache_usage("ai_summary", response)
+
     return (response.text or "").strip()
 
 
@@ -336,15 +345,16 @@ def _compact_summary(s: dict[str, Any] | None) -> dict[str, Any]:
     return {k: s[k] for k in keep if k in s and s[k] is not None}
 
 
-def _log_usage(tag: str, response: Any) -> None:
-    """Best-effort debug log of token usage."""
+def _log_cache_usage(tag: str, response: Any) -> None:
+    """Best-effort debug log so we can verify the system prompt is caching."""
     usage = getattr(response, "usage_metadata", None)
     if not usage:
         return
     logger.info(
-        "%s usage: prompt=%s candidates=%s total=%s",
+        "%s usage: prompt=%s cached=%s output=%s total=%s",
         tag,
         getattr(usage, "prompt_token_count", "?"),
+        getattr(usage, "cached_content_token_count", "?"),
         getattr(usage, "candidates_token_count", "?"),
         getattr(usage, "total_token_count", "?"),
     )

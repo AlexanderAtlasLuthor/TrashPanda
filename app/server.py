@@ -45,6 +45,41 @@ from .api_boundary import (
 )
 
 
+def _load_dotenv() -> None:
+    """Load ``KEY=VALUE`` pairs from ``<repo>/.env`` into ``os.environ``.
+
+    Keeps third-party keys (GEMINI_API_KEY, ...) out of shell profiles and
+    survives across restarts. Existing environment variables win over the
+    file, so an explicit ``set GEMINI_API_KEY=...`` still overrides the file.
+    No new dependency — a dozen lines are enough for this format.
+    """
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.is_file():
+        return
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if not key or key in os.environ:
+                continue
+            # Strip matching surrounding quotes, if present.
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            os.environ[key] = value
+    except OSError:
+        # Best-effort: never block server startup because of .env issues.
+        pass
+
+
+_load_dotenv()
+
+
 SUPPORTED_EXTENSIONS = {".csv", ".xlsx"}
 RUNTIME_ROOT = Path("runtime").resolve()
 
@@ -1106,7 +1141,7 @@ def get_job_review(job_id: str) -> dict[str, Any]:
 
 @app.post("/jobs/{job_id}/ai-review")
 def post_job_ai_review(job_id: str) -> dict[str, Any]:
-    """Ask Claude to stack-rank the review queue.
+    """Ask Gemini to stack-rank the review queue.
 
     Returns one `{id, decision, confidence, reasoning}` per flagged email so
     the UI can render "AI suggests Approve · 87%" badges next to each row.
