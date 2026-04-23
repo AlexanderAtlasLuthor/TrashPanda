@@ -32,6 +32,11 @@ def info(msg: str) -> None:
     print(f"{CYAN}[INFO]{RESET}  {msg}")
 
 
+def venv_python() -> Path:
+    is_windows = sys.platform == "win32"
+    return VENV / ("Scripts/python.exe" if is_windows else "bin/python")
+
+
 def is_port_in_use(port: int) -> bool:
     """Return True if something is already listening on localhost:port."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -56,6 +61,22 @@ def validate() -> None:
         warn("node_modules not found. Running npm install...")
         subprocess.run(["npm", "install"], cwd=FRONTEND, check=True)
 
+    info("Checking Python backend dependencies...")
+    dependency_check = subprocess.run(
+        [
+            str(venv_python()),
+            "-c",
+            "from app.db.dependencies import ensure_database_dependencies; ensure_database_dependencies()",
+        ],
+        cwd=ROOT,
+        check=False,
+    )
+    if dependency_check.returncode != 0:
+        fail(
+            "Backend Python dependencies are incomplete. "
+            f"Run: {venv_python()} -m pip install -r requirements.txt"
+        )
+
     info("Verifying ports are available...")
 
     if is_port_in_use(8000):
@@ -66,9 +87,7 @@ def validate() -> None:
 
 
 def uvicorn_cmd() -> list[str]:
-    is_windows = sys.platform == "win32"
-    python = VENV / ("Scripts/python.exe" if is_windows else "bin/python")
-    return [str(python), "-m", "uvicorn", "app.server:app", "--reload", "--port", "8000"]
+    return [str(venv_python()), "-m", "uvicorn", "app.server:app", "--reload", "--port", "8000"]
 
 
 def start_backend() -> subprocess.Popen:

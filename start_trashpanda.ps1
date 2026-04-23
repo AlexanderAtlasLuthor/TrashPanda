@@ -38,6 +38,17 @@ if (-not (Test-Path "$root\trashpanda-next\node_modules")) {
     Pop-Location
 }
 
+$backendPython = Join-Path $root ".venv\Scripts\python.exe"
+Write-Host "[Check]    Verifying Python backend dependencies..." -ForegroundColor Cyan
+& $backendPython -c "from app.db.dependencies import ensure_database_dependencies; ensure_database_dependencies()"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "[ERROR] Backend Python dependencies are incomplete." -ForegroundColor Red
+    Write-Host "        Run: `"$backendPython`" -m pip install -r requirements.txt" -ForegroundColor Yellow
+    Read-Host "Press Enter to exit"
+    exit 1
+}
+
 # --- Port checks ---
 # Try a TCP connect to localhost:PORT. Succeeds = something is already listening
 # = abort. Connection refused = port is free = continue.

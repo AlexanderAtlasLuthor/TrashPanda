@@ -35,6 +35,16 @@ if not exist "!ROOT!\trashpanda-next\node_modules" (
     popd
 )
 
+echo [Check]    Verifying Python backend dependencies...
+"!ROOT!\.venv\Scripts\python.exe" -c "from app.db.dependencies import ensure_database_dependencies; ensure_database_dependencies()"
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Backend Python dependencies are incomplete.
+    echo         Run: "!ROOT!\.venv\Scripts\python.exe" -m pip install -r requirements.txt
+    pause
+    exit /b 1
+)
+
 :: --- Port checks (abort early rather than launching silently on wrong port) ---
 ::
 :: Strategy: try a TCP connect to localhost:PORT. If it succeeds, something is

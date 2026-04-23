@@ -1,0 +1,82 @@
+"""PostgreSQL-backed SaaS persistence package."""
+
+from .dependencies import ensure_database_dependencies
+
+ensure_database_dependencies()
+
+from .base import Base
+from .config import DatabaseSettings, get_database_settings
+from .init_db import init_db
+from .models import (
+    Artifact,
+    ArtifactContentKind,
+    ArtifactGroup,
+    ArtifactStatus,
+    ArtifactVisibility,
+    AuditAction,
+    AuditEvent,
+    AuditOutcome,
+    AuditResourceKind,
+    Job,
+    JobEvent,
+    JobEventType,
+    JobStatus,
+    Membership,
+    MembershipRole,
+    MembershipStatus,
+    Organization,
+    OrganizationStatus,
+    ReviewDecision,
+    ReviewDecisionValue,
+    UploadedFile,
+    UploadedFileContentKind,
+    UploadedFileStatus,
+    UsageEvent,
+    UsageEventType,
+    UsageUnit,
+    User,
+    UserStatus,
+)
+from .session import create_db_engine, dispose_engine, get_db_session, get_engine, get_session_factory, session_scope
+
+__all__ = [
+    "Artifact",
+    "ArtifactContentKind",
+    "ArtifactGroup",
+    "ArtifactStatus",
+    "ArtifactVisibility",
+    "AuditAction",
+    "AuditEvent",
+    "AuditOutcome",
+    "AuditResourceKind",
+    "Base",
+    "DatabaseSettings",
+    "Job",
+    "JobEvent",
+    "JobEventType",
+    "JobStatus",
+    "Membership",
+    "MembershipRole",
+    "MembershipStatus",
+    "Organization",
+    "OrganizationStatus",
+    "ReviewDecision",
+    "ReviewDecisionValue",
+    "UploadedFile",
+    "UploadedFileContentKind",
+    "UploadedFileStatus",
+    "UsageEvent",
+    "UsageEventType",
+    "UsageUnit",
+    "User",
+    "UserStatus",
+    "create_db_engine",
+    "dispose_engine",
+    "ensure_database_dependencies",
+    "get_database_settings",
+    "get_db_session",
+    "get_engine",
+    "get_session_factory",
+    "init_db",
+    "session_scope",
+]

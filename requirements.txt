@@ -10,4 +10,6 @@ python-multipart
 httpx
 google-genai
 pydantic
+sqlalchemy
+psycopg[binary]
 

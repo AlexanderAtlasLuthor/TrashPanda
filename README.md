@@ -19,6 +19,21 @@ pip install -r requirements.txt
 cd trashpanda-next && npm install && cd ..
 ```
 
+If the backend fails during startup with a message like
+`ModuleNotFoundError: No module named 'sqlalchemy'`, the active Python
+environment is missing the new DB packages. Reinstall backend
+dependencies in the same environment you use to start the app:
+
+```bash
+.venv\Scripts\python -m pip install -r requirements.txt
+```
+
+Or install just the DB packages:
+
+```bash
+python -m pip install sqlalchemy "psycopg[binary]"
+```
+
 **Start everything with one command:**
 
 | Option | Command |
@@ -344,6 +359,13 @@ Install HTTP dependencies if needed:
 
 ```bash
 pip install -r requirements.txt
+```
+
+If `uvicorn app.server:app` exits immediately with a missing DB module,
+run:
+
+```bash
+.venv\Scripts\python -m pip install -r requirements.txt
 ```
 
 Run the local backend:

@@ -11,6 +11,7 @@ import csv
 import dataclasses
 import io
 import json
+import logging
 import os
 import threading
 import uuid
@@ -34,15 +35,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from .api_boundary import (
+    ClientOutputs,
     JobError,
     JobErrorType,
+    JobArtifacts,
     JobResult,
+    JobSummary,
     JobStatus,
+    ReportFiles,
+    TechnicalCsvs,
     collect_job_artifacts,
     job_result_to_dict,
     load_job_summary,
     run_cleaning_job,
 )
+from .db.read_path import load_artifact_record as load_db_artifact_record
+from .db.read_path import load_artifact_records as load_db_artifact_records
+from .db.read_path import load_job_record as load_db_job_record
+from .db.read_path import list_job_records as list_db_job_records
+from .db.write_path import mark_job_completed as persist_job_completed
+from .db.write_path import mark_job_failed as persist_job_failed
+from .db.write_path import mark_job_running as persist_job_started
+from .db.write_path import load_review_decisions as load_db_review_decisions
+from .db.write_path import persist_queued_job_and_upload
+from .db.write_path import register_job_artifacts as persist_job_artifacts
+from .db.write_path import save_review_decisions as persist_review_decisions
 
 
 def _load_dotenv() -> None:
@@ -104,6 +121,8 @@ ARTIFACT_KEYS: dict[str, tuple[str, str]] = {
     "typo_corrections": ("reports", "typo_corrections"),
     "duplicate_summary": ("reports", "duplicate_summary"),
 }
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _new_job_id() -> str:
@@ -351,21 +370,12 @@ def _job_paths(job_id: str) -> tuple[Path, Path]:
 
 
 def _save_job_meta(result: JobResult) -> None:
-    """Persist minimal job metadata so jobs survive server restarts."""
-    try:
-        job_dir = RUNTIME_ROOT / "jobs" / result.job_id
-        job_dir.mkdir(parents=True, exist_ok=True)
-        status_value = result.status.value if hasattr(result.status, "value") else str(result.status)
-        meta = {
-            "job_id": result.job_id,
-            "input_filename": result.input_filename,
-            "status": status_value,
-            "started_at": result.started_at.isoformat() if result.started_at else None,
-            "finished_at": result.finished_at.isoformat() if result.finished_at else None,
-        }
-        (job_dir / "job_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    """Legacy compatibility shim.
+
+    Phase 3.7 stops writing ``job_meta.json``. The function remains so older
+    call sites can be trimmed incrementally without breaking imports.
+    """
+    _ = result
 
 
 def _read_job_meta(job_id: str) -> dict[str, Any] | None:
@@ -390,54 +400,139 @@ def _latest_run_dir(job_output_dir: Path) -> Path | None:
 
 
 def _reconstruct_job_from_disk(job_id: str) -> JobResult | None:
-    """Rebuild a JobResult from disk (meta + artifacts) when JOB_STORE is empty."""
-    job_output_dir = RUNTIME_ROOT / "jobs" / job_id
-    meta = _read_job_meta(job_id)
-    if meta is None and not job_output_dir.is_dir():
+    """Legacy recovery is disabled; the database is the only job truth."""
+    _ = job_id
+    return None
+
+
+def _summary_from_record(record: dict[str, Any] | None) -> JobSummary | None:
+    if record is None:
+        return None
+    values = {
+        "total_input_rows": record.get("total_input_rows"),
+        "total_valid": record.get("total_valid"),
+        "total_review": record.get("total_review"),
+        "total_invalid_or_bounce_risk": record.get("total_invalid_or_bounce_risk"),
+        "duplicates_removed": record.get("duplicates_removed"),
+        "typo_corrections": record.get("typo_corrections"),
+        "disposable_emails": record.get("disposable_emails"),
+        "placeholder_or_fake_emails": record.get("placeholder_or_fake_emails"),
+        "role_based_emails": record.get("role_based_emails"),
+    }
+    if not any(value is not None for value in values.values()):
+        return None
+    return JobSummary(
+        total_input_rows=int(values["total_input_rows"] or 0),
+        total_valid=int(values["total_valid"] or 0),
+        total_review=int(values["total_review"] or 0),
+        total_invalid_or_bounce_risk=int(values["total_invalid_or_bounce_risk"] or 0),
+        duplicates_removed=int(values["duplicates_removed"] or 0),
+        typo_corrections=int(values["typo_corrections"] or 0),
+        disposable_emails=int(values["disposable_emails"] or 0),
+        placeholder_or_fake_emails=int(values["placeholder_or_fake_emails"] or 0),
+        role_based_emails=int(values["role_based_emails"] or 0),
+    )
+
+
+def _artifacts_from_records(records: list[dict[str, Any]] | None, job_id: str) -> JobArtifacts | None:
+    if not records:
         return None
 
-    run_dir = _latest_run_dir(job_output_dir)
-    artifacts = None
-    summary = None
-    if run_dir is not None and _is_under(run_dir, job_output_dir):
-        try:
-            artifacts = collect_job_artifacts(run_dir)
-        except Exception:
-            artifacts = None
-        try:
-            summary = load_job_summary(run_dir)
-        except Exception:
-            summary = None
+    technical = TechnicalCsvs()
+    client = ClientOutputs()
+    reports = ReportFiles()
+    run_dir: Path | None = None
 
-    started_at = datetime.now()
-    finished_at = None
-    status_str = JobStatus.COMPLETED if artifacts is not None else JobStatus.QUEUED
-    input_filename = job_id
+    for record in records:
+        artifact_key = str(record.get("artifact_key") or "")
+        mapping = ARTIFACT_KEYS.get(artifact_key)
+        storage_location = record.get("storage_location")
+        if mapping is None or not storage_location:
+            continue
 
-    if meta is not None:
-        input_filename = meta.get("input_filename") or input_filename
-        status_str = meta.get("status") or status_str
-        try:
-            if meta.get("started_at"):
-                started_at = datetime.fromisoformat(meta["started_at"])
-            if meta.get("finished_at"):
-                finished_at = datetime.fromisoformat(meta["finished_at"])
-        except Exception:
-            pass
+        group_name, attr_name = mapping
+        path = Path(str(storage_location))
+        if run_dir is None:
+            run_dir = path.parent
 
-    result = JobResult(
-        job_id=job_id,
-        status=status_str,
-        input_filename=input_filename,
+        group_lookup = {
+            "technical_csvs": technical,
+            "client_outputs": client,
+            "reports": reports,
+        }
+        group = group_lookup.get(group_name)
+        if group is not None:
+            setattr(group, attr_name, path)
+
+    if run_dir is None:
+        run_dir = RUNTIME_ROOT / "jobs" / job_id
+
+    return JobArtifacts(
         run_dir=run_dir,
+        technical_csvs=technical,
+        client_outputs=client,
+        reports=reports,
+    )
+
+
+def _result_from_db_record(job_id: str, record: dict[str, Any]) -> JobResult:
+    summary = _summary_from_record(record.get("summary"))
+    error_record = record.get("error")
+    error = (
+        JobError(
+            error_type=str(error_record.get("error_type") or "pipeline_execution_error"),
+            message=str(error_record.get("message") or "Job failed."),
+            details=error_record.get("details"),
+        )
+        if error_record
+        else None
+    )
+    artifacts = _artifacts_from_records(load_db_artifact_records(job_id), job_id)
+    started_at = (
+        record.get("started_at")
+        or record.get("queued_at")
+        or record.get("created_at")
+        or datetime.now()
+    )
+    return JobResult(
+        job_id=job_id,
+        status=str(record.get("status") or JobStatus.QUEUED),
+        input_filename=str(record.get("input_filename") or job_id),
+        run_dir=artifacts.run_dir if artifacts is not None else None,
         summary=summary,
         artifacts=artifacts,
-        error=None,
+        error=error,
         started_at=started_at,
-        finished_at=finished_at,
+        finished_at=record.get("finished_at"),
     )
-    JOB_STORE.create(result)
-    return result
+
+
+def _load_job_result(job_id: str) -> JobResult | None:
+    db_record = load_db_job_record(job_id)
+    if db_record is not None:
+        return _result_from_db_record(job_id, db_record)
+    return None
+
+
+def _db_artifact_path(
+    job_id: str,
+    key: str,
+    *,
+    visibility: str | None = None,
+    require_exists: bool = False,
+) -> Path | None:
+    record = load_db_artifact_record(job_id, key, visibility=visibility)
+    if record is None:
+        return None
+
+    storage_location = record.get("storage_location")
+    if not storage_location:
+        return None
+
+    path = Path(str(storage_location))
+    if require_exists and not path.is_file():
+        return None
+    return path
 
 
 def _decisions_path(job_id: str) -> Path:
@@ -445,6 +540,10 @@ def _decisions_path(job_id: str) -> Path:
 
 
 def _load_decisions(job_id: str) -> dict[str, str]:
+    db_decisions = load_db_review_decisions(job_id)
+    if db_decisions is not None:
+        return db_decisions
+
     path = _decisions_path(job_id)
     if not path.is_file():
         return {}
@@ -476,6 +575,7 @@ def _run_job(
     config_path: str | None,
 ) -> None:
     JOB_STORE.mark_running(job_id)
+    persist_job_started(job_id)
     try:
         result = run_cleaning_job(
             input_path=input_path,
@@ -495,53 +595,50 @@ def _run_job(
         )
         failed = JOB_STORE.get(job_id)
         if failed is not None:
-            _save_job_meta(failed)
+            error = failed.error
+            persist_job_failed(
+                job_id,
+                started_at=failed.started_at,
+                failed_at=failed.finished_at,
+                error_type=error.error_type if error is not None else None,
+                error_message=error.message if error is not None else None,
+                error_details=error.details if error is not None else None,
+            )
         return
 
     JOB_STORE.set_result(result)
-    _save_job_meta(result)
+    persist_job_completed(
+        job_id,
+        started_at=result.started_at,
+        completed_at=result.finished_at,
+        summary=result.summary,
+    )
+    persist_job_artifacts(
+        job_id,
+        _build_artifact_records(job_id, result),
+        registered_at=result.finished_at,
+    )
 
 
 @app.get("/jobs")
 def list_jobs(limit: int = 20) -> dict[str, Any]:
     safe_limit = max(1, min(limit, 100))
 
-    in_memory = JOB_STORE.list(100)
-    in_memory_ids = {j.job_id for j in in_memory}
-
-    merged: list[dict[str, Any]] = [
-        {
-            "job_id": j.job_id,
-            "input_filename": j.input_filename,
-            "status": j.status.value if hasattr(j.status, "value") else str(j.status),
-            "started_at": j.started_at.isoformat() if j.started_at else None,
-            "finished_at": j.finished_at.isoformat() if j.finished_at else None,
-        }
-        for j in in_memory
-    ]
-
-    jobs_root = RUNTIME_ROOT / "jobs"
-    if jobs_root.is_dir():
-        for job_dir in jobs_root.iterdir():
-            if not job_dir.is_dir() or job_dir.name in in_memory_ids:
-                continue
-            meta = _read_job_meta(job_dir.name)
-            if meta is not None:
-                merged.append(meta)
-                continue
-            # No meta file (e.g. pre-existing jobs). Best-effort reconstruction.
-            run_dir = _latest_run_dir(job_dir)
-            status = JobStatus.COMPLETED if run_dir is not None else JobStatus.QUEUED
-            merged.append({
-                "job_id": job_dir.name,
-                "input_filename": job_dir.name,
-                "status": status,
-                "started_at": datetime.fromtimestamp(job_dir.stat().st_mtime).isoformat(),
-                "finished_at": None,
-            })
-
-    merged.sort(key=lambda x: x.get("started_at") or "", reverse=True)
-    return {"jobs": merged[:safe_limit]}
+    db_jobs = list_db_job_records(safe_limit)
+    if db_jobs is None:
+        return {"jobs": []}
+    return {
+        "jobs": [
+            {
+                "job_id": job["job_id"],
+                "input_filename": job["input_filename"],
+                "status": job["status"],
+                "started_at": job["started_at"].isoformat() if job.get("started_at") else None,
+                "finished_at": job["finished_at"].isoformat() if job.get("finished_at") else None,
+            }
+            for job in db_jobs
+        ]
+    }
 
 
 @app.post("/jobs", status_code=201)
@@ -569,7 +666,13 @@ async def create_job(
 
     result = _queued_result(job_id, filename)
     JOB_STORE.create(result)
-    _save_job_meta(result)
+    db_job_id = persist_queued_job_and_upload(
+        legacy_job_id=job_id,
+        input_path=input_path,
+        queued_at=result.started_at,
+    )
+    if db_job_id is None:
+        LOGGER.debug("DB persistence skipped for legacy job %s", job_id)
     background_tasks.add_task(_run_job, job_id, input_path, output_root, config_path)
 
     return job_result_to_dict(result)
@@ -620,6 +723,7 @@ def _status_payload(result: JobResult) -> dict[str, Any]:
         "input_filename": result.input_filename,
         "started_at": result.started_at.isoformat() if result.started_at else None,
         "finished_at": result.finished_at.isoformat() if result.finished_at else None,
+        "summary": _summary_to_dict(result),
         "error": error_payload,
     }
 
@@ -627,9 +731,7 @@ def _status_payload(result: JobResult) -> dict[str, Any]:
 @app.get("/status/{job_id}")
 def get_status(job_id: str) -> dict[str, Any]:
     """Return compact job status: queued / running / completed / failed."""
-    result = JOB_STORE.get(job_id)
-    if result is None:
-        result = _reconstruct_job_from_disk(job_id)
+    result = _load_job_result(job_id)
     if result is None:
         _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
     return _status_payload(result)
@@ -642,7 +744,9 @@ def _bucket_entry(
     artifact_key: str,
     count: int | None,
 ) -> dict[str, Any]:
-    path = _artifact_path(result, artifact_key)
+    path = _db_artifact_path(job_id, artifact_key, visibility="customer")
+    if path is None:
+        path = _artifact_path(result, artifact_key)
     return {
         "count": count,
         "download_url": f"/jobs/{job_id}/artifacts/{artifact_key}" if path else None,
@@ -701,9 +805,7 @@ def get_results(job_id: str) -> dict[str, Any]:
     unknown. The download URLs point at the canonical
     ``/jobs/{id}/artifacts/...`` routes — no results data is duplicated.
     """
-    result = JOB_STORE.get(job_id)
-    if result is None:
-        result = _reconstruct_job_from_disk(job_id)
+    result = _load_job_result(job_id)
     if result is None:
         _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
 
@@ -746,7 +848,7 @@ def get_results(job_id: str) -> dict[str, Any]:
 
     reports: dict[str, str] = {}
     for key in _PUBLIC_REPORT_KEYS:
-        if _artifact_path(result, key) is not None:
+        if _db_artifact_path(job_id, key) is not None or _artifact_path(result, key) is not None:
             reports[key] = f"/jobs/{job_id}/artifacts/{key}"
 
     return {
@@ -764,9 +866,7 @@ def get_results(job_id: str) -> dict[str, Any]:
 
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str) -> dict[str, Any]:
-    result = JOB_STORE.get(job_id)
-    if result is None:
-        result = _reconstruct_job_from_disk(job_id)
+    result = _load_job_result(job_id)
     if result is None:
         _raise_http_error(
             404,
@@ -804,6 +904,46 @@ def _artifact_path(result: JobResult, key: str) -> Path | None:
     if not _is_under(path, result.artifacts.run_dir):
         return None
     return path
+
+
+def _artifact_group_value(group_name: str) -> str:
+    mapping = {
+        "client_outputs": "client_output",
+        "technical_csvs": "technical_csv",
+        "reports": "report",
+    }
+    return mapping.get(group_name, "internal")
+
+
+def _artifact_visibility_for_group(group_name: str) -> str:
+    if group_name == "client_outputs":
+        return "customer"
+    return "internal"
+
+
+def _build_artifact_records(job_id: str, result: JobResult) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for artifact_key, (group_name, _attr_name) in ARTIFACT_KEYS.items():
+        path = _artifact_path(result, artifact_key)
+        if path is None:
+            continue
+        try:
+            size_bytes = path.stat().st_size
+        except OSError:
+            continue
+        records.append(
+            {
+                "artifact_key": artifact_key,
+                "artifact_group": _artifact_group_value(group_name),
+                "display_filename": path.name,
+                "visibility": _artifact_visibility_for_group(group_name),
+                "storage_key": f"legacy-artifact:{job_id}:{artifact_key}",
+                "storage_location": str(path.resolve()),
+                "content_type": _media_type_for(path),
+                "size_bytes": size_bytes,
+            }
+        )
+    return records
 
 
 def _build_zip(root: Path) -> bytes:
@@ -1098,25 +1238,10 @@ def _map_review_row(row: dict[str, str], index: int) -> dict[str, Any] | None:
 
 @app.get("/jobs/{job_id}/review")
 def get_job_review(job_id: str) -> dict[str, Any]:
-    job_output_dir = RUNTIME_ROOT / "jobs" / job_id
-
-    # Try artifact path from in-memory store first.
-    csv_path: Path | None = None
-    result = JOB_STORE.get(job_id)
-    if result is not None:
+    csv_path = _db_artifact_path(job_id, "review_medium_confidence", require_exists=True)
+    result = _load_job_result(job_id)
+    if csv_path is None and result is not None:
         csv_path = _artifact_path(result, "review_medium_confidence")
-
-    # Fallback: scan disk (handles server-restart case where JOB_STORE is empty).
-    if csv_path is None:
-        if not job_output_dir.is_dir():
-            _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
-        candidates = sorted(
-            job_output_dir.glob("*/review_medium_confidence.csv"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if candidates and _is_under(candidates[0], job_output_dir):
-            csv_path = candidates[0]
 
     if csv_path is None:
         _raise_http_error(
@@ -1154,7 +1279,7 @@ def post_job_ai_review(job_id: str) -> dict[str, Any]:
     emails = review_payload.get("emails", [])
 
     try:
-        result = JOB_STORE.get(job_id)
+        result = _load_job_result(job_id)
         # JobSummary is a slots dataclass — no __dict__. Use asdict() so this
         # works on every Python dataclass style.
         summary = (
@@ -1182,12 +1307,10 @@ def post_job_ai_summary(job_id: str) -> dict[str, Any]:
     """Return a one-paragraph narrative summary of a completed job."""
     from . import ai_review as _ai
 
-    result = JOB_STORE.get(job_id)
-    if result is None or getattr(result, "summary", None) is None:
-        # Fall back to the persisted job if JOB_STORE was cleared by a restart.
-        job_dir = RUNTIME_ROOT / "jobs" / job_id
-        if not job_dir.is_dir():
-            _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
+    result = _load_job_result(job_id)
+    if result is None:
+        _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
+    if getattr(result, "summary", None) is None:
         _raise_http_error(
             409,
             "job_not_completed",
@@ -1210,16 +1333,14 @@ def post_job_ai_summary(job_id: str) -> dict[str, Any]:
 
 @app.get("/jobs/{job_id}/review/decisions")
 def get_review_decisions(job_id: str) -> dict[str, Any]:
-    job_output_dir = RUNTIME_ROOT / "jobs" / job_id
-    if not job_output_dir.is_dir():
+    if _load_job_result(job_id) is None:
         _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
     return {"job_id": job_id, "decisions": _load_decisions(job_id)}
 
 
 @app.post("/jobs/{job_id}/review/decisions")
 async def save_review_decisions(job_id: str, request: Request) -> dict[str, Any]:
-    job_output_dir = RUNTIME_ROOT / "jobs" / job_id
-    if not job_output_dir.is_dir():
+    if _load_job_result(job_id) is None:
         _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
 
     try:
@@ -1238,7 +1359,11 @@ async def save_review_decisions(job_id: str, request: Request) -> dict[str, Any]
         "decisions": cleaned,
         "updated_at": datetime.now().isoformat(),
     }
-    _decisions_path(job_id).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    persist_review_decisions(
+        job_id,
+        cleaned,
+        decided_at=datetime.fromisoformat(payload["updated_at"]),
+    )
     return {"job_id": job_id, "saved": len(cleaned)}
 
 
@@ -1595,7 +1720,7 @@ def get_typo_corrections(job_id: str) -> dict[str, Any]:
 
 @app.get("/jobs/{job_id}/logs")
 def get_job_logs(job_id: str, limit: int = 20) -> dict[str, Any]:
-    result = JOB_STORE.get(job_id)
+    result = _load_job_result(job_id)
     if result is None:
         _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
 
@@ -1633,7 +1758,7 @@ def _media_type_for(path: Path) -> str:
 
 @app.get("/jobs/{job_id}/artifacts/zip")
 def get_artifacts_zip(job_id: str) -> Response:
-    result = JOB_STORE.get(job_id)
+    result = _load_job_result(job_id)
     if result is None:
         _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
     if result.status != JobStatus.COMPLETED:
@@ -1671,16 +1796,19 @@ def get_artifacts_zip(job_id: str) -> Response:
 
 @app.get("/jobs/{job_id}/artifacts/{key}")
 def get_artifact(job_id: str, key: str) -> FileResponse:
-    result = JOB_STORE.get(job_id)
-    if result is None:
-        _raise_http_error(
-            404,
-            "job_not_found",
-            "Job not found.",
-            {"job_id": job_id},
-        )
-
-    path = _artifact_path(result, key)
+    path = _db_artifact_path(job_id, key, require_exists=True)
+    if path is None:
+        result = _load_job_result(job_id)
+        if result is None:
+            _raise_http_error(
+                404,
+                "job_not_found",
+                "Job not found.",
+                {"job_id": job_id},
+            )
+        path = _artifact_path(result, key)
+    else:
+        result = None
     if path is None:
         _raise_http_error(
             404,
