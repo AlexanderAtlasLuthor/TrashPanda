@@ -127,7 +127,7 @@ Return ONLY the paragraph text. No headings, no bullets, no preamble like "Summa
 
 # ── Pydantic schemas for structured output ───────────────────────────────────
 
-if anthropic is not None:
+if genai is not None:
     class _Suggestion(BaseModel):
         id: str = Field(description="The id field copied verbatim from the input item.")
         decision: Literal["approve", "reject", "uncertain"]
@@ -214,28 +214,30 @@ class AIUnavailable(RuntimeError):
     """Raised when the AI endpoints can't run — missing SDK or API key."""
 
 
-def _client() -> "anthropic.Anthropic":
-    if anthropic is None:
+def _client() -> "genai.Client":
+    if genai is None:
         raise AIUnavailable(
-            "anthropic SDK is not installed. Run `pip install anthropic`."
+            "google-genai SDK is not installed. Run `pip install google-genai`."
         )
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
         raise AIUnavailable(
-            "ANTHROPIC_API_KEY is not set in the environment."
+            "GEMINI_API_KEY is not set in the environment. "
+            "Grab a free key at https://aistudio.google.com/apikey and export GEMINI_API_KEY=..."
         )
-    return anthropic.Anthropic()
+    return genai.Client(api_key=api_key)
 
 
 def review_queue_suggestions(
     emails: list[dict[str, Any]],
     job_summary: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Ask Claude for an approve/reject/uncertain call on each flagged email.
+    """Ask Gemini for an approve/reject/uncertain call on each flagged email.
 
     Returns a list of ``{id, decision, confidence, reasoning}`` dicts in the
     same order as the input. On total failure raises ``AIUnavailable`` or the
-    underlying anthropic exception — the caller decides how to surface that to
-    the user.
+    underlying google-genai exception — the caller decides how to surface that
+    to the user.
     """
     client = _client()
 
@@ -244,9 +246,9 @@ def review_queue_suggestions(
 
     compact = [_compact_email_for_model(e) for e in emails]
 
-    # User message: the batch. Cache control goes on the *system* prompt (the
-    # frozen part), so the reusable decision rules get cached. The per-job
-    # batch is fresh every request and never caches — which is correct.
+    # User message: the batch. The reusable decision rules live in the system
+    # instruction, so Gemini's implicit prefix cache hits them across calls.
+    # The per-job batch is fresh every request and never caches — correct.
     user_payload = {
         "job_summary_totals": _compact_summary(job_summary),
         "review_queue": compact,
@@ -259,21 +261,23 @@ def review_queue_suggestions(
     import json as _json
     user_text = _json.dumps(user_payload, sort_keys=True, ensure_ascii=False)
 
-    response = client.messages.parse(
+    response = client.models.generate_content(
         model=_MODEL,
-        max_tokens=4096,
-        system=[
-            {
-                "type": "text",
-                "text": _SYSTEM_REVIEW,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[{"role": "user", "content": user_text}],
-        output_format=_SuggestionList,
+        contents=user_text,
+        config=genai_types.GenerateContentConfig(
+            system_instruction=_SYSTEM_REVIEW,
+            response_mime_type="application/json",
+            response_schema=_SuggestionList,
+            max_output_tokens=4096,
+            temperature=0.0,
+        ),
     )
 
-    parsed: _SuggestionList = response.parsed_output
+    parsed = response.parsed
+    if parsed is None:
+        # Fall back to parsing response.text if the SDK didn't auto-parse.
+        raw = (response.text or "").strip()
+        parsed = _SuggestionList.model_validate_json(raw) if raw else _SuggestionList(suggestions=[])
     _log_cache_usage("ai_review", response)
 
     # Re-key by id so the UI doesn't have to rely on list order, and drop any
@@ -307,25 +311,18 @@ def job_summary_narrative(job_summary: dict[str, Any]) -> str:
         ensure_ascii=False,
     )
 
-    response = client.messages.create(
+    response = client.models.generate_content(
         model=_MODEL,
-        max_tokens=256,
-        system=[
-            {
-                "type": "text",
-                "text": _SYSTEM_SUMMARY,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[{"role": "user", "content": user_text}],
+        contents=user_text,
+        config=genai_types.GenerateContentConfig(
+            system_instruction=_SYSTEM_SUMMARY,
+            max_output_tokens=256,
+            temperature=0.3,
+        ),
     )
     _log_cache_usage("ai_summary", response)
 
-    text = next(
-        (b.text for b in response.content if getattr(b, "type", None) == "text"),
-        "",
-    ).strip()
-    return text
+    return (response.text or "").strip()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -355,14 +352,14 @@ def _compact_summary(s: dict[str, Any] | None) -> dict[str, Any]:
 
 def _log_cache_usage(tag: str, response: Any) -> None:
     """Best-effort debug log so we can verify the system prompt is caching."""
-    usage = getattr(response, "usage", None)
+    usage = getattr(response, "usage_metadata", None)
     if not usage:
         return
     logger.info(
-        "%s usage: input=%s cache_read=%s cache_write=%s output=%s",
+        "%s usage: prompt=%s cached=%s output=%s total=%s",
         tag,
-        getattr(usage, "input_tokens", "?"),
-        getattr(usage, "cache_read_input_tokens", "?"),
-        getattr(usage, "cache_creation_input_tokens", "?"),
-        getattr(usage, "output_tokens", "?"),
+        getattr(usage, "prompt_token_count", "?"),
+        getattr(usage, "cached_content_token_count", "?"),
+        getattr(usage, "candidates_token_count", "?"),
+        getattr(usage, "total_token_count", "?"),
     )

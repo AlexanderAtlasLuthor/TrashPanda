@@ -1105,7 +1105,7 @@ def get_job_review(job_id: str) -> dict[str, Any]:
 
 @app.post("/jobs/{job_id}/ai-review")
 def post_job_ai_review(job_id: str) -> dict[str, Any]:
-    """Ask Claude to stack-rank the review queue.
+    """Ask Gemini to stack-rank the review queue.
 
     Returns one `{id, decision, confidence, reasoning}` per flagged email so
     the UI can render "AI suggests Approve · 87%" badges next to each row.
@@ -1128,7 +1128,7 @@ def post_job_ai_review(job_id: str) -> dict[str, Any]:
         suggestions = _ai.review_queue_suggestions(emails, summary)
     except _ai.AIUnavailable as exc:
         _raise_http_error(503, "ai_unavailable", str(exc))
-    except Exception as exc:  # anthropic errors, network errors, schema errors
+    except Exception as exc:  # gemini errors, network errors, schema errors
         _raise_http_error(502, "ai_error", f"AI review failed: {exc}")
 
     return {
