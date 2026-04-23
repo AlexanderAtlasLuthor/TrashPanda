@@ -8,6 +8,7 @@ uploads, in-memory job state, JSON responses, and artifact downloads.
 from __future__ import annotations
 
 import csv
+import dataclasses
 import io
 import json
 import os
@@ -1117,18 +1118,21 @@ def post_job_ai_review(job_id: str) -> dict[str, Any]:
     review_payload = get_job_review(job_id)
     emails = review_payload.get("emails", [])
 
-    result = JOB_STORE.get(job_id)
-    summary = (
-        deepcopy(result.summary.__dict__)
-        if result is not None and getattr(result, "summary", None) is not None
-        else None
-    )
-
     try:
+        result = JOB_STORE.get(job_id)
+        # JobSummary is a slots dataclass — no __dict__. Use asdict() so this
+        # works on every Python dataclass style.
+        summary = (
+            dataclasses.asdict(result.summary)
+            if result is not None and getattr(result, "summary", None) is not None
+            else None
+        )
         suggestions = _ai.review_queue_suggestions(emails, summary)
     except _ai.AIUnavailable as exc:
         _raise_http_error(503, "ai_unavailable", str(exc))
-    except Exception as exc:  # anthropic errors, network errors, schema errors
+    except HTTPException:
+        raise
+    except Exception as exc:  # google-genai errors, network errors, schema errors
         _raise_http_error(502, "ai_error", f"AI review failed: {exc}")
 
     return {
@@ -1156,12 +1160,13 @@ def post_job_ai_summary(job_id: str) -> dict[str, Any]:
             {"job_id": job_id},
         )
 
-    summary = deepcopy(result.summary.__dict__)
-
     try:
+        summary = dataclasses.asdict(result.summary)
         narrative = _ai.job_summary_narrative(summary)
     except _ai.AIUnavailable as exc:
         _raise_http_error(503, "ai_unavailable", str(exc))
+    except HTTPException:
+        raise
     except Exception as exc:
         _raise_http_error(502, "ai_error", f"AI summary failed: {exc}")
 
