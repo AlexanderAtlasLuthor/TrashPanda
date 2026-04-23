@@ -37,7 +37,17 @@ from .models import (
     User,
     UserStatus,
 )
-from .session import create_db_engine, dispose_engine, get_db_session, get_engine, get_session_factory, session_scope
+from .session import (
+    create_db_engine,
+    dispose_engine,
+    get_db_session,
+    get_engine,
+    get_session_factory,
+    is_db_available,
+    log_db_failure,
+    reset_db_availability_cache,
+    session_scope,
+)
 
 __all__ = [
     "Artifact",
@@ -78,5 +88,8 @@ __all__ = [
     "get_engine",
     "get_session_factory",
     "init_db",
+    "is_db_available",
+    "log_db_failure",
+    "reset_db_availability_cache",
     "session_scope",
 ]

@@ -1,0 +1,21 @@
+id,email,domain,fname,lname,state,address,county,city,zip,website,ip
+1,alice.stone@gmail.com,gmail.com,Alice,Stone,NY,1 Main St,Albany,Albany,12207,example.com,1.1.1.1
+2,bob.jones@yahoo.com,yahoo.com,Bob,Jones,CA,2 Elm St,Orange,Irvine,92602,bobsite.com,2.2.2.2
+3,carol@outlook.com,outlook.com,Carol,Davis,TX,3 Pine Ave,Travis,Austin,78701,,3.3.3.3
+4,dan@hotmail.com,hotmail.com,Dan,Smith,WA,4 Oak Ln,King,Seattle,98101,,4.4.4.4
+5,eve@icloud.com,icloud.com,Eve,Brown,OR,5 Cedar Rd,Multnomah,Portland,97201,,5.5.5.5
+6,frank@gmial.com,gmial.com,Frank,Miller,FL,6 Birch Ct,Dade,Miami,33101,,6.6.6.6
+7,grace@yaho.com,yaho.com,Grace,Wilson,GA,7 Maple Dr,Fulton,Atlanta,30301,,7.7.7.7
+8,heidi@hotmial.com,hotmial.com,Heidi,Moore,NV,8 Walnut St,Clark,Las Vegas,89101,,8.8.8.8
+9,not-an-email,,Ivan,Taylor,AZ,9 Spruce Way,Maricopa,Phoenix,85001,,9.9.9.9
+10,@missinglocal.com,missinglocal.com,Judy,Anderson,CO,10 Aspen Pl,Denver,Denver,80201,,10.10.10.10
+11,missingdomain@,,Karl,Thomas,UT,11 Poplar St,Salt Lake,SLC,84101,,11.11.11.11
+12,info@example.com,example.com,Lena,Garcia,IL,12 Elm Pl,Cook,Chicago,60601,,12.12.12.12
+13,admin@example.com,example.com,Mike,Hall,OH,13 Oak Cir,Franklin,Columbus,43215,,13.13.13.13
+14,test@mailinator.com,mailinator.com,Nina,Allen,MI,14 Pine Ct,Wayne,Detroit,48201,,14.14.14.14
+15,trashbox@10minutemail.com,10minutemail.com,Oscar,Young,NC,15 Cedar Pl,Wake,Raleigh,27601,,15.15.15.15
+16,alice.stone@gmail.com,gmail.com,Alice,Stone,NY,1 Main St,Albany,Albany,12207,example.com,1.1.1.1
+17,  Bob.Jones@Yahoo.com  ,yahoo.com,Bob,Jones,CA,2 Elm St,Orange,Irvine,92602,bobsite.com,2.2.2.2
+18,quentin@protonmail.com,protonmail.com,Quentin,King,MA,18 Maple St,Suffolk,Boston,02108,,18.18.18.18
+19,rita@icloud.con,icloud.con,Rita,Lopez,NM,19 Oak St,Bernalillo,Albuquerque,87101,,19.19.19.19
+20,sam@nonexistentdomain123xyz.com,nonexistentdomain123xyz.com,Sam,Lee,VT,20 Pine St,Chittenden,Burlington,05401,,20.20.20.20

@@ -1,4 +1,11 @@
-"""Transitional read-path helpers for DB-first legacy job access."""
+"""Transitional read-path helpers for DB-first legacy job access.
+
+Every public function in this module is **non-blocking** when the database is
+unavailable: the first thing each does is consult :func:`is_db_available`,
+which is a cheap TTL-cached probe. If the DB is down the call returns the
+neutral fallback (``None``) immediately and request handlers can proceed with
+the legacy JSON path.
+"""
 
 from __future__ import annotations
 
@@ -6,9 +13,10 @@ import logging
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from .models import Artifact, Job
-from .session import session_scope
+from .session import is_db_available, log_db_failure, session_scope
 
 
 LOGGER = logging.getLogger(__name__)
@@ -81,13 +89,22 @@ def _serialize_artifact(artifact: Artifact) -> dict[str, Any]:
 
 
 def load_job_record(legacy_job_id: str) -> dict[str, Any] | None:
+    if not is_db_available():
+        return None
     try:
         with session_scope() as session:
             job = session.scalar(select(Job).where(Job.source == _legacy_job_source(legacy_job_id)))
             if job is None:
                 return None
             return _serialize_job(job)
-    except Exception as exc:  # pragma: no cover - best-effort bridge
+    except SQLAlchemyError as exc:
+        log_db_failure(
+            "Skipping DB job load for legacy job %s: %s",
+            legacy_job_id,
+            exc,
+        )
+        return None
+    except Exception as exc:  # pragma: no cover - defence in depth
         LOGGER.warning(
             "Skipping DB job load for legacy job %s: %s",
             legacy_job_id,
@@ -98,6 +115,8 @@ def load_job_record(legacy_job_id: str) -> dict[str, Any] | None:
 
 
 def list_job_records(limit: int) -> list[dict[str, Any]] | None:
+    if not is_db_available():
+        return None
     try:
         with session_scope() as session:
             jobs = session.scalars(
@@ -107,7 +126,10 @@ def list_job_records(limit: int) -> list[dict[str, Any]] | None:
                 .limit(limit)
             ).all()
             return [_serialize_job(job) for job in jobs]
-    except Exception as exc:  # pragma: no cover - best-effort bridge
+    except SQLAlchemyError as exc:
+        log_db_failure("Skipping DB job list load: %s", exc)
+        return None
+    except Exception as exc:  # pragma: no cover - defence in depth
         LOGGER.warning("Skipping DB job list load: %s", exc, exc_info=True)
         return None
 
@@ -118,6 +140,8 @@ def load_artifact_record(
     *,
     visibility: str | None = None,
 ) -> dict[str, Any] | None:
+    if not is_db_available():
+        return None
     try:
         with session_scope() as session:
             job = session.scalar(select(Job).where(Job.source == _legacy_job_source(legacy_job_id)))
@@ -136,7 +160,15 @@ def load_artifact_record(
             if artifact is None:
                 return None
             return _serialize_artifact(artifact)
-    except Exception as exc:  # pragma: no cover - best-effort bridge
+    except SQLAlchemyError as exc:
+        log_db_failure(
+            "Skipping DB artifact load for legacy job %s (%s): %s",
+            legacy_job_id,
+            artifact_key,
+            exc,
+        )
+        return None
+    except Exception as exc:  # pragma: no cover - defence in depth
         LOGGER.warning(
             "Skipping DB artifact load for legacy job %s (%s): %s",
             legacy_job_id,
@@ -152,6 +184,8 @@ def load_artifact_records(
     *,
     visibility: str | None = None,
 ) -> list[dict[str, Any]] | None:
+    if not is_db_available():
+        return None
     try:
         with session_scope() as session:
             job = session.scalar(select(Job).where(Job.source == _legacy_job_source(legacy_job_id)))
@@ -167,7 +201,14 @@ def load_artifact_records(
 
             artifacts = session.scalars(stmt.order_by(Artifact.created_at.asc())).all()
             return [_serialize_artifact(artifact) for artifact in artifacts]
-    except Exception as exc:  # pragma: no cover - best-effort bridge
+    except SQLAlchemyError as exc:
+        log_db_failure(
+            "Skipping DB artifact list load for legacy job %s: %s",
+            legacy_job_id,
+            exc,
+        )
+        return None
+    except Exception as exc:  # pragma: no cover - defence in depth
         LOGGER.warning(
             "Skipping DB artifact list load for legacy job %s: %s",
             legacy_job_id,

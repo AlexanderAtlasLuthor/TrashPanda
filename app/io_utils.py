@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -52,7 +52,7 @@ def build_run_context(config: AppConfig, output_dir: str | Path | None = None) -
         logs_dir=logs_dir,
         temp_dir=temp_dir,
         staging_db_path=staging_db_path,
-        started_at=datetime.now(),
+        started_at=datetime.now(timezone.utc),
     )
 
 

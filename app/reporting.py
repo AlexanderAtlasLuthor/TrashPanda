@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +19,7 @@ class ReportingStats:
     """
 
     run_id: str
-    generated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    generated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     # Row-level totals (legacy names; map to spec in the emitted report)
     total_rows: int = 0
     total_canonical_rows: int = 0

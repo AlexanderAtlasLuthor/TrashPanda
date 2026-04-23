@@ -17,7 +17,7 @@ import threading
 import uuid
 import zipfile
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -189,7 +189,7 @@ class InMemoryJobStore:
     ) -> None:
         with self._lock:
             existing = self._jobs.get(job_id)
-            started_at = existing.started_at if existing else datetime.now()
+            started_at = existing.started_at if existing else datetime.now(timezone.utc)
             self._jobs[job_id] = JobResult(
                 job_id=job_id,
                 status=JobStatus.FAILED,
@@ -199,14 +199,18 @@ class InMemoryJobStore:
                 artifacts=existing.artifacts if existing else None,
                 error=error,
                 started_at=started_at,
-                finished_at=datetime.now(),
+                finished_at=datetime.now(timezone.utc),
             )
 
     def list(self, limit: int = 20) -> list[JobResult]:
+        # ``datetime.min`` is naive, but lifecycle timestamps are now
+        # timezone-aware (UTC). Compare on aware values to avoid
+        # ``TypeError: can't compare offset-naive and offset-aware``.
+        _epoch = datetime.min.replace(tzinfo=timezone.utc)
         with self._lock:
             jobs = sorted(
                 self._jobs.values(),
-                key=lambda j: j.started_at if j.started_at else datetime.min,
+                key=lambda j: j.started_at if j.started_at else _epoch,
                 reverse=True,
             )
         return [deepcopy(j) for j in jobs[:limit]]
@@ -492,7 +496,7 @@ def _result_from_db_record(job_id: str, record: dict[str, Any]) -> JobResult:
         record.get("started_at")
         or record.get("queued_at")
         or record.get("created_at")
-        or datetime.now()
+        or datetime.now(timezone.utc)
     )
     return JobResult(
         job_id=job_id,
@@ -511,7 +515,10 @@ def _load_job_result(job_id: str) -> JobResult | None:
     db_record = load_db_job_record(job_id)
     if db_record is not None:
         return _result_from_db_record(job_id, db_record)
-    return None
+    # DB is unavailable or has no record for this job; fall back to the
+    # in-memory store so the public API keeps working in dev/test and when
+    # PostgreSQL is down.
+    return JOB_STORE.get(job_id)
 
 
 def _db_artifact_path(
@@ -563,7 +570,7 @@ def _queued_result(job_id: str, input_filename: str) -> JobResult:
         summary=None,
         artifacts=None,
         error=None,
-        started_at=datetime.now(),
+        started_at=datetime.now(timezone.utc),
         finished_at=None,
     )
 
@@ -625,18 +632,39 @@ def list_jobs(limit: int = 20) -> dict[str, Any]:
     safe_limit = max(1, min(limit, 100))
 
     db_jobs = list_db_job_records(safe_limit)
-    if db_jobs is None:
-        return {"jobs": []}
+    if db_jobs is not None:
+        return {
+            "jobs": [
+                {
+                    "job_id": job["job_id"],
+                    "input_filename": job["input_filename"],
+                    "status": job["status"],
+                    "started_at": job["started_at"].isoformat() if job.get("started_at") else None,
+                    "finished_at": job["finished_at"].isoformat() if job.get("finished_at") else None,
+                }
+                for job in db_jobs
+            ]
+        }
+
+    # DB unavailable: serve from the in-memory store so the UI does not
+    # show an empty list during DB outages or local dev. JOB_STORE is a
+    # *fallback*, never the primary truth; whenever DB recovers the next
+    # request will be DB-backed again.
+    fallback = JOB_STORE.list(safe_limit)
     return {
         "jobs": [
             {
-                "job_id": job["job_id"],
-                "input_filename": job["input_filename"],
-                "status": job["status"],
-                "started_at": job["started_at"].isoformat() if job.get("started_at") else None,
-                "finished_at": job["finished_at"].isoformat() if job.get("finished_at") else None,
+                "job_id": result.job_id,
+                "input_filename": result.input_filename,
+                "status": (
+                    result.status.value
+                    if hasattr(result.status, "value")
+                    else str(result.status)
+                ),
+                "started_at": result.started_at.isoformat() if result.started_at else None,
+                "finished_at": result.finished_at.isoformat() if result.finished_at else None,
             }
-            for job in db_jobs
+            for result in fallback
         ]
     }
 
@@ -1357,7 +1385,7 @@ async def save_review_decisions(job_id: str, request: Request) -> dict[str, Any]
     payload = {
         "job_id": job_id,
         "decisions": cleaned,
-        "updated_at": datetime.now().isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     persist_review_decisions(
         job_id,

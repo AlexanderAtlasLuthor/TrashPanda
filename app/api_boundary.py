@@ -28,7 +28,7 @@ import logging
 import traceback
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -368,7 +368,21 @@ def load_job_summary(run_dir: Path) -> JobSummary | None:
 _LOGGER = logging.getLogger(__name__)
 
 
+def _now_utc() -> datetime:
+    """Return a timezone-aware UTC ``datetime`` for lifecycle timestamps.
+
+    All runtime-generated job lifecycle timestamps (``started_at``,
+    ``finished_at``, etc.) MUST go through this helper so we never mix
+    naive local-time values with the UTC values produced by the DB write
+    path (see :func:`app.db.write_path._utc_now`).
+    """
+    return datetime.now(timezone.utc)
+
+
 def _new_job_id() -> str:
+    # The job id is a *human-readable identifier*, not a stored timestamp,
+    # so it stays on local time for operator convenience. Real lifecycle
+    # timestamps go through :func:`_now_utc`.
     return datetime.now().strftime("job_%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]
 
 
@@ -464,7 +478,7 @@ def run_cleaning_job(
         in :class:`JobError` inside the returned :class:`JobResult`.
     """
 
-    started_at = datetime.now()
+    started_at = _now_utc()
     request = _build_request(input_path, output_root, config_path, job_id)
     input_filename = request.input_path.name
 
@@ -483,7 +497,7 @@ def run_cleaning_job(
                 details={"input_path": str(request.input_path)},
             ),
             started_at=started_at,
-            finished_at=datetime.now(),
+            finished_at=_now_utc(),
         )
 
     # --- Phase 2: config + run directory. --- #
@@ -511,7 +525,7 @@ def run_cleaning_job(
             artifacts=None,
             error=_classify_exception(exc),
             started_at=started_at,
-            finished_at=datetime.now(),
+            finished_at=_now_utc(),
         )
 
     # --- Phase 3: execute pipeline. --- #
@@ -548,7 +562,7 @@ def run_cleaning_job(
             artifacts=artifacts,
             error=error,
             started_at=started_at,
-            finished_at=datetime.now(),
+            finished_at=_now_utc(),
         )
 
     # --- Phase 4: post-run discovery. --- #
@@ -600,7 +614,7 @@ def run_cleaning_job(
         artifacts=artifacts,
         error=None,
         started_at=started_at,
-        finished_at=datetime.now(),
+        finished_at=_now_utc(),
     )
 
 

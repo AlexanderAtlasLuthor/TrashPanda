@@ -56,6 +56,14 @@ class DatabaseSettings:
     pool_size: int
     max_overflow: int
     pool_pre_ping: bool
+    # Resilience knobs — keep these SHORT. The backend runs inside a FastAPI
+    # request handler; waiting 30 s on a dead database would freeze the UI.
+    # ``connect_timeout_seconds`` caps the TCP connect step (libpq option).
+    # ``pool_timeout_seconds`` caps how long SQLAlchemy waits to check out a
+    # connection from the pool before raising ``TimeoutError``.
+    connect_timeout_seconds: int
+    pool_timeout_seconds: int
+    pool_recycle_seconds: int
 
 
 def _build_default_database_url() -> str:
@@ -79,5 +87,8 @@ def get_database_settings() -> DatabaseSettings:
         pool_size=int(os.environ.get("TRASHPANDA_DB_POOL_SIZE", "10")),
         max_overflow=int(os.environ.get("TRASHPANDA_DB_MAX_OVERFLOW", "20")),
         pool_pre_ping=_env_bool("TRASHPANDA_DB_POOL_PRE_PING", True),
+        connect_timeout_seconds=int(os.environ.get("TRASHPANDA_DB_CONNECT_TIMEOUT", "2")),
+        pool_timeout_seconds=int(os.environ.get("TRASHPANDA_DB_POOL_TIMEOUT", "2")),
+        pool_recycle_seconds=int(os.environ.get("TRASHPANDA_DB_POOL_RECYCLE", "1800")),
     )
 

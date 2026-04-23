@@ -1,4 +1,11 @@
-"""Transitional write-path helpers for bridging legacy jobs into PostgreSQL."""
+"""Transitional write-path helpers for bridging legacy jobs into PostgreSQL.
+
+Every public entry point in this module is **non-blocking** when the DB is
+unavailable. We gate each call with :func:`is_db_available` (a cheap,
+TTL-cached ``SELECT 1``) so request handlers never pay the libpq
+connect-timeout when Postgres is down — they get an instant ``None`` /
+no-op fallback and continue with the legacy JSON path.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from .models import (
     ActorKind,
@@ -34,7 +42,7 @@ from .models import (
     User,
     UserStatus,
 )
-from .session import session_scope
+from .session import is_db_available, log_db_failure, session_scope
 
 
 LOGGER = logging.getLogger(__name__)
@@ -175,6 +183,8 @@ def persist_queued_job_and_upload(
 ) -> uuid.UUID | None:
     """Persist a queued job and its uploaded file without changing legacy flow."""
 
+    if not is_db_available():
+        return None
     queued_time = queued_at or _utc_now()
     try:
         with session_scope() as session:
@@ -233,7 +243,14 @@ def persist_queued_job_and_upload(
                 )
 
             return job.id
-    except Exception as exc:  # pragma: no cover - best-effort bridge
+    except SQLAlchemyError as exc:
+        log_db_failure(
+            "Skipping DB persistence for queued legacy job %s: %s",
+            legacy_job_id,
+            exc,
+        )
+        return None
+    except Exception as exc:  # pragma: no cover - defence in depth
         LOGGER.warning(
             "Skipping DB persistence for queued legacy job %s: %s",
             legacy_job_id,
@@ -246,6 +263,8 @@ def persist_queued_job_and_upload(
 def mark_job_running(legacy_job_id: str, started_at: datetime | None = None) -> None:
     """Best-effort bridge that marks the DB job as running."""
 
+    if not is_db_available():
+        return
     started_time = started_at or _utc_now()
     try:
         with session_scope() as session:
@@ -273,7 +292,13 @@ def mark_job_running(legacy_job_id: str, started_at: datetime | None = None) -> 
                     event_metadata={"legacy_job_id": legacy_job_id},
                 )
             )
-    except Exception as exc:  # pragma: no cover - best-effort bridge
+    except SQLAlchemyError as exc:
+        log_db_failure(
+            "Skipping DB running-state update for legacy job %s: %s",
+            legacy_job_id,
+            exc,
+        )
+    except Exception as exc:  # pragma: no cover - defence in depth
         LOGGER.warning(
             "Skipping DB running-state update for legacy job %s: %s",
             legacy_job_id,
@@ -291,6 +316,8 @@ def mark_job_completed(
 ) -> None:
     """Best-effort bridge that marks the DB job as completed."""
 
+    if not is_db_available():
+        return
     completed_time = completed_at or _utc_now()
     try:
         with session_scope() as session:
@@ -341,7 +368,13 @@ def mark_job_completed(
                     },
                 )
             )
-    except Exception as exc:  # pragma: no cover - best-effort bridge
+    except SQLAlchemyError as exc:
+        log_db_failure(
+            "Skipping DB completion update for legacy job %s: %s",
+            legacy_job_id,
+            exc,
+        )
+    except Exception as exc:  # pragma: no cover - defence in depth
         LOGGER.warning(
             "Skipping DB completion update for legacy job %s: %s",
             legacy_job_id,
@@ -361,6 +394,8 @@ def mark_job_failed(
 ) -> None:
     """Best-effort bridge that marks the DB job as failed."""
 
+    if not is_db_available():
+        return
     failed_time = failed_at or _utc_now()
     try:
         with session_scope() as session:
@@ -399,7 +434,13 @@ def mark_job_failed(
                     },
                 )
             )
-    except Exception as exc:  # pragma: no cover - best-effort bridge
+    except SQLAlchemyError as exc:
+        log_db_failure(
+            "Skipping DB failure update for legacy job %s: %s",
+            legacy_job_id,
+            exc,
+        )
+    except Exception as exc:  # pragma: no cover - defence in depth
         LOGGER.warning(
             "Skipping DB failure update for legacy job %s: %s",
             legacy_job_id,
@@ -416,6 +457,8 @@ def register_job_artifacts(
 ) -> None:
     """Best-effort bridge that registers generated artifacts in PostgreSQL."""
 
+    if not is_db_available():
+        return
     registered_time = registered_at or _utc_now()
     try:
         with session_scope() as session:
@@ -479,7 +522,13 @@ def register_job_artifacts(
                         },
                     )
                 )
-    except Exception as exc:  # pragma: no cover - best-effort bridge
+    except SQLAlchemyError as exc:
+        log_db_failure(
+            "Skipping artifact registration for legacy job %s: %s",
+            legacy_job_id,
+            exc,
+        )
+    except Exception as exc:  # pragma: no cover - defence in depth
         LOGGER.warning(
             "Skipping artifact registration for legacy job %s: %s",
             legacy_job_id,
@@ -491,6 +540,8 @@ def register_job_artifacts(
 def load_review_decisions(legacy_job_id: str) -> dict[str, str] | None:
     """Return DB-backed review decisions for a legacy job, if present."""
 
+    if not is_db_available():
+        return None
     try:
         with session_scope() as session:
             job = _get_job_by_legacy_id(session, legacy_job_id)
@@ -504,7 +555,14 @@ def load_review_decisions(legacy_job_id: str) -> dict[str, str] | None:
                 return None
 
             return {row.review_item_id: row.decision for row in rows}
-    except Exception as exc:  # pragma: no cover - best-effort bridge
+    except SQLAlchemyError as exc:
+        log_db_failure(
+            "Skipping DB review-decision load for legacy job %s: %s",
+            legacy_job_id,
+            exc,
+        )
+        return None
+    except Exception as exc:  # pragma: no cover - defence in depth
         LOGGER.warning(
             "Skipping DB review-decision load for legacy job %s: %s",
             legacy_job_id,
@@ -522,6 +580,8 @@ def save_review_decisions(
 ) -> None:
     """Best-effort bridge that mirrors review decisions into PostgreSQL."""
 
+    if not is_db_available():
+        return
     decided_time = decided_at or _utc_now()
     try:
         with session_scope() as session:
@@ -583,7 +643,13 @@ def save_review_decisions(
             for stale in existing_rows:
                 if stale.review_item_id not in current_review_ids:
                     session.delete(stale)
-    except Exception as exc:  # pragma: no cover - best-effort bridge
+    except SQLAlchemyError as exc:
+        log_db_failure(
+            "Skipping DB review-decision save for legacy job %s: %s",
+            legacy_job_id,
+            exc,
+        )
+    except Exception as exc:  # pragma: no cover - defence in depth
         LOGGER.warning(
             "Skipping DB review-decision save for legacy job %s: %s",
             legacy_job_id,
