@@ -255,6 +255,22 @@ export class AIDisabledError extends Error {
   }
 }
 
+/**
+ * FastAPI wraps HTTPException errors as `{detail: {error: {message, ...}}}`.
+ * Pull the human-readable message out of either shape so the UI shows the
+ * actual backend error instead of a generic "Backend error (500)".
+ */
+function extractBackendMessage(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const obj = body as Record<string, unknown>;
+  if (typeof obj.message === "string") return obj.message;
+  const detail = obj.detail as Record<string, unknown> | undefined;
+  const error = detail?.error as Record<string, unknown> | undefined;
+  if (error && typeof error.message === "string") return error.message;
+  if (typeof detail === "string") return detail;
+  return null;
+}
+
 async function _callAI<T>(
   jobId: string,
   suffix: string,
@@ -271,12 +287,14 @@ async function _callAI<T>(
   if (res.status === 503) {
     const body = await res.json().catch(() => ({}));
     throw new AIDisabledError(
-      body?.message ?? "AI features are not configured on the backend.",
+      extractBackendMessage(body) ?? "AI features are not configured on the backend.",
     );
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body?.message ?? `Backend error (${res.status})`);
+    throw new Error(
+      extractBackendMessage(body) ?? `Backend error (${res.status})`,
+    );
   }
   return (await res.json()) as T;
 }

@@ -8,6 +8,7 @@ uploads, in-memory job state, JSON responses, and artifact downloads.
 from __future__ import annotations
 
 import csv
+import dataclasses
 import io
 import json
 import os
@@ -42,6 +43,41 @@ from .api_boundary import (
     load_job_summary,
     run_cleaning_job,
 )
+
+
+def _load_dotenv() -> None:
+    """Load ``KEY=VALUE`` pairs from ``<repo>/.env`` into ``os.environ``.
+
+    Keeps third-party keys (GEMINI_API_KEY, ...) out of shell profiles and
+    survives across restarts. Existing environment variables win over the
+    file, so an explicit ``set GEMINI_API_KEY=...`` still overrides the file.
+    No new dependency — a dozen lines are enough for this format.
+    """
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.is_file():
+        return
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if not key or key in os.environ:
+                continue
+            # Strip matching surrounding quotes, if present.
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            os.environ[key] = value
+    except OSError:
+        # Best-effort: never block server startup because of .env issues.
+        pass
+
+
+_load_dotenv()
 
 
 SUPPORTED_EXTENSIONS = {".csv", ".xlsx"}
@@ -1117,18 +1153,21 @@ def post_job_ai_review(job_id: str) -> dict[str, Any]:
     review_payload = get_job_review(job_id)
     emails = review_payload.get("emails", [])
 
-    result = JOB_STORE.get(job_id)
-    summary = (
-        deepcopy(result.summary.__dict__)
-        if result is not None and getattr(result, "summary", None) is not None
-        else None
-    )
-
     try:
+        result = JOB_STORE.get(job_id)
+        # JobSummary is a slots dataclass — no __dict__. Use asdict() so this
+        # works on every Python dataclass style.
+        summary = (
+            dataclasses.asdict(result.summary)
+            if result is not None and getattr(result, "summary", None) is not None
+            else None
+        )
         suggestions = _ai.review_queue_suggestions(emails, summary)
     except _ai.AIUnavailable as exc:
         _raise_http_error(503, "ai_unavailable", str(exc))
-    except Exception as exc:  # gemini errors, network errors, schema errors
+    except HTTPException:
+        raise
+    except Exception as exc:  # google-genai errors, network errors, schema errors
         _raise_http_error(502, "ai_error", f"AI review failed: {exc}")
 
     return {
@@ -1156,12 +1195,13 @@ def post_job_ai_summary(job_id: str) -> dict[str, Any]:
             {"job_id": job_id},
         )
 
-    summary = deepcopy(result.summary.__dict__)
-
     try:
+        summary = dataclasses.asdict(result.summary)
         narrative = _ai.job_summary_narrative(summary)
     except _ai.AIUnavailable as exc:
         _raise_http_error(503, "ai_unavailable", str(exc))
+    except HTTPException:
+        raise
     except Exception as exc:
         _raise_http_error(502, "ai_error", f"AI summary failed: {exc}")
 

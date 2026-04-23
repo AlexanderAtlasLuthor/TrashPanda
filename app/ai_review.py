@@ -11,42 +11,41 @@ Two public entrypoints, both deliberately small:
   English, how clean the list is and what the most notable patterns are. Meant
   as a replacement for generic copy on the Results page.
 
-Both call Claude Haiku 4.5 via the official Anthropic SDK. The system prompt is
-stable and cache-controlled so repeated requests hit the cache instead of
-re-paying for the rules on every call.
+Both call Google Gemini 2.5 Flash via the ``google-genai`` SDK. We use Flash
+for the free-tier generosity and the fact that the task is well-bounded
+classification (engine has already computed all the signals; the model just
+has to compose them into a decision).
 
 Privacy: the local part of every email address is masked before leaving the
 server (``john.doe@ameritrade.com`` → ``j***@ameritrade.com``). Domain and
-V2 signals stay visible because those are the features the model actually uses
-to decide — the local part is not load-bearing for the classification.
+V2 signals stay visible because those are the features the model actually
+uses to decide — the local part is not load-bearing for the classification.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Literal
 
 try:
-    import anthropic
+    from google import genai
+    from google.genai import types as genai_types
     from pydantic import BaseModel, Field
 except ImportError:  # pragma: no cover - dependency is declared in requirements.txt
-    anthropic = None  # type: ignore[assignment]
+    genai = None  # type: ignore[assignment]
+    genai_types = None  # type: ignore[assignment]
     BaseModel = object  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 
-# Haiku 4.5 is the right shape for this: tens of items per job, cheap at
-# $1/$5 per 1M tokens, fast enough for a synchronous UI call. Switching to
-# Sonnet/Opus would give marginal quality gains at 3-5x the cost.
-_MODEL = "claude-haiku-4-5"
+# Gemini 2.5 Flash has the best free-tier limits for this workload.
+# Switch to gemini-2.0-flash if the newer model's quotas tighten.
+_MODEL = "gemini-2.5-flash"
 
-# ── System prompt (cache-controlled, frozen) ────────────────────────────────
-#
-# Cache rules: the prefix must be byte-identical across requests for the cache
-# to hit. No timestamps, no per-job IDs, no user names — those all go in the
-# user message below. Opus/Sonnet cacheable prefix is 2048+ tokens; this prompt
-# is intentionally long enough to clear that bar.
+
+# ── System prompt (kept stable; no timestamps or per-job data) ───────────────
 
 _SYSTEM_REVIEW = """You are an email list deliverability assistant embedded in a data-hygiene tool called TrashPanda.
 
@@ -105,15 +104,15 @@ You will be given the aggregate outputs of a deterministic cleaning pipeline: to
 
 ## What to include
 
-- An overall health verdict ("excellent shape", "good shape", "needs attention", "has serious issues"). Base this on the ready-to-send percentage: ≥95% excellent, 85-95% good, 70-85% needs attention, <70% serious issues.
+- An overall health verdict ("excellent shape", "good shape", "needs attention", "has serious issues"). Base this on the ready-to-send percentage: >=95% excellent, 85-95% good, 70-85% needs attention, <70% serious issues.
 - The one or two most actionable numbers — e.g. how many records are ready, how many need review, how many are high-risk.
 - If review queue is non-trivial, mention the dominant reason or dominant domain if provided.
 - A short next-step hint (e.g. "approve the flagged role-based addresses in bulk" or "drop the high-risk removals and send").
 
 ## What to avoid
 
-- Robotic phrasing ("based on the provided data…"). Write like a smart colleague.
-- Numbers without context ("2094 records"). Pair numbers with meaning ("2094 high-risk addresses removed — about 1.7% of your list").
+- Robotic phrasing ("based on the provided data..."). Write like a smart colleague.
+- Numbers without context ("2094 records"). Pair numbers with meaning ("2094 high-risk addresses removed - about 1.7% of your list").
 - Multiple paragraphs. ONE paragraph, 2-4 sentences, ~60 words max.
 - Redundant restatement of every number. The UI already shows them as tiles; you're adding the story.
 - Emojis. No emojis.
@@ -126,6 +125,9 @@ Return ONLY the paragraph text. No headings, no bullets, no preamble like "Summa
 
 
 # ── Pydantic schemas for structured output ───────────────────────────────────
+#
+# Gemini reads `response_json_schema=Schema.model_json_schema()` and returns
+# JSON in response.text that we validate back into the same Schema.
 
 if genai is not None:
     class _Suggestion(BaseModel):
@@ -133,7 +135,6 @@ if genai is not None:
         decision: Literal["approve", "reject", "uncertain"]
         confidence: float = Field(ge=0.0, le=1.0)
         reasoning: str = Field(max_length=240)
-
 
     class _SuggestionList(BaseModel):
         suggestions: list[_Suggestion]
@@ -159,7 +160,7 @@ def _mask_email(email: str) -> str:
 # ── Signal whitelist ─────────────────────────────────────────────────────────
 #
 # Only forward the fields the model actually uses to decide. Don't ship the
-# full row — keeps payloads small, cache-friendly, and less PII-exposing.
+# full row — keeps payloads small and less PII-exposing.
 
 _SIGNAL_FIELDS = (
     "reason",
@@ -219,11 +220,12 @@ def _client() -> "genai.Client":
         raise AIUnavailable(
             "google-genai SDK is not installed. Run `pip install google-genai`."
         )
+    # Gemini accepts either GEMINI_API_KEY (preferred) or GOOGLE_API_KEY.
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         raise AIUnavailable(
             "GEMINI_API_KEY is not set in the environment. "
-            "Grab a free key at https://aistudio.google.com/apikey and export GEMINI_API_KEY=..."
+            "Grab a free key at https://aistudio.google.com/apikey and set it in the .env file at the repo root."
         )
     return genai.Client(api_key=api_key)
 
@@ -257,9 +259,7 @@ def review_queue_suggestions(
             "Copy each input item's `id` verbatim into the output."
         ),
     }
-
-    import json as _json
-    user_text = _json.dumps(user_payload, sort_keys=True, ensure_ascii=False)
+    user_text = json.dumps(user_payload, sort_keys=True, ensure_ascii=False)
 
     response = client.models.generate_content(
         model=_MODEL,
@@ -304,8 +304,7 @@ def job_summary_narrative(job_summary: dict[str, Any]) -> str:
     """
     client = _client()
 
-    import json as _json
-    user_text = _json.dumps(
+    user_text = json.dumps(
         {"summary": _compact_summary(job_summary)},
         sort_keys=True,
         ensure_ascii=False,
@@ -329,11 +328,7 @@ def job_summary_narrative(job_summary: dict[str, Any]) -> str:
 
 
 def _compact_summary(s: dict[str, Any] | None) -> dict[str, Any]:
-    """Trim the job summary to the fields the model cares about.
-
-    The full summary has plenty of internal bookkeeping the model doesn't need.
-    Keeping this narrow also keeps the prompt deterministic across runs.
-    """
+    """Trim the job summary to the fields the model cares about."""
     if not s:
         return {}
     keep = (
