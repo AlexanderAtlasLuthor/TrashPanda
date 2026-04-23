@@ -304,6 +304,26 @@ function GroupBlock({
     .map(([r]) => REASON_LABELS[r])
     .join(" · ");
 
+  // Tally the AI's verdict across this domain's pending items so the header
+  // can show "AI: 8 approve · 2 uncertain" without the user expanding.
+  const aiTally = suggestions
+    ? emails.reduce(
+        (acc, e) => {
+          const s = suggestions[e.id];
+          if (!s) return acc;
+          acc[s.decision] += 1;
+          return acc;
+        },
+        { approve: 0, reject: 0, uncertain: 0 } as Record<
+          "approve" | "reject" | "uncertain",
+          number
+        >,
+      )
+    : null;
+  const aiCovered = aiTally
+    ? aiTally.approve + aiTally.reject + aiTally.uncertain
+    : 0;
+
   return (
     <>
       <tr className={`${styles.groupRow} ${expanded ? styles.groupRowOpen : ""}`}>
@@ -333,6 +353,26 @@ function GroupBlock({
               {pendingCount < emails.length && (
                 <span className={styles.groupDecided}>
                   {emails.length - pendingCount} decided
+                </span>
+              )}
+              {aiTally && aiCovered > 0 && (
+                <span className={styles.groupAiTally}>
+                  <span className={styles.groupAiLabel}>AI:</span>
+                  {aiTally.approve > 0 && (
+                    <span className={styles.groupAiApprove}>
+                      {aiTally.approve} approve
+                    </span>
+                  )}
+                  {aiTally.reject > 0 && (
+                    <span className={styles.groupAiReject}>
+                      {aiTally.reject} reject
+                    </span>
+                  )}
+                  {aiTally.uncertain > 0 && (
+                    <span className={styles.groupAiUncertain}>
+                      {aiTally.uncertain} uncertain
+                    </span>
+                  )}
                 </span>
               )}
             </button>
@@ -586,6 +626,37 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
   const aiSuggestions =
     aiState.status === "ready" ? aiState.suggestions : null;
 
+  // Pre-compute what "Apply AI decisions" would do, so the button label and
+  // confirm dialog can show real counts. Only pending-and-filtered items are
+  // candidates — "uncertain" is deliberately never auto-applied.
+  const aiApplyable = useMemo(() => {
+    if (!aiSuggestions) return { approve: [], reject: [], uncertain: 0 };
+    const approve: string[] = [];
+    const reject: string[] = [];
+    let uncertain = 0;
+    for (const e of pendingFiltered) {
+      const s = aiSuggestions[e.id];
+      if (!s) continue;
+      if (s.decision === "approve") approve.push(e.id);
+      else if (s.decision === "reject") reject.push(e.id);
+      else uncertain += 1;
+    }
+    return { approve, reject, uncertain };
+  }, [aiSuggestions, pendingFiltered]);
+
+  const [aiConfirmOpen, setAiConfirmOpen] = useState(false);
+
+  const applyAIDecisions = useCallback(() => {
+    setAiConfirmOpen(false);
+    setDecisions((prev) => {
+      const next = { ...prev };
+      for (const id of aiApplyable.approve) next[id] = "approved";
+      for (const id of aiApplyable.reject) next[id] = "removed";
+      return next;
+    });
+    setSelected(new Set());
+  }, [aiApplyable]);
+
   return (
     <>
       {/* ── Header ──────────────────────────────────────────────── */}
@@ -682,6 +753,18 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
                 ? "Re-run AI review"
                 : "Run AI review"}
           </button>
+          {aiSuggestions &&
+            aiApplyable.approve.length + aiApplyable.reject.length > 0 && (
+              <button
+                type="button"
+                className={styles.aiApplyBtn}
+                onClick={() => setAiConfirmOpen(true)}
+                title="Apply the AI's approve / reject decisions in bulk. Uncertain items stay pending for manual review."
+              >
+                Apply AI decisions (
+                {aiApplyable.approve.length + aiApplyable.reject.length})
+              </button>
+            )}
           {pendingFiltered.length > 0 && (
             <>
               <button className={styles.quickApprove} onClick={bulkApproveAll} type="button">
@@ -847,6 +930,99 @@ export function ReviewQueueClient({ jobId }: { jobId: string }) {
           </button>
         </div>
       )}
+
+      {aiConfirmOpen && aiSuggestions && (
+        <AIApplyConfirm
+          approveCount={aiApplyable.approve.length}
+          rejectCount={aiApplyable.reject.length}
+          uncertainCount={aiApplyable.uncertain}
+          onCancel={() => setAiConfirmOpen(false)}
+          onConfirm={applyAIDecisions}
+        />
+      )}
     </>
+  );
+}
+
+// ── AI Apply confirmation dialog ─────────────────────────────────────────
+
+interface AIApplyConfirmProps {
+  approveCount: number;
+  rejectCount: number;
+  uncertainCount: number;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+function AIApplyConfirm({
+  approveCount,
+  rejectCount,
+  uncertainCount,
+  onCancel,
+  onConfirm,
+}: AIApplyConfirmProps) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  const parts: string[] = [];
+  if (approveCount > 0) parts.push(`${approveCount} approve${approveCount !== 1 ? "s" : ""}`);
+  if (rejectCount > 0) parts.push(`${rejectCount} reject${rejectCount !== 1 ? "s" : ""}`);
+
+  return (
+    <div
+      className={styles.aiConfirmBackdrop}
+      onClick={onCancel}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="ai-apply-title"
+    >
+      <div
+        className={styles.aiConfirmCard}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className={styles.aiConfirmTitle} id="ai-apply-title">
+          Apply AI decisions in bulk?
+        </div>
+        <div className={styles.aiConfirmBody}>
+          <p>
+            This will apply {parts.join(" and ")} to your review queue in a
+            single step.
+          </p>
+          {uncertainCount > 0 && (
+            <p>
+              {uncertainCount} item{uncertainCount !== 1 ? "s" : ""} the AI
+              marked <strong>uncertain</strong> will stay pending so you can
+              review them yourself.
+            </p>
+          )}
+          <p className={styles.aiConfirmHint}>
+            Nothing is final — you can still undo individual decisions before
+            downloading the list.
+          </p>
+        </div>
+        <div className={styles.aiConfirmActions}>
+          <button
+            type="button"
+            className={styles.aiConfirmCancel}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className={styles.aiConfirmOk}
+            onClick={onConfirm}
+            autoFocus
+          >
+            Apply {approveCount + rejectCount}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
