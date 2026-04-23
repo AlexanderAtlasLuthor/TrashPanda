@@ -16,10 +16,14 @@ for the free-tier generosity and the fact that the task is well-bounded
 classification (engine has already computed all the signals; the model just
 has to compose them into a decision).
 
-Privacy: the local part of every email address is masked before leaving the
-server (``john.doe@ameritrade.com`` → ``j***@ameritrade.com``). Domain and
-V2 signals stay visible because those are the features the model actually
-uses to decide — the local part is not load-bearing for the classification.
+Privacy: the full email address (including local part) is sent to Gemini so
+that the model can tell a real-looking address like ``marie.elmore@acme.com``
+from a generated-looking one like ``xqz9831@acme.com`` — that distinction
+meaningfully affects approve/reject quality. Since the user explicitly chose
+Gemini's free tier, the emails already leave the server either way; masking
+the local part only degraded classification quality without adding meaningful
+privacy on top. If that tradeoff ever needs flipping, the ``_mask_email``
+helper and ``_compact_email_for_model`` are the two points to change.
 """
 
 from __future__ import annotations
@@ -198,10 +202,15 @@ _SIGNAL_FIELDS = (
 
 
 def _compact_email_for_model(email: dict[str, Any]) -> dict[str, Any]:
-    """Strip to just the signals the model should see, with PII masked."""
+    """Strip to the fields the model should see.
+
+    Sends the full email (including local part) — see module docstring on
+    why we deliberately don't mask. Also trims to a signal whitelist so we
+    never accidentally forward random pipeline internals from the engine.
+    """
     out: dict[str, Any] = {
         "id": email["id"],
-        "email_masked": _mask_email(email["email"]),
+        "email": email["email"],
         "domain": email.get("domain", ""),
     }
     for key in _SIGNAL_FIELDS:
