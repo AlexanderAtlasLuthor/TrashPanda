@@ -256,17 +256,30 @@ export class AIDisabledError extends Error {
 }
 
 /**
- * FastAPI wraps HTTPException errors as `{detail: {error: {message, ...}}}`.
- * Pull the human-readable message out of either shape so the UI shows the
- * actual backend error instead of a generic "Backend error (500)".
+ * The Python backend serialises errors in a few different shapes depending on
+ * whether the custom exception handler unwrapped them:
+ *   1. `{error: {error_type, message, details}}`  ← custom handler output
+ *   2. `{detail: {error: {...}}}`                 ← raw FastAPI HTTPException
+ *   3. `{message: "..."}`                         ← Next.js proxy fallback
+ *   4. `{detail: "some string"}`                  ← FastAPI default
+ * Try each shape and return the first message we find so the UI shows the
+ * actual backend reason instead of a generic "Backend error (500)".
  */
 function extractBackendMessage(body: unknown): string | null {
   if (!body || typeof body !== "object") return null;
   const obj = body as Record<string, unknown>;
+  // (3)
   if (typeof obj.message === "string") return obj.message;
+  // (1) custom handler: {error: {message}}
+  const errorTop = obj.error as Record<string, unknown> | undefined;
+  if (errorTop && typeof errorTop.message === "string") return errorTop.message;
+  // (2) raw HTTPException: {detail: {error: {message}}}
   const detail = obj.detail as Record<string, unknown> | undefined;
-  const error = detail?.error as Record<string, unknown> | undefined;
-  if (error && typeof error.message === "string") return error.message;
+  const errorInDetail = detail?.error as Record<string, unknown> | undefined;
+  if (errorInDetail && typeof errorInDetail.message === "string") {
+    return errorInDetail.message;
+  }
+  // (4) bare detail string
   if (typeof detail === "string") return detail;
   return null;
 }
