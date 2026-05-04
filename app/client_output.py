@@ -32,6 +32,15 @@ import pandas as pd
 
 # Internal (pipeline) bucket -> (client-facing label, output xlsx name,
 # recommended_action, source CSV name, default client_reason fallback).
+#
+# V2.5 — the three legacy workbooks are now V2-driven:
+#   * ``valid_emails.xlsx``           = V2 ``auto_approve`` only.
+#   * ``review_emails.xlsx``          = V2 ``manual_review``.
+#   * ``invalid_or_bounce_risk.xlsx`` = V2 ``auto_reject`` plus
+#                                       duplicates and V1 hard fails
+#                                       (legacy union; backward compat).
+# The two new V2 semantic workbooks below split the union so customers
+# can see duplicates and hard fails as their own cohorts.
 BUCKET_CONFIG: dict[str, dict[str, str]] = {
     "clean_high_confidence": {
         "client_status": "valid",
@@ -57,6 +66,27 @@ BUCKET_CONFIG: dict[str, dict[str, str]] = {
 }
 
 
+# V2.5 supplementary workbooks. Each is a strict subset of
+# ``removed_invalid.csv`` carved out for V2 semantics; the parent
+# workbook still contains the union for legacy consumers.
+SUPPLEMENTARY_BUCKET_CONFIG: dict[str, dict[str, str]] = {
+    "removed_duplicates": {
+        "client_status": "duplicate",
+        "xlsx_name": "duplicate_emails.xlsx",
+        "csv_name": "removed_duplicates.csv",
+        "recommended_action": "Duplicate of another row",
+        "default_reason": "Duplicate email",
+    },
+    "removed_hard_fail": {
+        "client_status": "hard_fail",
+        "xlsx_name": "hard_fail_emails.xlsx",
+        "csv_name": "removed_hard_fail.csv",
+        "recommended_action": "Do not use",
+        "default_reason": "Failed structural validation",
+    },
+}
+
+
 # Client column profile: ordered list of (client_column_name, candidate
 # source columns in priority order). Any candidate missing in the CSV
 # is silently skipped. If none of the candidates exist, the column is
@@ -70,6 +100,24 @@ CLIENT_COLUMN_PROFILE: list[tuple[str, tuple[str, ...]]] = [
     ("company", ("company", "empresa", "organization", "org")),
     ("city", ("city", "ciudad")),
     ("state", ("state", "estado", "province", "region")),
+]
+
+
+# V2.5 — additional verification columns appended to every client
+# workbook so review/risk consumers can see *why* a row landed where it
+# did. Each tuple is ``(client_column_name, candidate_source_columns)``.
+# Missing candidates are silently skipped, so workbooks generated from
+# pre-V2 outputs (without these columns) still render.
+V2_VERIFICATION_COLUMNS: list[tuple[str, tuple[str, ...]]] = [
+    ("final_action", ("final_action",)),
+    ("decision_reason", ("decision_reason",)),
+    ("decision_confidence", ("decision_confidence",)),
+    ("deliverability_probability", ("deliverability_probability",)),
+    ("smtp_status", ("smtp_status",)),
+    ("smtp_confirmed_valid", ("smtp_confirmed_valid",)),
+    ("catch_all_status", ("catch_all_status",)),
+    ("catch_all_flag", ("catch_all_flag",)),
+    ("final_output_reason", ("final_output_reason",)),
 ]
 
 
@@ -113,7 +161,15 @@ def _build_client_frame(
     recommended_action: str,
     default_reason: str,
 ) -> pd.DataFrame:
-    """Project the technical frame onto the client column profile."""
+    """Project the technical frame onto the client column profile.
+
+    V2.5 — appends the V2 verification columns
+    (:data:`V2_VERIFICATION_COLUMNS`) when present in the source frame
+    so review/risk workbooks expose ``final_action``, ``decision_reason``,
+    SMTP/catch-all status, etc., to the client. Missing columns are
+    silently skipped so workbooks generated from pre-V2 outputs still
+    render correctly.
+    """
     out = pd.DataFrame(index=df.index)
 
     for client_col, candidates in CLIENT_COLUMN_PROFILE:
@@ -130,6 +186,16 @@ def _build_client_frame(
     else:
         out["client_reason"] = default_reason
     out["recommended_action"] = recommended_action
+
+    # V2.5 — append V2 verification columns (skipped if not present
+    # upstream, so pre-V2 jobs still produce sensible workbooks).
+    for client_col, candidates in V2_VERIFICATION_COLUMNS:
+        if client_col in out.columns:
+            continue
+        for cand in candidates:
+            if cand in df.columns:
+                out[client_col] = df[cand]
+                break
 
     return out
 
@@ -172,6 +238,41 @@ def _count_reason(df: pd.DataFrame, patterns: tuple[str, ...]) -> int:
     for pat in patterns:
         mask = mask | col.str.contains(pat.lower(), regex=False, na=False)
     return int(mask.sum())
+
+
+# V2.5 — counts derived from V2 verification columns. Used by the
+# summary report to surface SMTP / catch-all / unknown cohort sizes
+# alongside the legacy bucket totals.
+
+_TRUTHY_STRINGS: frozenset[str] = frozenset({"1", "true", "t", "yes", "y"})
+
+
+def _count_truthy(df: pd.DataFrame, column: str) -> int:
+    """Count rows where ``column`` evaluates to a truthy CSV value.
+
+    CSV values are strings (or stringified ``True``/``False``); a
+    truthy match is any of ``1 / true / yes / y / t``. Missing column
+    or empty frame returns zero.
+    """
+    if df.empty or column not in df.columns:
+        return 0
+    col = df[column].astype(str).str.strip().str.lower()
+    return int(col.isin(_TRUTHY_STRINGS).sum())
+
+
+def _count_unverified(df: pd.DataFrame) -> int:
+    """Count rows lacking confirmed-valid SMTP evidence.
+
+    A row is *unverified* when its ``smtp_status`` is one of
+    ``not_tested``, ``unknown``, ``error``, ``timeout``, ``temp_fail``,
+    ``blocked`` (i.e. anything other than ``valid`` / ``invalid`` /
+    ``catch_all_possible``). Missing column or empty frame → zero.
+    """
+    if df.empty or "smtp_status" not in df.columns:
+        return 0
+    col = df["smtp_status"].astype(str).str.strip().str.lower()
+    unverified = {"not_tested", "unknown", "error", "timeout", "temp_fail", "blocked"}
+    return int(col.isin(unverified).sum())
 
 
 def _load_processing_report(run_dir: Path) -> dict[str, Any]:
@@ -229,6 +330,34 @@ def generate_client_outputs(
             written[cfg["client_status"]] = xlsx_path
             log.info(
                 "Client export written | bucket=%s rows=%s file=%s",
+                bucket, len(client_df), xlsx_path.name,
+            )
+        except Exception as exc:  # pragma: no cover - defensive I/O guard
+            log.warning("Failed to write %s: %s", xlsx_path, exc)
+
+    # V2.5 — supplementary workbooks split the legacy ``invalid_or_bounce_risk``
+    # cohort into duplicates and hard fails so customers can address each
+    # cleanly. Failures are non-fatal: the legacy union workbook still
+    # contains every removed row.
+    for bucket, cfg in SUPPLEMENTARY_BUCKET_CONFIG.items():
+        csv_path = run_dir / cfg["csv_name"]
+        if not csv_path.is_file() or csv_path.stat().st_size == 0:
+            continue
+        raw = _read_csv_safe(csv_path)
+        client_df = _build_client_frame(
+            raw,
+            client_status=cfg["client_status"],
+            recommended_action=cfg["recommended_action"],
+            default_reason=cfg["default_reason"],
+        )
+        client_frames[bucket] = client_df
+
+        xlsx_path = run_dir / cfg["xlsx_name"]
+        try:
+            _write_xlsx(client_df, xlsx_path, sheet_name=cfg["client_status"])
+            written[cfg["client_status"]] = xlsx_path
+            log.info(
+                "V2.5 client export written | bucket=%s rows=%s file=%s",
                 bucket, len(client_df), xlsx_path.name,
             )
         except Exception as exc:  # pragma: no cover - defensive I/O guard
@@ -370,6 +499,20 @@ def _write_summary_report(
     # Role-based may also end up in invalid in some configs; include both.
     role_based_count += _count_reason(invalid_df, REASON_PATTERNS["role_based"])
 
+    # V2.5 — V2-aware counts derived from the materialized CSVs.
+    duplicates_df = client_frames.get("removed_duplicates", pd.DataFrame())
+    hard_fail_df = client_frames.get("removed_hard_fail", pd.DataFrame())
+    safe_approved_count = total_valid  # auto_approve only.
+    manual_review_count = total_review
+    duplicate_count = len(duplicates_df)
+    hard_fail_count = len(hard_fail_df)
+    # Auto-reject is the legacy invalid bucket minus duplicates and
+    # hard fails (which are now also surfaced separately).
+    rejected_count = max(0, total_invalid - duplicate_count - hard_fail_count)
+    smtp_verified_count = _count_truthy(valid_df, "smtp_confirmed_valid")
+    catch_all_risk_count = _count_truthy(combined, "catch_all_flag") if not combined.empty else 0
+    unknown_or_unverified_count = _count_unverified(combined)
+
     totals_rows = [
         ("total_input_rows", total_input),
         ("total_valid", total_valid),
@@ -380,6 +523,15 @@ def _write_summary_report(
         ("disposable_emails", disposable_count),
         ("placeholder_or_fake_emails", placeholder_count),
         ("role_based_emails", role_based_count),
+        # V2.5 — V2-semantic counts.
+        ("safe_approved_count", safe_approved_count),
+        ("manual_review_count", manual_review_count),
+        ("rejected_count", rejected_count),
+        ("duplicate_count", duplicate_count),
+        ("hard_fail_count", hard_fail_count),
+        ("smtp_verified_count", smtp_verified_count),
+        ("catch_all_risk_count", catch_all_risk_count),
+        ("unknown_or_unverified_count", unknown_or_unverified_count),
     ]
     totals_df = pd.DataFrame(totals_rows, columns=["metric", "value"])
 

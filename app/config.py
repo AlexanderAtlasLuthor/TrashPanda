@@ -30,7 +30,10 @@ DEFAULT_DECISION_VALUES: dict[str, Any] = {
     "enabled": True,
     "approve_threshold": 0.80,
     "review_threshold": 0.50,
-    "enable_bucket_override": False,
+    # V2.1 — V2 decision is the production routing authority. Defaults
+    # match ``configs/default.yaml``. Flip to False only to fall back
+    # to legacy V1-only routing for diagnostics.
+    "enable_bucket_override": True,
     "write_summary_report": True,
 }
 
@@ -47,15 +50,24 @@ DEFAULT_PROBABILITY_VALUES: dict[str, Any] = {
 
 
 DEFAULT_SMTP_PROBE_VALUES: dict[str, Any] = {
-    "enabled": False,
-    "dry_run": True,
-    "sample_size": 50,
-    "max_per_domain": 3,
-    "timeout_seconds": 4.0,
+    # V2.2 — SMTP is now production-on and feeds the in-chunk decision
+    # stage. Tests are protected from real network calls by an autouse
+    # fixture in ``conftest.py``; deployments that want a no-network
+    # run can flip ``dry_run`` back to ``True``.
+    "enabled": True,
+    "dry_run": False,
+    "max_candidates_per_run": None,
+    "timeout_seconds": 10.0,
     "rate_limit_per_second": 2.0,
     "retries": 0,
-    "negative_adjustment_trigger_threshold": 3,
+    "retry_temp_failures": True,
+    "max_retries": 1,
     "sender_address": "trashpanda-probe@localhost",
+    # Legacy knobs read by the post-pass orchestrator
+    # (``app.validation_v2.smtp_integration``).
+    "sample_size": 50,
+    "max_per_domain": 3,
+    "negative_adjustment_trigger_threshold": 3,
 }
 
 
@@ -74,6 +86,50 @@ DEFAULT_TYPO_CORRECTION_VALUES: dict[str, Any] = {
         "icloud.com",
     ],
     "require_original_no_mx": True,
+}
+
+
+DEFAULT_BOUNCE_INGESTION_VALUES: dict[str, Any] = {
+    # V2.7 — bounce outcome ingestion + domain reputation thresholds.
+    # The chunk pipeline does not depend on this block; ingestion is
+    # an out-of-band operator-triggered job. Defaults match the V2.7
+    # prompt; lower ``min_observations_for_domain_reputation`` to
+    # 1-2 in tests if you want every domain classified after one event.
+    "enabled": True,
+    "store_path": "runtime/feedback/bounce_outcomes.sqlite",
+    "min_observations_for_domain_reputation": 5,
+    "medium_hard_bounce_rate": 0.08,
+    "high_hard_bounce_rate": 0.20,
+    "high_blocked_rate": 0.10,
+    "complaint_is_high_risk": True,
+}
+
+
+DEFAULT_DOMAIN_INTELLIGENCE_VALUES: dict[str, Any] = {
+    # V2.6 — chunk-time domain intelligence + cold-start handling.
+    # The stage classifies each row's domain into a small canonical
+    # vocabulary using offline heuristics; high-risk and cold-start
+    # cases cap approval at the centralized V2 decision policy.
+    "enabled": True,
+    "min_observations_for_reputation": 3,
+    "cold_start_default_risk": "unknown",
+    "high_risk_blocks_auto_approve": True,
+    "cold_start_requires_smtp_valid": True,
+}
+
+
+DEFAULT_CATCH_ALL_VALUES: dict[str, Any] = {
+    # V2.3 — chunk-time catch-all detection block. The stage runs in
+    # the chunk pipeline and never opens a network connection itself;
+    # it normalizes the SMTP probe's existing random-RCPT signal into
+    # canonical row-level fields. ``cache_by_domain`` caches the
+    # classification per domain across chunks. ``default_on_unknown``
+    # is informational — DecisionStage already routes unknown to
+    # review via the SMTP overrides.
+    "enabled": True,
+    "method": "smtp",
+    "cache_by_domain": True,
+    "default_on_unknown": "review",
 }
 
 
@@ -128,6 +184,81 @@ class TypoCorrectionConfig:
 
 
 @dataclass(slots=True)
+class BounceIngestionConfig:
+    """V2.7 — bounce outcome ingestion settings.
+
+    ``store_path`` is the SQLite file the dedicated
+    :class:`app.validation_v2.feedback.BounceOutcomeStore` writes to;
+    relative paths are resolved against the project root. The four
+    rate fields tune :func:`compute_risk_level`. Set ``enabled=false``
+    to disable ingestion outright (the boundary helper will refuse).
+    """
+
+    enabled: bool = bool(DEFAULT_BOUNCE_INGESTION_VALUES["enabled"])
+    store_path: str = str(DEFAULT_BOUNCE_INGESTION_VALUES["store_path"])
+    min_observations_for_domain_reputation: int = int(
+        DEFAULT_BOUNCE_INGESTION_VALUES["min_observations_for_domain_reputation"]
+    )
+    medium_hard_bounce_rate: float = float(
+        DEFAULT_BOUNCE_INGESTION_VALUES["medium_hard_bounce_rate"]
+    )
+    high_hard_bounce_rate: float = float(
+        DEFAULT_BOUNCE_INGESTION_VALUES["high_hard_bounce_rate"]
+    )
+    high_blocked_rate: float = float(
+        DEFAULT_BOUNCE_INGESTION_VALUES["high_blocked_rate"]
+    )
+    complaint_is_high_risk: bool = bool(
+        DEFAULT_BOUNCE_INGESTION_VALUES["complaint_is_high_risk"]
+    )
+
+
+@dataclass(slots=True)
+class DomainIntelligenceConfig:
+    """V2.6 — domain intelligence + cold-start handling.
+
+    Heuristic-driven (free-provider whitelist, disposable list,
+    suspicious-shape detection); no network calls at chunk time. Set
+    ``enabled: false`` to skip the stage entirely — every row will
+    then carry ``domain_intel_status=unavailable`` and the V2 decision
+    policy treats that the same as ``unknown`` (never positive
+    evidence).
+    """
+
+    enabled: bool = bool(DEFAULT_DOMAIN_INTELLIGENCE_VALUES["enabled"])
+    min_observations_for_reputation: int = int(
+        DEFAULT_DOMAIN_INTELLIGENCE_VALUES["min_observations_for_reputation"]
+    )
+    cold_start_default_risk: str = str(
+        DEFAULT_DOMAIN_INTELLIGENCE_VALUES["cold_start_default_risk"]
+    )
+    high_risk_blocks_auto_approve: bool = bool(
+        DEFAULT_DOMAIN_INTELLIGENCE_VALUES["high_risk_blocks_auto_approve"]
+    )
+    cold_start_requires_smtp_valid: bool = bool(
+        DEFAULT_DOMAIN_INTELLIGENCE_VALUES["cold_start_requires_smtp_valid"]
+    )
+
+
+@dataclass(slots=True)
+class CatchAllConfig:
+    """V2.3 — catch-all detection configuration.
+
+    The stage runs entirely on signals produced by upstream SMTP
+    probing (``probe_email_smtplib`` already does the piggyback random
+    RCPT trick). Disable with ``enabled: false`` to skip the stage's
+    cache + canonical-column normalization; SMTP-derived
+    ``catch_all_possible`` still caps approval via the V2.2 SMTP
+    overrides in DecisionStage.
+    """
+
+    enabled: bool = bool(DEFAULT_CATCH_ALL_VALUES["enabled"])
+    method: str = str(DEFAULT_CATCH_ALL_VALUES["method"])
+    cache_by_domain: bool = bool(DEFAULT_CATCH_ALL_VALUES["cache_by_domain"])
+    default_on_unknown: str = str(DEFAULT_CATCH_ALL_VALUES["default_on_unknown"])
+
+
+@dataclass(slots=True)
 class HistoryConfig:
     """V2 Domain Historical Memory layer configuration.
 
@@ -179,10 +310,23 @@ class ProbabilityConfig:
 
 @dataclass(slots=True)
 class SMTPProbeConfig:
-    """V2 Phase 4 selective SMTP probing. Off by default."""
+    """V2 Phase 4 + V2.2 SMTP probing.
+
+    V2.2 promotes the probe to an in-chunk verification stage. Defaults
+    are now ``enabled=True, dry_run=False`` (production-leaning); the
+    test suite installs an autouse safeguard so the suite never opens a
+    real socket. ``max_candidates_per_run`` (None = unlimited) is the
+    in-chunk safety net; the legacy ``sample_size`` / ``max_per_domain``
+    fields are still consumed by the post-pass orchestrator.
+    """
 
     enabled: bool = bool(DEFAULT_SMTP_PROBE_VALUES["enabled"])
     dry_run: bool = bool(DEFAULT_SMTP_PROBE_VALUES["dry_run"])
+    max_candidates_per_run: int | None = (
+        int(DEFAULT_SMTP_PROBE_VALUES["max_candidates_per_run"])
+        if DEFAULT_SMTP_PROBE_VALUES["max_candidates_per_run"] is not None
+        else None
+    )
     sample_size: int = int(DEFAULT_SMTP_PROBE_VALUES["sample_size"])
     max_per_domain: int = int(DEFAULT_SMTP_PROBE_VALUES["max_per_domain"])
     timeout_seconds: float = float(DEFAULT_SMTP_PROBE_VALUES["timeout_seconds"])
@@ -190,6 +334,8 @@ class SMTPProbeConfig:
         DEFAULT_SMTP_PROBE_VALUES["rate_limit_per_second"]
     )
     retries: int = int(DEFAULT_SMTP_PROBE_VALUES["retries"])
+    retry_temp_failures: bool = bool(DEFAULT_SMTP_PROBE_VALUES["retry_temp_failures"])
+    max_retries: int = int(DEFAULT_SMTP_PROBE_VALUES["max_retries"])
     negative_adjustment_trigger_threshold: int = int(
         DEFAULT_SMTP_PROBE_VALUES["negative_adjustment_trigger_threshold"]
     )
@@ -217,6 +363,13 @@ class AppConfig:
     smtp_probe: SMTPProbeConfig = field(default_factory=SMTPProbeConfig)
     probability: ProbabilityConfig = field(default_factory=ProbabilityConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
+    catch_all: CatchAllConfig = field(default_factory=CatchAllConfig)
+    domain_intelligence: DomainIntelligenceConfig = field(
+        default_factory=DomainIntelligenceConfig
+    )
+    bounce_ingestion: BounceIngestionConfig = field(
+        default_factory=BounceIngestionConfig
+    )
     typo_correction: TypoCorrectionConfig = field(default_factory=TypoCorrectionConfig)
     paths: ProjectPaths | None = field(default=None)
 
@@ -252,6 +405,19 @@ def load_config(
     smtp_raw = raw_values.pop("smtp_probe", {}) if isinstance(raw_values, dict) else {}
     prob_raw = raw_values.pop("probability", {}) if isinstance(raw_values, dict) else {}
     decision_raw = raw_values.pop("decision", {}) if isinstance(raw_values, dict) else {}
+    catch_all_raw = (
+        raw_values.pop("catch_all", {}) if isinstance(raw_values, dict) else {}
+    )
+    domain_intel_raw = (
+        raw_values.pop("domain_intelligence", {})
+        if isinstance(raw_values, dict)
+        else {}
+    )
+    bounce_raw = (
+        raw_values.pop("bounce_ingestion", {})
+        if isinstance(raw_values, dict)
+        else {}
+    )
     typo_raw = raw_values.pop("typo_correction", {}) if isinstance(raw_values, dict) else {}
     merged = {**DEFAULT_CONFIG_VALUES, **raw_values}
     if overrides:
@@ -295,6 +461,47 @@ def load_config(
         write_summary_report=bool(decision_merged["write_summary_report"]),
     )
 
+    catch_all_merged = {**DEFAULT_CATCH_ALL_VALUES, **(catch_all_raw or {})}
+    catch_all_config = CatchAllConfig(
+        enabled=bool(catch_all_merged["enabled"]),
+        method=str(catch_all_merged["method"]),
+        cache_by_domain=bool(catch_all_merged["cache_by_domain"]),
+        default_on_unknown=str(catch_all_merged["default_on_unknown"]),
+    )
+
+    domain_intel_merged = {
+        **DEFAULT_DOMAIN_INTELLIGENCE_VALUES,
+        **(domain_intel_raw or {}),
+    }
+    domain_intel_config = DomainIntelligenceConfig(
+        enabled=bool(domain_intel_merged["enabled"]),
+        min_observations_for_reputation=int(
+            domain_intel_merged["min_observations_for_reputation"]
+        ),
+        cold_start_default_risk=str(
+            domain_intel_merged["cold_start_default_risk"]
+        ),
+        high_risk_blocks_auto_approve=bool(
+            domain_intel_merged["high_risk_blocks_auto_approve"]
+        ),
+        cold_start_requires_smtp_valid=bool(
+            domain_intel_merged["cold_start_requires_smtp_valid"]
+        ),
+    )
+
+    bounce_merged = {**DEFAULT_BOUNCE_INGESTION_VALUES, **(bounce_raw or {})}
+    bounce_config = BounceIngestionConfig(
+        enabled=bool(bounce_merged["enabled"]),
+        store_path=str(bounce_merged["store_path"]),
+        min_observations_for_domain_reputation=int(
+            bounce_merged["min_observations_for_domain_reputation"]
+        ),
+        medium_hard_bounce_rate=float(bounce_merged["medium_hard_bounce_rate"]),
+        high_hard_bounce_rate=float(bounce_merged["high_hard_bounce_rate"]),
+        high_blocked_rate=float(bounce_merged["high_blocked_rate"]),
+        complaint_is_high_risk=bool(bounce_merged["complaint_is_high_risk"]),
+    )
+
     typo_merged = {**DEFAULT_TYPO_CORRECTION_VALUES, **(typo_raw or {})}
     typo_whitelist_raw = typo_merged.get("whitelist") or []
     if isinstance(typo_whitelist_raw, str):
@@ -311,14 +518,26 @@ def load_config(
     )
 
     smtp_merged = {**DEFAULT_SMTP_PROBE_VALUES, **(smtp_raw or {})}
+    raw_max_candidates = smtp_merged.get("max_candidates_per_run")
+    if raw_max_candidates is None:
+        max_candidates_value: int | None = None
+    else:
+        try:
+            n = int(raw_max_candidates)
+            max_candidates_value = n if n > 0 else None
+        except (TypeError, ValueError):
+            max_candidates_value = None
     smtp_config = SMTPProbeConfig(
         enabled=bool(smtp_merged["enabled"]),
         dry_run=bool(smtp_merged["dry_run"]),
+        max_candidates_per_run=max_candidates_value,
         sample_size=int(smtp_merged["sample_size"]),
         max_per_domain=int(smtp_merged["max_per_domain"]),
         timeout_seconds=float(smtp_merged["timeout_seconds"]),
         rate_limit_per_second=float(smtp_merged["rate_limit_per_second"]),
         retries=int(smtp_merged["retries"]),
+        retry_temp_failures=bool(smtp_merged.get("retry_temp_failures", True)),
+        max_retries=int(smtp_merged.get("max_retries", 1)),
         negative_adjustment_trigger_threshold=int(
             smtp_merged["negative_adjustment_trigger_threshold"]
         ),
@@ -343,6 +562,9 @@ def load_config(
         smtp_probe=smtp_config,
         probability=probability_config,
         decision=decision_config,
+        catch_all=catch_all_config,
+        domain_intelligence=domain_intel_config,
+        bounce_ingestion=bounce_config,
         typo_correction=typo_config,
         paths=paths,
     )

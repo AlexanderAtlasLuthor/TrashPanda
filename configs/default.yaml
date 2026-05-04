@@ -57,22 +57,100 @@ history:
   write_summary_report: true
   write_adjustment_report: true
 
-# V2 Phase 4: selective SMTP probing.
-# Off by default and, when on, runs in dry_run mode unless explicitly
-# disabled. Selection is limited to review_catch_all / review_timeout
-# rows, rows with large negative confidence adjustments, or rows whose
-# domain is historically unstable/risky. Capped by max_per_domain and
-# sample_size so a single run never issues many network probes.
+# V2 Phase 4 + V2.2: SMTP probing.
+#
+# V2.2 promotes SMTP from a sample-driven post-pass to an in-chunk
+# verification stage that runs before the V2 DecisionStage. Production
+# defaults are now ``enabled: true`` and ``dry_run: false`` so live
+# deliverability evidence reaches the decision layer.
+#
+# Test safety: ``conftest.py`` installs an autouse fixture that monkey-
+# patches the live ``probe_email_smtplib`` to a deterministic stub so
+# the test suite never opens a real socket, regardless of the values
+# below. To enable live probing in production, leave these defaults
+# unchanged; deployments that want to run dry can flip ``dry_run`` to
+# ``true``.
+#
+# ``sample_size`` and ``max_per_domain`` remain the contract for the
+# legacy post-pass orchestrator (``app.validation_v2.smtp_integration``)
+# which still reads them. The chunk-time stage uses
+# ``max_candidates_per_run`` (omit / null = no cap).
 smtp_probe:
-  enabled: false
-  dry_run: true
-  sample_size: 50
-  max_per_domain: 3
-  timeout_seconds: 4.0
+  enabled: true
+  dry_run: false
+  max_candidates_per_run: null
+  timeout_seconds: 10
   rate_limit_per_second: 2.0
   retries: 0
-  negative_adjustment_trigger_threshold: 3
+  retry_temp_failures: true
+  max_retries: 1
   sender_address: trashpanda-probe@localhost
+  # Legacy knobs read by the post-pass orchestrator.
+  sample_size: 50
+  max_per_domain: 3
+  negative_adjustment_trigger_threshold: 3
+
+# V2.7 — Feedback Loop / Bounce Outcome Ingestion.
+#
+# Closes the learning loop: real campaign outcomes (delivered,
+# hard/soft bounce, blocked, deferred, complaint, unsubscribed)
+# ingested via ``app.api_boundary.ingest_bounce_feedback`` and
+# persisted to a dedicated SQLite store. The chunk-time pipeline does
+# NOT depend on this data — ingestion is an out-of-band operator job.
+#
+# ``store_path`` is resolved relative to the project root. The four
+# rate fields tune ``compute_risk_level`` thresholds used by future
+# domain-intelligence integration.
+bounce_ingestion:
+  enabled: true
+  store_path: runtime/feedback/bounce_outcomes.sqlite
+  min_observations_for_domain_reputation: 5
+  medium_hard_bounce_rate: 0.08
+  high_hard_bounce_rate: 0.20
+  high_blocked_rate: 0.10
+  complaint_is_high_risk: true
+
+# V2.6 — Domain Intelligence & Cold-start handling.
+#
+# Heuristic-driven domain classification that runs at chunk time
+# between catch-all detection and the V2 decision. Promotes domain
+# risk and cold-start handling into first-class row-level fields:
+# ``domain_intel_status``, ``domain_reputation_score``,
+# ``domain_risk_level``, ``domain_behavior_class``,
+# ``domain_observation_count``, ``domain_cold_start``,
+# ``domain_intel_reason``.
+#
+# The chunk-time stage uses heuristics only (free-provider whitelist,
+# disposable list, suspicious-shape detection); it never opens a
+# socket. The architectural seam for full history-driven
+# classification stays clean — callers can pre-populate
+# ``context.extras["domain_intel_cache"]`` and the stage will prefer
+# cached entries over the heuristic.
+#
+# Decision integration (centralized in app.v2_decision_policy):
+#   * ``domain_risk_level=high``  caps approval at manual_review.
+#   * ``domain_cold_start AND smtp_status != valid`` caps approval.
+domain_intelligence:
+  enabled: true
+  min_observations_for_reputation: 3
+  cold_start_default_risk: unknown
+  high_risk_blocks_auto_approve: true
+  cold_start_requires_smtp_valid: true
+
+# V2.3 — Catch-all detection.
+#
+# Promotes catch-all detection from "annotation surfaced inside SMTP
+# result" to a first-class row-level decision signal. The chunk-time
+# stage relies on the random-RCPT signal already produced by the
+# upstream SMTP probe (no new probing here); set ``enabled: false`` to
+# fall back to legacy V2.2 behaviour where ``smtp_status=catch_all_possible``
+# alone caps approval (the new canonical columns will still be emitted
+# with ``catch_all_status=not_tested``).
+catch_all:
+  enabled: true
+  method: smtp
+  cache_by_domain: true
+  default_on_unknown: review
 
 # V2 Phase 5: probabilistic deliverability model.
 # Collapses Phase 1-4 signals into one probability in [0, 1] per row
@@ -89,11 +167,16 @@ probability:
 # V2 Phase 6: Decision Engine (automated actions layer).
 # Converts deliverability_probability into one of three actions:
 # auto_approve (>= 0.80), manual_review (>= 0.50), auto_reject.
-# Bucket override is opt-in; when off, the engine only annotates
-# the CSVs via final_action / decision_reason / decision_confidence.
+#
+# V2.1 — bucket override is now ON by default. The Decision Engine is
+# the production authority for clean / review / invalid placement; V1
+# scoring is retained as a structural pre-filter and as observability,
+# but ``preliminary_bucket=high_confidence`` alone no longer routes a
+# row to the clean export. Set ``enable_bucket_override: false`` only
+# to fall back to the legacy V1-authoritative routing for diagnostics.
 decision:
   enabled: true
   approve_threshold: 0.80
   review_threshold: 0.50
-  enable_bucket_override: false
+  enable_bucket_override: true
   write_summary_report: true

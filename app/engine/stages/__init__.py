@@ -30,6 +30,19 @@ from .postprocessing import (
     StagingPersistenceStage,
 )
 from .scoring_v2 import ScoringComparisonStage, ScoringV2Stage
+from .smtp_verification import (
+    SMTP_VERIFICATION_OUTPUT_COLUMNS,
+    SMTPVerificationStage,
+)
+from .catch_all_detection import (
+    CATCH_ALL_DETECTION_OUTPUT_COLUMNS,
+    CatchAllDetectionStage,
+)
+from .domain_intelligence import (
+    DOMAIN_INTELLIGENCE_OUTPUT_COLUMNS,
+    DomainIntelligenceStage,
+)
+from .decision import DECISION_STAGE_OUTPUT_COLUMNS, DecisionStage
 from .preprocess import (
     HeaderNormalizationStage,
     StructuralValidationStage,
@@ -55,6 +68,18 @@ __all__ = [
     "ScoringV2Stage",
     "ScoringComparisonStage",
     "CompletenessStage",
+    # V2.2 SMTP Verification
+    "SMTPVerificationStage",
+    "SMTP_VERIFICATION_OUTPUT_COLUMNS",
+    # V2.3 Catch-all Detection
+    "CatchAllDetectionStage",
+    "CATCH_ALL_DETECTION_OUTPUT_COLUMNS",
+    # V2.6 Domain Intelligence
+    "DomainIntelligenceStage",
+    "DOMAIN_INTELLIGENCE_OUTPUT_COLUMNS",
+    # V2.1 Decision Authority
+    "DecisionStage",
+    "DECISION_STAGE_OUTPUT_COLUMNS",
     # Postprocessing
     "EmailNormalizationStage",
     "DedupeStage",

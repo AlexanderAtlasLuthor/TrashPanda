@@ -100,33 +100,64 @@ class JobRequest:
 
 @dataclass(slots=True)
 class TechnicalCsvs:
-    """Technical CSV deliverables produced by the pipeline."""
+    """Technical CSV deliverables produced by the pipeline.
+
+    V2.5 — ``removed_duplicates`` and ``removed_hard_fail`` are
+    separated subsets of ``removed_invalid``. The legacy
+    ``removed_invalid`` file is unchanged and still contains every
+    removed row; the new files exist so V2-aware exports can address
+    the duplicate and hard-fail cohorts directly.
+    """
 
     clean_high_confidence: Path | None = None
     review_medium_confidence: Path | None = None
     removed_invalid: Path | None = None
+    # V2.5 — V2 semantic separations.
+    removed_duplicates: Path | None = None
+    removed_hard_fail: Path | None = None
 
 
 @dataclass(slots=True)
 class ClientOutputs:
-    """Client-facing XLSX deliverables (may be absent on failure)."""
+    """Client-facing XLSX deliverables (may be absent on failure).
+
+    V2.5 — ``duplicate_emails`` and ``hard_fail_emails`` are
+    supplementary workbooks that split the ``invalid_or_bounce_risk``
+    cohort into V2-semantic buckets. The legacy
+    ``invalid_or_bounce_risk`` workbook still contains every removed
+    row for backward compatibility.
+    """
 
     valid_emails: Path | None = None
     review_emails: Path | None = None
     invalid_or_bounce_risk: Path | None = None
     summary_report: Path | None = None
     approved_original_format: Path | None = None
+    # V2.5 — V2 semantic separations.
+    duplicate_emails: Path | None = None
+    hard_fail_emails: Path | None = None
 
 
 @dataclass(slots=True)
 class ReportFiles:
-    """Structured reporting files written alongside the CSV outputs."""
+    """Structured reporting files written alongside the CSV outputs.
+
+    V2.8 — adds four new V2 deliverability reports
+    (``v2_deliverability_summary``, ``v2_reason_breakdown``,
+    ``v2_domain_risk_summary``, ``v2_probability_distribution``).
+    Legacy fields are unchanged.
+    """
 
     processing_report_json: Path | None = None
     processing_report_csv: Path | None = None
     domain_summary: Path | None = None
     typo_corrections: Path | None = None
     duplicate_summary: Path | None = None
+    # V2.8 — V2 deliverability reports.
+    v2_deliverability_summary: Path | None = None
+    v2_reason_breakdown: Path | None = None
+    v2_domain_risk_summary: Path | None = None
+    v2_probability_distribution: Path | None = None
 
 
 @dataclass(slots=True)
@@ -192,6 +223,9 @@ _TECHNICAL_CSV_NAMES: dict[str, str] = {
     "clean_high_confidence": "clean_high_confidence.csv",
     "review_medium_confidence": "review_medium_confidence.csv",
     "removed_invalid": "removed_invalid.csv",
+    # V2.5 — V2 semantic separations of ``removed_invalid.csv``.
+    "removed_duplicates": "removed_duplicates.csv",
+    "removed_hard_fail": "removed_hard_fail.csv",
 }
 
 _CLIENT_OUTPUT_NAMES: dict[str, str] = {
@@ -200,6 +234,9 @@ _CLIENT_OUTPUT_NAMES: dict[str, str] = {
     "invalid_or_bounce_risk": "invalid_or_bounce_risk.xlsx",
     "summary_report": "summary_report.xlsx",
     "approved_original_format": "approved_original_format.xlsx",
+    # V2.5 — V2 semantic supplementary workbooks.
+    "duplicate_emails": "duplicate_emails.xlsx",
+    "hard_fail_emails": "hard_fail_emails.xlsx",
 }
 
 _REPORT_NAMES: dict[str, str] = {
@@ -208,6 +245,11 @@ _REPORT_NAMES: dict[str, str] = {
     "domain_summary": "domain_summary.csv",
     "typo_corrections": "typo_corrections.csv",
     "duplicate_summary": "duplicate_summary.csv",
+    # V2.8 — V2 deliverability reports.
+    "v2_deliverability_summary": "v2_deliverability_summary.json",
+    "v2_reason_breakdown": "v2_reason_breakdown.csv",
+    "v2_domain_risk_summary": "v2_domain_risk_summary.csv",
+    "v2_probability_distribution": "v2_probability_distribution.csv",
 }
 
 
@@ -775,6 +817,103 @@ def job_result_to_dict(result: JobResult) -> dict[str, Any]:
     return json.loads(json.dumps(raw, default=_json_default))
 
 
+def ingest_bounce_feedback(
+    feedback_csv_path: str | Path,
+    *,
+    config_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """V2.7 — boundary entry point for bounce outcome ingestion.
+
+    Out-of-band operator job. Loads config (so ``bounce_ingestion``
+    settings are honoured), opens the dedicated SQLite store at the
+    configured path, ingests the CSV, and returns a dict-form
+    :class:`~app.validation_v2.feedback.IngestionSummary`.
+
+    The function never raises on per-row failures — invalid emails,
+    unrecognised outcomes, missing fields are counted in the summary.
+    Ingestion-level failures (file not found, sqlite open error)
+    populate ``error`` instead of raising. The cleaning pipeline is
+    completely unaffected: this function is only invoked when an
+    operator triggers a feedback ingestion.
+
+    Parameters
+    ----------
+    feedback_csv_path:
+        Path to the bounce-outcome CSV. Required columns: ``email``
+        (or ``Email``) and ``outcome`` (or ``status``). Optional:
+        ``bounce_type``, ``smtp_code``, ``reason``, ``campaign_id``,
+        ``timestamp``, ``provider``.
+    config_path:
+        Optional YAML config override. Defaults to
+        ``configs/default.yaml``.
+
+    Returns
+    -------
+    dict
+        ``IngestionSummary.__dict__`` (counts + error). Always a
+        plain dict, ready to serialise to JSON.
+    """
+    from .validation_v2.feedback import (
+        BounceOutcomeStore,
+        ingest_bounce_outcomes,
+    )
+
+    started_at = _now_utc()
+    try:
+        project_paths = resolve_project_paths()
+        cfg = load_config(
+            config_path=Path(config_path) if config_path else None,
+            base_dir=project_paths.project_root,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        return {
+            "error": f"config_error:{type(exc).__name__}:{exc}",
+            "started_at": started_at.isoformat(),
+            "finished_at": _now_utc().isoformat(),
+        }
+
+    bounce_cfg = getattr(cfg, "bounce_ingestion", None)
+    if bounce_cfg is None or not getattr(bounce_cfg, "enabled", True):
+        return {
+            "error": "bounce_ingestion_disabled",
+            "started_at": started_at.isoformat(),
+            "finished_at": _now_utc().isoformat(),
+        }
+
+    # Resolve relative store paths against the project root so the
+    # default config works without a fully-qualified path.
+    raw_store_path = Path(bounce_cfg.store_path)
+    if not raw_store_path.is_absolute():
+        store_path = (project_paths.project_root / raw_store_path).resolve()
+    else:
+        store_path = raw_store_path
+
+    try:
+        store = BounceOutcomeStore(store_path)
+    except Exception as exc:
+        return {
+            "error": f"store_open_error:{type(exc).__name__}:{exc}",
+            "store_path": str(store_path),
+            "started_at": started_at.isoformat(),
+            "finished_at": _now_utc().isoformat(),
+        }
+
+    try:
+        summary = ingest_bounce_outcomes(
+            feedback_csv_path,
+            history_store=store,
+            config=bounce_cfg,
+        )
+    finally:
+        store.close()
+
+    payload = dict(asdict(summary))
+    payload["store_path"] = str(store_path)
+    payload["started_at"] = started_at.isoformat()
+    payload["finished_at"] = _now_utc().isoformat()
+    return payload
+
+
 __all__ = [
     "ClientOutputs",
     "JobArtifacts",
@@ -787,6 +926,7 @@ __all__ = [
     "ReportFiles",
     "TechnicalCsvs",
     "collect_job_artifacts",
+    "ingest_bounce_feedback",
     "job_result_to_dict",
     "load_job_summary",
     "run_cleaning_job",

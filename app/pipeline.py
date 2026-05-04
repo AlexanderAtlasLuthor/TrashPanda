@@ -14,14 +14,18 @@ from .dedupe import DedupeIndex
 from .dns_utils import DnsCache
 from .engine import ChunkPayload, PipelineContext, PipelineEngine
 from .engine.stages import (
+    CatchAllDetectionStage,
     CompletenessStage,
     DNSEnrichmentStage,
+    DecisionStage,
     DedupeStage,
     DomainComparisonStage,
     DomainExtractionStage,
+    DomainIntelligenceStage,
     EmailNormalizationStage,
     EmailSyntaxValidationStage,
     HeaderNormalizationStage,
+    SMTPVerificationStage,
     ScoringComparisonStage,
     ScoringStage,
     ScoringV2Stage,
@@ -38,6 +42,13 @@ from .client_output import generate_approved_original_format, generate_client_ou
 from .reporting import ReportingStats, generate_reports
 from .storage import StagingDB
 from .typo_rules import build_typo_map
+from .v2_classification import (
+    OUTPUT_CLEAN,
+    OUTPUT_REVIEW,
+    map_v2_decision_to_output_bucket,
+    output_reason_from_bucket,
+)
+from .v2_reporting import generate_v2_reports
 
 
 class EmailCleaningPipeline:
@@ -111,6 +122,28 @@ class EmailCleaningPipeline:
                 ScoringStage(),
                 ScoringV2Stage(),
                 ScoringComparisonStage(),
+                # V2.2 — SMTP verification runs in-chunk so the V2 decision
+                # below can consume real deliverability evidence. Candidate
+                # selection and a per-run cache live inside the stage; tests
+                # inject a mock probe via the constructor.
+                SMTPVerificationStage(),
+                # V2.3 — Catch-all detection promotes the SMTP catch-all
+                # signal into first-class row-level fields and caches the
+                # classification per-domain. Runs after SMTP so the
+                # ``smtp_status`` is already on the row, and before
+                # DecisionStage so ``catch_all_flag`` can drive routing.
+                CatchAllDetectionStage(),
+                # V2.6 — Domain intelligence emits canonical domain-level
+                # reputation / risk / cold-start fields so DecisionStage
+                # can apply safety caps for high-risk and unknown domains.
+                # Heuristic-only at chunk time (free-provider list,
+                # disposable list, suspicious-shape detection); future
+                # subphases can pre-populate the cache from history.
+                DomainIntelligenceStage(),
+                # V2.1 — V2 decision authority. Runs in-chunk so
+                # ``final_action`` lives on the staged row at materialization
+                # time and can drive bucket placement.
+                DecisionStage(),
                 CompletenessStage(),
                 EmailNormalizationStage(),
                 DedupeStage(),
@@ -313,6 +346,39 @@ class EmailCleaningPipeline:
         mat_metrics = self._materialize(staging, dedupe_index, active_run_context)
         self.logger.info("[TIMING] Materialize DONE elapsed=%.3fs", time.perf_counter() - t0_mat)
 
+        # V2.8 — generate V2 deliverability reports from the
+        # materialized CSVs. Always runs after _materialize and after
+        # generate_client_outputs so the input data is final. The
+        # function handles its own errors (feedback store missing,
+        # corrupt CSVs, etc.) and returns an empty dict on failure;
+        # the cleaning pipeline never blocks on report generation.
+        t0_v2 = time.perf_counter()
+        self.logger.info("[TIMING] v2_reports START")
+        try:
+            feedback_path: Path | None = None
+            bounce_cfg = getattr(self.config, "bounce_ingestion", None)
+            if bounce_cfg is not None:
+                raw_path = Path(getattr(bounce_cfg, "store_path", "") or "")
+                if raw_path.parts:
+                    if not raw_path.is_absolute() and self.config.paths is not None:
+                        feedback_path = (
+                            self.config.paths.project_root / raw_path
+                        ).resolve()
+                    else:
+                        feedback_path = raw_path
+                    if not feedback_path.is_file():
+                        feedback_path = None
+            generate_v2_reports(
+                active_run_context.run_dir,
+                feedback_store_path=feedback_path,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            self.logger.warning("V2 report generation failed: %s", exc)
+        self.logger.info(
+            "[TIMING] v2_reports DONE elapsed=%.3fs",
+            time.perf_counter() - t0_v2,
+        )
+
         t0_aof = time.perf_counter()
         self.logger.info("[TIMING] approved_original_format START")
         try:
@@ -361,10 +427,27 @@ class EmailCleaningPipeline:
         dedupe_index: DedupeIndex,
         run_context: RunContext,
     ) -> MaterializationMetrics:
-        """Second pass: reconcile stale canonical flags and write final output CSVs."""
+        """Second pass: reconcile stale canonical flags and write final output CSVs.
+
+        V2.5 — in addition to the legacy three CSVs (kept verbatim for
+        backward compatibility), the materialize pass now also writes
+        two **separated** CSVs that the V2-aware export layer reads:
+
+          * ``removed_duplicates.csv`` — duplicate rows only
+            (``final_output_reason == "removed_duplicate"``).
+          * ``removed_hard_fail.csv`` — V1 structural hard-fail rows
+            only (``final_output_reason == "removed_hard_fail"``).
+
+        Both are strict subsets of ``removed_invalid.csv`` (the legacy
+        catch-all). The legacy file is unchanged so existing consumers
+        keep working; new V2 export code prefers the separated files.
+        """
         clean_path = run_context.run_dir / "clean_high_confidence.csv"
         review_path = run_context.run_dir / "review_medium_confidence.csv"
         removed_path = run_context.run_dir / "removed_invalid.csv"
+        # V2.5 — separated subsets of removed_invalid.csv.
+        duplicates_path = run_context.run_dir / "removed_duplicates.csv"
+        hard_fail_path = run_context.run_dir / "removed_hard_fail.csv"
 
         stats = ReportingStats(run_id=run_context.run_id)
         stats.total_unique_emails = dedupe_index.index_size
@@ -377,10 +460,14 @@ class EmailCleaningPipeline:
             clean_path.open("w", newline="", encoding="utf-8") as clean_fh,
             review_path.open("w", newline="", encoding="utf-8") as review_fh,
             removed_path.open("w", newline="", encoding="utf-8") as removed_fh,
+            duplicates_path.open("w", newline="", encoding="utf-8") as duplicates_fh,
+            hard_fail_path.open("w", newline="", encoding="utf-8") as hard_fail_fh,
         ):
             clean_writer: csv.DictWriter | None = None
             review_writer: csv.DictWriter | None = None
             removed_writer: csv.DictWriter | None = None
+            duplicates_writer: csv.DictWriter | None = None
+            hard_fail_writer: csv.DictWriter | None = None
 
             for batch in staging.iter_all_rows():
                 for row_dict in batch:
@@ -396,15 +483,25 @@ class EmailCleaningPipeline:
                         removed_writer = csv.DictWriter(
                             removed_fh, fieldnames=fieldnames, extrasaction="ignore", restval=""
                         )
+                        # V2.5 — separated writers reuse the same column
+                        # contract so any V2 export tooling sees identical
+                        # row shapes across the legacy and separated files.
+                        duplicates_writer = csv.DictWriter(
+                            duplicates_fh, fieldnames=fieldnames, extrasaction="ignore", restval=""
+                        )
+                        hard_fail_writer = csv.DictWriter(
+                            hard_fail_fh, fieldnames=fieldnames, extrasaction="ignore", restval=""
+                        )
                         clean_writer.writeheader()
                         review_writer.writeheader()
                         removed_writer.writeheader()
+                        duplicates_writer.writeheader()
+                        hard_fail_writer.writeheader()
 
                     email_norm = row_dict.get("email_normalized")
                     source_file = str(row_dict.get("source_file") or "")
                     source_row_number = int(row_dict.get("source_row_number") or 0)
                     hard_fail = bool(row_dict.get("hard_fail", False))
-                    preliminary_bucket = str(row_dict.get("preliminary_bucket") or "")
                     was_canonical = bool(row_dict.get("is_canonical", False))
 
                     is_canonical_final = dedupe_index.is_final_canonical(
@@ -414,16 +511,30 @@ class EmailCleaningPipeline:
                     if was_canonical and not is_canonical_final:
                         stats.replaced_canonical_corrections += 1
 
-                    if not is_canonical_final:
-                        reason = "removed_duplicate"
-                    elif hard_fail:
-                        reason = "removed_hard_fail"
-                    elif preliminary_bucket == "high_confidence":
-                        reason = "kept_high_confidence"
-                    elif preliminary_bucket == "review":
-                        reason = "kept_review"
-                    else:
-                        reason = "removed_low_score"
+                    # V2.1 — V2-authoritative bucket placement.
+                    # Duplicates and V1 hard fails remain terminal; for
+                    # everything else, ``final_action`` (produced by the
+                    # in-chunk DecisionStage) drives the routing. Missing
+                    # or unknown ``final_action`` falls back to review,
+                    # never clean.
+                    final_action_raw = row_dict.get("final_action")
+                    final_action = (
+                        str(final_action_raw)
+                        if final_action_raw is not None
+                        else None
+                    )
+                    bucket = map_v2_decision_to_output_bucket(
+                        is_canonical=is_canonical_final,
+                        v1_hard_fail=hard_fail,
+                        final_action=final_action,
+                    )
+                    decision_reason_raw = row_dict.get("decision_reason")
+                    decision_reason = (
+                        str(decision_reason_raw)
+                        if decision_reason_raw is not None
+                        else None
+                    )
+                    reason = output_reason_from_bucket(bucket, decision_reason)
 
                     row_dict["final_output_reason"] = reason
 
@@ -492,6 +603,16 @@ class EmailCleaningPipeline:
                         stats.total_output_removed += 1
                         if info is not None:
                             info["removed_rows"] += 1
+                        # V2.5 — also write to the separated files for
+                        # duplicate / hard_fail subsets. The legacy
+                        # ``removed_invalid.csv`` (below) keeps every
+                        # removed row for back-compat.
+                        if reason == "removed_duplicate":
+                            assert duplicates_writer is not None
+                            duplicates_writer.writerow(row_dict)
+                        elif reason == "removed_hard_fail":
+                            assert hard_fail_writer is not None
+                            hard_fail_writer.writerow(row_dict)
                         assert removed_writer is not None
                         removed_writer.writerow(row_dict)
 
