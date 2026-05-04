@@ -1,0 +1,37 @@
+"""Rollout safety helpers for production-readiness phases."""
+
+from __future__ import annotations
+
+from .preflight import (
+    ISSUE_APPROVED_ORIGINAL_MAY_BE_ABSENT,
+    ISSUE_INPUT_MISSING,
+    ISSUE_INPUT_UNREADABLE,
+    ISSUE_LARGE_FILE_REQUIRES_CONFIRMATION,
+    ISSUE_OUTPUT_DIR_MISSING,
+    ISSUE_SMTP_LIVE_WITHOUT_CAP_WARNING,
+    ISSUE_SMTP_PORT_NOT_VERIFIED,
+    ISSUE_UNCAPPED_LIVE_SMTP_BLOCKED,
+    PREFLIGHT_STATUS_BLOCK,
+    PREFLIGHT_STATUS_PASS,
+    PREFLIGHT_STATUS_WARN,
+    PreflightIssue,
+    PreflightResult,
+    run_preflight_check,
+)
+
+__all__ = [
+    "ISSUE_APPROVED_ORIGINAL_MAY_BE_ABSENT",
+    "ISSUE_INPUT_MISSING",
+    "ISSUE_INPUT_UNREADABLE",
+    "ISSUE_LARGE_FILE_REQUIRES_CONFIRMATION",
+    "ISSUE_OUTPUT_DIR_MISSING",
+    "ISSUE_SMTP_LIVE_WITHOUT_CAP_WARNING",
+    "ISSUE_SMTP_PORT_NOT_VERIFIED",
+    "ISSUE_UNCAPPED_LIVE_SMTP_BLOCKED",
+    "PREFLIGHT_STATUS_BLOCK",
+    "PREFLIGHT_STATUS_PASS",
+    "PREFLIGHT_STATUS_WARN",
+    "PreflightIssue",
+    "PreflightResult",
+    "run_preflight_check",
+]

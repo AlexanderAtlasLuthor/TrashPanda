@@ -52,6 +52,7 @@ from typing import Any
 
 import pandas as pd
 
+from ...smtp_runtime import get_or_create_smtp_runtime_summary
 from ...validation_v2.smtp_probe import (
     SMTPResult,
     probe_email_dry_run,
@@ -469,7 +470,10 @@ class SMTPVerificationStage(Stage):
         self._clock_fn = clock_fn
 
     def run(self, payload: ChunkPayload, context: PipelineContext) -> ChunkPayload:
+        runtime_summary = get_or_create_smtp_runtime_summary(context)
         if not _smtp_probe_enabled(context):
+            for _ in range(len(payload.frame)):
+                runtime_summary.record_not_tested()
             return payload.with_frame(_write_not_tested(payload.frame))
 
         cache: SMTPCache = context.extras.setdefault("smtp_cache", SMTPCache())
@@ -490,9 +494,11 @@ class SMTPVerificationStage(Stage):
         for row in rows:
             candidate = is_smtp_candidate(row)
             if not candidate:
+                runtime_summary.record_not_tested()
                 _emit_not_tested(out, was_candidate=False)
                 continue
 
+            runtime_summary.record_candidate_seen()
             email = _coerce_str(row.get("email")).strip()
             email_normalized = _coerce_str(
                 row.get("email_normalized")
@@ -501,6 +507,7 @@ class SMTPVerificationStage(Stage):
             cached = cache.get(email_normalized)
             if cached is not None:
                 cache.cache_hits += 1
+                runtime_summary.record_status(normalize_smtp_status(cached))
                 _emit_from_result(out, cached, was_candidate=True)
                 continue
 
@@ -513,6 +520,7 @@ class SMTPVerificationStage(Stage):
                 max_candidates is not None
                 and cache.probes_executed >= max_candidates
             ):
+                runtime_summary.record_not_tested(skipped_by_cap=True)
                 _emit_not_tested(out, was_candidate=True)
                 continue
 
@@ -536,6 +544,7 @@ class SMTPVerificationStage(Stage):
 
             last_probe_at = self._clock_fn()
             cache.set(email_normalized, result)
+            runtime_summary.record_probe_attempt(normalize_smtp_status(result))
             _emit_from_result(out, result, was_candidate=True)
 
         new_frame = frame.copy()

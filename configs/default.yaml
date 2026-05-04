@@ -12,6 +12,17 @@ log_level: INFO
 staging_db_name: staging.sqlite3
 temp_dir_name: temp
 
+rollout:
+  profile: pilot_sample
+  require_preflight: true
+  block_uncapped_live_smtp: true
+  max_rows_without_confirmation: 1000
+  package_client_artifacts: true
+  require_operator_review: true
+
+post_passes:
+  mutate_materialized_outputs: false
+
 # Conservative, non-destructive domain typo *suggestion* engine.
 # In the default "suggest_only" mode the pipeline never rewrites an email
 # or its domain: it only populates the new typo_detected / suggested_*

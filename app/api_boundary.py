@@ -158,6 +158,10 @@ class ReportFiles:
     v2_reason_breakdown: Path | None = None
     v2_domain_risk_summary: Path | None = None
     v2_probability_distribution: Path | None = None
+    # V2.9.3 - operator-only SMTP runtime guardrail report.
+    smtp_runtime_summary: Path | None = None
+    # V2.9.4 - operator-only artifact consistency metadata.
+    artifact_consistency: Path | None = None
 
 
 @dataclass(slots=True)
@@ -250,6 +254,10 @@ _REPORT_NAMES: dict[str, str] = {
     "v2_reason_breakdown": "v2_reason_breakdown.csv",
     "v2_domain_risk_summary": "v2_domain_risk_summary.csv",
     "v2_probability_distribution": "v2_probability_distribution.csv",
+    # V2.9.3 - operator-only SMTP runtime guardrail report.
+    "smtp_runtime_summary": "smtp_runtime_summary.json",
+    # V2.9.4 - operator-only artifact consistency metadata.
+    "artifact_consistency": "artifact_consistency.json",
 }
 
 
@@ -607,45 +615,71 @@ def run_cleaning_job(
             finished_at=_now_utc(),
         )
 
-    # --- Phase 4: post-run discovery. --- #
-    artifacts = collect_job_artifacts(result.run_dir)
-    summary = load_job_summary(result.run_dir)
-
-    # --- Phase 5 (V2): domain history update. --- #
+    # --- Phase 4 (V2): safe post-run updates. --- #
     # Additive, guarded: any failure here must not affect the JobResult
-    # or V1 outputs. Runs only when config.history.enabled.
-    _maybe_update_domain_history(
+    # or deliverable outputs. History store updates are preserved, while
+    # any legacy annotation pass that rewrites materialized CSVs is gated
+    # by post_passes.mutate_materialized_outputs.
+    post_pass_mutation_enabled = _post_pass_materialized_mutation_enabled(config)
+    materialized_outputs_mutated_after_reports = _maybe_update_domain_history(
         run_dir=result.run_dir,
         config=config,
         logger=logger,
     )
 
-    # --- Phase 6 (V2.4): selective SMTP probing. --- #
+    # --- Phase 5 (V2.4): selective SMTP probing. --- #
     # Runs AFTER the history update so the CSVs already carry
     # review_subclass / historical_label / confidence_adjustment_applied
     # for candidate selection. Entirely optional, off by default.
-    _maybe_run_smtp_probing(
+    materialized_outputs_mutated_after_reports = (
+        _maybe_run_smtp_probing(
+            run_dir=result.run_dir,
+            config=config,
+            logger=logger,
+        )
+        or materialized_outputs_mutated_after_reports
+    )
+
+    # --- Phase 6 (V2.5): probabilistic deliverability model. --- #
+    # Legacy post-pass enrichment is gated by V2.9.4 because it rewrites
+    # materialized CSVs after pipeline-generated reports/client outputs.
+    materialized_outputs_mutated_after_reports = (
+        _maybe_run_probability_model(
+            run_dir=result.run_dir,
+            config=config,
+            logger=logger,
+        )
+        or materialized_outputs_mutated_after_reports
+    )
+
+    # --- Phase 7 (V2.6): Decision Engine (automated actions layer). --- #
+    # Legacy post-pass enrichment is gated by V2.9.4 for the same reason:
+    # it can rewrite final_action / decision_reason on already-generated
+    # deliverable CSVs.
+    materialized_outputs_mutated_after_reports = (
+        _maybe_run_decision_engine(
+            run_dir=result.run_dir,
+            config=config,
+            logger=logger,
+        )
+        or materialized_outputs_mutated_after_reports
+    )
+
+    _maybe_write_artifact_consistency_report(
         run_dir=result.run_dir,
-        config=config,
+        post_pass_mutation_enabled=post_pass_mutation_enabled,
+        materialized_outputs_mutated_after_reports=(
+            materialized_outputs_mutated_after_reports
+        ),
+        artifacts_regenerated_after_post_passes=False,
         logger=logger,
     )
 
-    # --- Phase 7 (V2.5): probabilistic deliverability model. --- #
-    # Runs last so every V2 signal available on the CSV contributes.
-    _maybe_run_probability_model(
-        run_dir=result.run_dir,
-        config=config,
-        logger=logger,
-    )
-
-    # --- Phase 8 (V2.6): Decision Engine (automated actions layer). --- #
-    # Consumes the Phase-5 probability and produces final_action +
-    # decision_reason. Only reads/writes columns; never moves rows.
-    _maybe_run_decision_engine(
-        run_dir=result.run_dir,
-        config=config,
-        logger=logger,
-    )
+    # --- Phase 8: post-run discovery. --- #
+    # Collect after safe post-run metadata so JobResult points at one
+    # consistent artifact state.
+    artifacts = collect_job_artifacts(result.run_dir)
+    summary = load_job_summary(result.run_dir)
 
     return JobResult(
         job_id=request.job_id,
@@ -660,15 +694,54 @@ def run_cleaning_job(
     )
 
 
+def _post_pass_materialized_mutation_enabled(config: Any) -> bool:
+    post_passes_cfg = getattr(config, "post_passes", None)
+    if post_passes_cfg is None:
+        return False
+    return bool(getattr(post_passes_cfg, "mutate_materialized_outputs", False))
+
+
+def _maybe_write_artifact_consistency_report(
+    *,
+    run_dir: Path,
+    post_pass_mutation_enabled: bool,
+    materialized_outputs_mutated_after_reports: bool,
+    artifacts_regenerated_after_post_passes: bool,
+    logger: logging.Logger,
+) -> Path | None:
+    """Write V2.9.4 consistency metadata. Never blocks job completion."""
+
+    payload = {
+        "report_version": "v2.9.4",
+        "materialized_outputs_mutated_after_reports": bool(
+            materialized_outputs_mutated_after_reports
+        ),
+        "post_pass_mutation_enabled": bool(post_pass_mutation_enabled),
+        "artifacts_regenerated_after_post_passes": bool(
+            artifacts_regenerated_after_post_passes
+        ),
+    }
+    try:
+        path = Path(run_dir) / _REPORT_NAMES["artifact_consistency"]
+        path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return path
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("artifact consistency report failed: %s", exc)
+        return None
+
+
 def _maybe_update_domain_history(
     run_dir: Path,
     config: Any,
     logger: logging.Logger,
-) -> None:
-    """Invoke the V2 history layer. Never raises; logs and returns on failure."""
+) -> bool:
+    """Invoke the V2 history layer. Returns True if it rewrote CSVs."""
     history_cfg = getattr(config, "history", None)
     if history_cfg is None or not getattr(history_cfg, "enabled", False):
-        return
+        return False
     try:
         # Local import keeps V1 boot paths free of V2 dependencies.
         from .validation_v2 import (
@@ -682,10 +755,23 @@ def _maybe_update_domain_history(
             project_root = resolve_project_paths().project_root
             sqlite_path = (project_root / sqlite_path).resolve()
 
+        allow_materialized_mutation = _post_pass_materialized_mutation_enabled(config)
+        apply_history_adjustment = bool(
+            history_cfg.apply_light_confidence_adjustment
+        ) and allow_materialized_mutation
+        if (
+            bool(history_cfg.apply_light_confidence_adjustment)
+            and not allow_materialized_mutation
+        ):
+            logger.info(
+                "post_passes: skipping history CSV adjustment because "
+                "post_passes.mutate_materialized_outputs=false"
+            )
+
         # Phase 2: build the adjustment config from top-level thresholds
-        # plus the history knobs.
+        # plus the history knobs. V2.9.4 gates its CSV-rewrite mode.
         adjustment_config = AdjustmentConfig(
-            apply=bool(history_cfg.apply_light_confidence_adjustment),
+            apply=apply_history_adjustment,
             max_positive_adjustment=int(history_cfg.max_positive_adjustment),
             max_negative_adjustment=int(history_cfg.max_negative_adjustment),
             min_observations_for_adjustment=int(history_cfg.min_observations_for_adjustment),
@@ -696,31 +782,42 @@ def _maybe_update_domain_history(
 
         store = DomainHistoryStore(sqlite_path)
         try:
-            update_history_from_run(
+            result = update_history_from_run(
                 run_dir=run_dir,
                 store=store,
                 write_summary_report=bool(history_cfg.write_summary_report),
                 max_positive_adjustment=int(history_cfg.max_positive_adjustment),
                 max_negative_adjustment=int(history_cfg.max_negative_adjustment),
                 adjustment_config=adjustment_config,
-                write_adjustment_report=bool(history_cfg.write_adjustment_report),
+                write_adjustment_report=(
+                    bool(history_cfg.write_adjustment_report)
+                    and apply_history_adjustment
+                ),
                 logger=logger,
             )
+            return getattr(result, "adjustment_stats", None) is not None
         finally:
             store.close()
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.warning("history layer update failed: %s", exc)
+        return False
 
 
 def _maybe_run_smtp_probing(
     run_dir: Path,
     config: Any,
     logger: logging.Logger,
-) -> None:
-    """Invoke the V2.4 SMTP probing pass. Never raises."""
+) -> bool:
+    """Invoke the legacy V2.4 SMTP post-pass. Returns True if it rewrote CSVs."""
     smtp_cfg = getattr(config, "smtp_probe", None)
     if smtp_cfg is None or not getattr(smtp_cfg, "enabled", False):
-        return
+        return False
+    if not _post_pass_materialized_mutation_enabled(config):
+        logger.info(
+            "post_passes: skipping SMTP post-pass because "
+            "post_passes.mutate_materialized_outputs=false"
+        )
+        return False
     try:
         from .validation_v2 import SMTPProbeConfig, run_smtp_probing_pass
 
@@ -737,20 +834,32 @@ def _maybe_run_smtp_probing(
             ),
             sender_address=str(smtp_cfg.sender_address),
         )
-        run_smtp_probing_pass(run_dir=run_dir, config=runtime_cfg, logger=logger)
+        result = run_smtp_probing_pass(
+            run_dir=run_dir,
+            config=runtime_cfg,
+            logger=logger,
+        )
+        return bool(result is not None and result.candidates_selected > 0)
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.warning("smtp probing pass failed: %s", exc)
+        return False
 
 
 def _maybe_run_probability_model(
     run_dir: Path,
     config: Any,
     logger: logging.Logger,
-) -> None:
-    """Invoke the V2.5 deliverability probability pass. Never raises."""
+) -> bool:
+    """Invoke the legacy V2.5 probability post-pass. Returns True if it rewrote CSVs."""
     pc = getattr(config, "probability", None)
     if pc is None or not getattr(pc, "enabled", False):
-        return
+        return False
+    if not _post_pass_materialized_mutation_enabled(config):
+        logger.info(
+            "post_passes: skipping probability post-pass because "
+            "post_passes.mutate_materialized_outputs=false"
+        )
+        return False
     try:
         from .validation_v2 import ProbabilityConfig, run_probability_pass
 
@@ -760,20 +869,32 @@ def _maybe_run_probability_model(
             medium_threshold=float(pc.medium_threshold),
             write_summary_report=bool(pc.write_summary_report),
         )
-        run_probability_pass(run_dir=run_dir, config=runtime_cfg, logger=logger)
+        result = run_probability_pass(
+            run_dir=run_dir,
+            config=runtime_cfg,
+            logger=logger,
+        )
+        return bool(result is not None and result.rows_processed > 0)
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.warning("probability pass failed: %s", exc)
+        return False
 
 
 def _maybe_run_decision_engine(
     run_dir: Path,
     config: Any,
     logger: logging.Logger,
-) -> None:
-    """Invoke the V2.6 decision engine pass. Never raises."""
+) -> bool:
+    """Invoke the legacy V2.6 decision post-pass. Returns True if it rewrote CSVs."""
     dc = getattr(config, "decision", None)
     if dc is None or not getattr(dc, "enabled", False):
-        return
+        return False
+    if not _post_pass_materialized_mutation_enabled(config):
+        logger.info(
+            "post_passes: skipping decision post-pass because "
+            "post_passes.mutate_materialized_outputs=false"
+        )
+        return False
     try:
         from .validation_v2 import DecisionConfig, run_decision_pass
 
@@ -784,9 +905,15 @@ def _maybe_run_decision_engine(
             enable_bucket_override=bool(dc.enable_bucket_override),
             write_summary_report=bool(dc.write_summary_report),
         )
-        run_decision_pass(run_dir=run_dir, config=runtime_cfg, logger=logger)
+        result = run_decision_pass(
+            run_dir=run_dir,
+            config=runtime_cfg,
+            logger=logger,
+        )
+        return bool(result is not None and result.rows_processed > 0)
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.warning("decision engine pass failed: %s", exc)
+        return False
 
 
 # --------------------------------------------------------------------------- #
@@ -815,6 +942,37 @@ def job_result_to_dict(result: JobResult) -> dict[str, Any]:
     # Round-trip through ``json`` to coerce ``Path`` / ``datetime``
     # instances inside nested dicts and lists in one place.
     return json.loads(json.dumps(raw, default=_json_default))
+
+
+def run_rollout_preflight(
+    input_path: str | Path,
+    *,
+    output_dir: str | Path | None = None,
+    config_path: str | Path | None = None,
+    operator_confirmed_large_run: bool = False,
+    smtp_port_verified: bool = False,
+) -> dict[str, Any]:
+    """Run V2.9.2 rollout preflight and return a JSON-friendly dict.
+
+    This helper is deliberately not wired into :func:`run_cleaning_job`.
+    It gives operators and future HTTP callers an explicit pre-run check
+    without changing existing pipeline execution behavior.
+    """
+    from .rollout.preflight import run_preflight_check
+
+    project_paths = resolve_project_paths()
+    config = load_config(
+        config_path=Path(config_path) if config_path else None,
+        base_dir=project_paths.project_root,
+    )
+    result = run_preflight_check(
+        input_path,
+        config=config,
+        output_dir=output_dir,
+        operator_confirmed_large_run=operator_confirmed_large_run,
+        smtp_port_verified=smtp_port_verified,
+    )
+    return result.to_dict()
 
 
 def ingest_bounce_feedback(
@@ -929,5 +1087,6 @@ __all__ = [
     "ingest_bounce_feedback",
     "job_result_to_dict",
     "load_job_summary",
+    "run_rollout_preflight",
     "run_cleaning_job",
 ]

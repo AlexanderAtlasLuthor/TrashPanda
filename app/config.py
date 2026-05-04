@@ -26,6 +26,31 @@ DEFAULT_CONFIG_VALUES: dict[str, Any] = {
 }
 
 
+ROLLOUT_PROFILE_LOCAL_DEV = "local_dev"
+ROLLOUT_PROFILE_PILOT_SAMPLE = "pilot_sample"
+ROLLOUT_PROFILE_PRODUCTION_FULL = "production_full"
+ROLLOUT_PROFILES: frozenset[str] = frozenset({
+    ROLLOUT_PROFILE_LOCAL_DEV,
+    ROLLOUT_PROFILE_PILOT_SAMPLE,
+    ROLLOUT_PROFILE_PRODUCTION_FULL,
+})
+
+
+DEFAULT_ROLLOUT_VALUES: dict[str, Any] = {
+    "profile": ROLLOUT_PROFILE_PILOT_SAMPLE,
+    "require_preflight": True,
+    "block_uncapped_live_smtp": True,
+    "max_rows_without_confirmation": 1000,
+    "package_client_artifacts": True,
+    "require_operator_review": True,
+}
+
+
+DEFAULT_POST_PASSES_VALUES: dict[str, Any] = {
+    "mutate_materialized_outputs": False,
+}
+
+
 DEFAULT_DECISION_VALUES: dict[str, Any] = {
     "enabled": True,
     "approve_threshold": 0.80,
@@ -180,6 +205,45 @@ class TypoCorrectionConfig:
     )
     require_original_no_mx: bool = bool(
         DEFAULT_TYPO_CORRECTION_VALUES["require_original_no_mx"]
+    )
+
+
+@dataclass(slots=True, frozen=True)
+class RolloutConfig:
+    """V2.9.1 rollout profile and safety-intent settings.
+
+    This block is configuration foundation only. Preflight enforcement,
+    operator gates, and package-building behavior are intentionally left
+    to later rollout phases.
+    """
+
+    profile: str = str(DEFAULT_ROLLOUT_VALUES["profile"])
+    require_preflight: bool = bool(DEFAULT_ROLLOUT_VALUES["require_preflight"])
+    block_uncapped_live_smtp: bool = bool(
+        DEFAULT_ROLLOUT_VALUES["block_uncapped_live_smtp"]
+    )
+    max_rows_without_confirmation: int = int(
+        DEFAULT_ROLLOUT_VALUES["max_rows_without_confirmation"]
+    )
+    package_client_artifacts: bool = bool(
+        DEFAULT_ROLLOUT_VALUES["package_client_artifacts"]
+    )
+    require_operator_review: bool = bool(
+        DEFAULT_ROLLOUT_VALUES["require_operator_review"]
+    )
+
+
+@dataclass(slots=True, frozen=True)
+class PostPassesConfig:
+    """V2.9.4 safety gate for API post-run annotation passes.
+
+    The legacy API post-passes can rewrite materialized CSV annotations
+    after reports and client workbooks are generated. The default keeps
+    deliverable artifacts in one consistent materialized state.
+    """
+
+    mutate_materialized_outputs: bool = bool(
+        DEFAULT_POST_PASSES_VALUES["mutate_materialized_outputs"]
     )
 
 
@@ -370,6 +434,8 @@ class AppConfig:
     bounce_ingestion: BounceIngestionConfig = field(
         default_factory=BounceIngestionConfig
     )
+    rollout: RolloutConfig = field(default_factory=RolloutConfig)
+    post_passes: PostPassesConfig = field(default_factory=PostPassesConfig)
     typo_correction: TypoCorrectionConfig = field(default_factory=TypoCorrectionConfig)
     paths: ProjectPaths | None = field(default=None)
 
@@ -405,6 +471,10 @@ def load_config(
     smtp_raw = raw_values.pop("smtp_probe", {}) if isinstance(raw_values, dict) else {}
     prob_raw = raw_values.pop("probability", {}) if isinstance(raw_values, dict) else {}
     decision_raw = raw_values.pop("decision", {}) if isinstance(raw_values, dict) else {}
+    rollout_raw = raw_values.pop("rollout", {}) if isinstance(raw_values, dict) else {}
+    post_passes_raw = (
+        raw_values.pop("post_passes", {}) if isinstance(raw_values, dict) else {}
+    )
     catch_all_raw = (
         raw_values.pop("catch_all", {}) if isinstance(raw_values, dict) else {}
     )
@@ -459,6 +529,32 @@ def load_config(
         review_threshold=float(decision_merged["review_threshold"]),
         enable_bucket_override=bool(decision_merged["enable_bucket_override"]),
         write_summary_report=bool(decision_merged["write_summary_report"]),
+    )
+
+    rollout_merged = {**DEFAULT_ROLLOUT_VALUES, **(rollout_raw or {})}
+    rollout_config = RolloutConfig(
+        profile=str(
+            rollout_merged.get("profile") or DEFAULT_ROLLOUT_VALUES["profile"]
+        ),
+        require_preflight=bool(rollout_merged["require_preflight"]),
+        block_uncapped_live_smtp=bool(
+            rollout_merged["block_uncapped_live_smtp"]
+        ),
+        max_rows_without_confirmation=int(
+            rollout_merged["max_rows_without_confirmation"]
+        ),
+        package_client_artifacts=bool(rollout_merged["package_client_artifacts"]),
+        require_operator_review=bool(rollout_merged["require_operator_review"]),
+    )
+
+    post_passes_merged = {
+        **DEFAULT_POST_PASSES_VALUES,
+        **(post_passes_raw or {}),
+    }
+    post_passes_config = PostPassesConfig(
+        mutate_materialized_outputs=bool(
+            post_passes_merged["mutate_materialized_outputs"]
+        ),
     )
 
     catch_all_merged = {**DEFAULT_CATCH_ALL_VALUES, **(catch_all_raw or {})}
@@ -565,6 +661,8 @@ def load_config(
         catch_all=catch_all_config,
         domain_intelligence=domain_intel_config,
         bounce_ingestion=bounce_config,
+        rollout=rollout_config,
+        post_passes=post_passes_config,
         typo_correction=typo_config,
         paths=paths,
     )
@@ -593,6 +691,14 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("staging_db_name cannot be empty.")
     if not config.temp_dir_name.strip():
         raise ValueError("temp_dir_name cannot be empty.")
+
+    rc = config.rollout
+    if rc.profile not in ROLLOUT_PROFILES:
+        allowed = ", ".join(sorted(ROLLOUT_PROFILES))
+        raise ValueError(
+            "rollout.profile must be one of "
+            f"{allowed}; got {rc.profile!r}."
+        )
 
     # History layer (V2): validate only when enabled so disabled configs
     # can leave fields blank without tripping up the loader.

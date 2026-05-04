@@ -38,6 +38,11 @@ from .engine.stages import (
 )
 from .io_utils import build_run_context, discover_input_files, prepare_input_file, read_csv_in_chunks
 from .models import FileIngestionMetrics, MaterializationMetrics, PipelineResult, RunContext
+from .smtp_runtime import (
+    SMTP_RUNTIME_SUMMARY_EXTRAS_KEY,
+    SMTPRuntimeSummary,
+    write_smtp_runtime_summary,
+)
 from .client_output import generate_approved_original_format, generate_client_outputs
 from .reporting import ReportingStats, generate_reports
 from .storage import StagingDB
@@ -345,6 +350,22 @@ class EmailCleaningPipeline:
         self.logger.info("[TIMING] Materialize START")
         mat_metrics = self._materialize(staging, dedupe_index, active_run_context)
         self.logger.info("[TIMING] Materialize DONE elapsed=%.3fs", time.perf_counter() - t0_mat)
+
+        # V2.9.3 - SMTP runtime guardrails. The SMTP stage accumulates a
+        # per-run summary in PipelineContext.extras; writing it here keeps
+        # runtime visibility additive and outside classification/export
+        # routing decisions.
+        smtp_runtime_summary = pipeline_context.extras.get(
+            SMTP_RUNTIME_SUMMARY_EXTRAS_KEY
+        )
+        if isinstance(smtp_runtime_summary, SMTPRuntimeSummary):
+            try:
+                write_smtp_runtime_summary(
+                    active_run_context.run_dir,
+                    smtp_runtime_summary,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                self.logger.warning("SMTP runtime summary generation failed: %s", exc)
 
         # V2.8 — generate V2 deliverability reports from the
         # materialized CSVs. Always runs after _materialize and after

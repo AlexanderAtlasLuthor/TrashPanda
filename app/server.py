@@ -120,6 +120,8 @@ ARTIFACT_KEYS: dict[str, tuple[str, str]] = {
     "domain_summary": ("reports", "domain_summary"),
     "typo_corrections": ("reports", "typo_corrections"),
     "duplicate_summary": ("reports", "duplicate_summary"),
+    "smtp_runtime_summary": ("reports", "smtp_runtime_summary"),
+    "artifact_consistency": ("reports", "artifact_consistency"),
 }
 
 LOGGER = logging.getLogger(__name__)
