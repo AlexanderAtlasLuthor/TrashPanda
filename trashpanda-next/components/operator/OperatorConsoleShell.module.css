@@ -1,0 +1,9 @@
+.bannerWrap {
+  margin-top: 4px;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}

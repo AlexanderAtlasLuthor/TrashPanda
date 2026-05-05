@@ -1,4 +1,4 @@
-"""V2.10.0.1 — Operator-only HTTP routes.
+"""V2.10.0.1 / V2.10.0.2 — Operator-only HTTP routes.
 
 This module wraps the V2.9 boundary helpers in :mod:`app.api_boundary`
 under a dedicated ``/api/operator`` namespace. It exists so the future
@@ -13,9 +13,13 @@ by :mod:`app.artifact_contract` may surface here. Do not link these
 routes from any client-facing UI surface, and do not treat their
 responses as audience-filtered.
 
+The one exception is ``GET /jobs/{id}/client-package/download``
+(V2.10.0.2): the response body is the audience-filtered client
+package, so it carries ``X-TrashPanda-Audience: client_safe`` and is
+gated behind ``operator_review_summary.ready_for_client === true``.
+
 This module deliberately does NOT:
 
-* implement a client-package download endpoint (deferred to V2.10.0.2),
 * harden the legacy ``/jobs/{id}/artifacts/...`` routes
   (deferred to V2.10.0.3),
 * introduce auth / role gating (deferred to V2.10.x),
@@ -26,12 +30,14 @@ This module deliberately does NOT:
 
 from __future__ import annotations
 
+import io
 import json
 import logging
+import zipfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from .api_boundary import (
     JobStatus,
@@ -428,6 +434,243 @@ def operator_get_client_package_manifest(job_id: str) -> Any:
     )
     payload = _read_json_or_missing(manifest_path, _MISSING_CLIENT_PACKAGE)
     return _operator_response(payload)
+
+
+# --------------------------------------------------------------------------- #
+# V2.10.0.2 — Safe client package download
+# --------------------------------------------------------------------------- #
+
+
+_CLIENT_SAFE_AUDIENCE = "client_safe"
+_CLIENT_DOWNLOAD_AUDIENCE_HEADERS: dict[str, str] = {
+    "X-TrashPanda-Audience": _CLIENT_SAFE_AUDIENCE,
+}
+
+
+def _download_blocked_response(
+    error: str,
+    message: str,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> Any:
+    """Return a 409 with the V2.10.0.2 flat ``ready_for_client=false`` shape.
+
+    The download endpoint deliberately does NOT use the nested
+    ``{"error": {"error_type": ...}}`` envelope used elsewhere — the
+    operator UI must be able to branch on a single top-level
+    ``ready_for_client`` flag without unwrapping. Every blocking gate
+    in :func:`operator_download_client_package` funnels through here.
+    """
+
+    from fastapi.responses import JSONResponse
+
+    payload: dict[str, Any] = {
+        "error": error,
+        "message": message,
+        "ready_for_client": False,
+    }
+    if extra:
+        payload.update(extra)
+    return JSONResponse(status_code=409, content=payload)
+
+
+def _manifest_filename_escapes_package(
+    filename: Any,
+    package_dir_resolved: Path,
+    package_dir: Path,
+) -> bool:
+    """Return True iff ``filename`` would resolve outside ``package_dir``.
+
+    Rejects three classes of escape:
+
+    * absolute paths (``/etc/passwd``, ``C:\\...``) — always outside;
+    * any segment equal to ``..`` — caught before ``resolve()`` so
+      Windows path semantics cannot mask it;
+    * a resolved path whose ``relative_to(package_dir_resolved)`` raises
+      — covers symlink-style escapes the manifest could smuggle.
+    """
+
+    if not isinstance(filename, str) or not filename:
+        # Unknown shape: treat as escape so the operator notices.
+        return True
+    candidate_rel = Path(filename)
+    if candidate_rel.is_absolute():
+        return True
+    if any(part == ".." for part in candidate_rel.parts):
+        return True
+    try:
+        resolved = (package_dir / filename).resolve()
+        resolved.relative_to(package_dir_resolved)
+    except (OSError, ValueError):
+        return True
+    return False
+
+
+@router.get("/jobs/{job_id}/client-package/download")
+def operator_download_client_package(job_id: str) -> Any:
+    """Stream the safe client delivery package as a ZIP.
+
+    This is the **only** HTTP contract that emits client-safe artifacts
+    in bulk. Every gate below must pass before any bytes are returned;
+    failures yield ``409 Conflict`` with a flat
+    ``ready_for_client=false`` payload (see
+    :func:`_download_blocked_response`).
+
+    Gates, in order:
+
+    1. ``operator_review_summary.json`` exists and is valid JSON;
+    2. ``ready_for_client`` is exactly ``true``;
+    3. ``client_delivery_package/`` exists as a directory;
+    4. ``client_package_manifest.json`` exists and is valid JSON;
+    5. every ``files_included`` entry has ``audience == "client_safe"``;
+    6. every ``files_included.filename`` resolves inside the package
+       directory (no ``..``, no absolute paths, no symlink escapes).
+
+    The ZIP body contains only files physically present under
+    ``client_delivery_package/``. Operator-only run-dir artifacts
+    (``operator_review_summary.json``, ``smtp_runtime_summary.json``,
+    ``artifact_consistency.json``, ``staging.sqlite3``, ``logs/``,
+    ``temp/``) are never included because the walk is rooted at the
+    package dir, not the run dir.
+    """
+
+    run_dir = _resolve_run_dir(job_id)
+
+    summary_path = run_dir / _OPERATOR_REVIEW_SUMMARY_FILENAME
+    if not summary_path.is_file():
+        return _download_blocked_response(
+            "operator_review_missing",
+            "Operator review gate has not been run yet.",
+        )
+
+    try:
+        summary_data: Any = json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        _LOGGER.warning(
+            "operator_review_summary.json unreadable for %s: %s", job_id, exc
+        )
+        return _download_blocked_response(
+            "operator_review_missing",
+            "Operator review gate has not been run yet.",
+        )
+    if not isinstance(summary_data, dict):
+        return _download_blocked_response(
+            "operator_review_missing",
+            "Operator review gate has not been run yet.",
+        )
+
+    if summary_data.get("ready_for_client") is not True:
+        return _download_blocked_response(
+            "not_ready_for_client",
+            "Client package cannot be downloaded unless ready_for_client is true.",
+            extra={"status": summary_data.get("status")},
+        )
+
+    package_dir = run_dir / _CLIENT_PACKAGE_DIR_NAME
+    if not package_dir.is_dir():
+        return _download_blocked_response(
+            "client_package_missing",
+            "client_delivery_package does not exist. "
+            "Build the client package first.",
+        )
+
+    manifest_path = package_dir / _CLIENT_PACKAGE_MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        return _download_blocked_response(
+            "client_package_manifest_missing",
+            "Client package manifest is missing.",
+        )
+
+    try:
+        manifest_data: Any = json.loads(
+            manifest_path.read_text(encoding="utf-8")
+        )
+    except Exception as exc:
+        _LOGGER.warning(
+            "client_package_manifest.json unreadable for %s: %s", job_id, exc
+        )
+        return _download_blocked_response(
+            "client_package_manifest_unreadable",
+            "Client package manifest could not be read safely.",
+        )
+    if not isinstance(manifest_data, dict):
+        return _download_blocked_response(
+            "client_package_manifest_unreadable",
+            "Client package manifest could not be read safely.",
+        )
+
+    files_included = manifest_data.get("files_included") or []
+    if not isinstance(files_included, list):
+        return _download_blocked_response(
+            "client_package_manifest_unreadable",
+            "Client package manifest could not be read safely.",
+        )
+
+    bad_files: list[dict[str, Any]] = []
+    for entry in files_included:
+        if not isinstance(entry, dict):
+            bad_files.append({"filename": None, "audience": None})
+            continue
+        audience = entry.get("audience")
+        if audience != _CLIENT_SAFE_AUDIENCE:
+            bad_files.append(
+                {
+                    "filename": entry.get("filename"),
+                    "audience": audience,
+                }
+            )
+    if bad_files:
+        return _download_blocked_response(
+            "client_package_contains_non_client_safe",
+            "Client package contains non-client-safe artifacts and "
+            "cannot be downloaded.",
+            extra={"bad_files": bad_files},
+        )
+
+    package_dir_resolved = package_dir.resolve()
+    for entry in files_included:
+        if not isinstance(entry, dict):
+            continue
+        if _manifest_filename_escapes_package(
+            entry.get("filename"), package_dir_resolved, package_dir
+        ):
+            return _download_blocked_response(
+                "client_package_path_escape",
+                "Client package manifest references a path outside the "
+                "package directory.",
+            )
+
+    # Build the ZIP from the package dir only. The walk is rooted under
+    # ``package_dir``, so run-dir-level files (operator_review_summary,
+    # smtp_runtime_summary, artifact_consistency, staging.sqlite3, logs/,
+    # temp/) are excluded by construction.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for file_path in sorted(package_dir.rglob("*")):
+            if not file_path.is_file():
+                continue
+            try:
+                resolved = file_path.resolve()
+                resolved.relative_to(package_dir_resolved)
+            except (OSError, ValueError):
+                # Defense-in-depth: a symlink under the package dir that
+                # escapes is silently dropped. The manifest gate above is
+                # the primary control; this guards against on-disk drift.
+                continue
+            arcname = str(file_path.relative_to(package_dir))
+            zf.write(file_path, arcname=arcname)
+    zip_bytes = buf.getvalue()
+
+    download_name = f"trashpanda_client_delivery_package_{job_id}.zip"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{download_name}"',
+        **_CLIENT_DOWNLOAD_AUDIENCE_HEADERS,
+    }
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers=headers,
+    )
 
 
 @router.post("/jobs/{job_id}/review-gate")

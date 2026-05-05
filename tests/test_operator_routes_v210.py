@@ -1,4 +1,4 @@
-"""V2.10.0.1 — Tests for the operator HTTP scaffold.
+"""V2.10.0.1 / V2.10.0.2 — Tests for the operator HTTP scaffold.
 
 These tests pin the contract the future operator console will rely on:
 
@@ -11,11 +11,20 @@ These tests pin the contract the future operator console will rely on:
   blank state;
 * responses carry ``X-TrashPanda-Audience: operator_only`` so a
   misrouted client can be detected;
-* unknown ``job_id`` resolves to a structured 404, not a 500.
+* unknown ``job_id`` resolves to a structured 404, not a 500;
+* the V2.10.0.2 download endpoint is the only HTTP contract that emits
+  a client-safe artifact bundle, and every gate (review summary
+  presence, ``ready_for_client=true``, package dir presence, manifest
+  presence/readability, audience filter, path-escape check) blocks
+  with a 409 + flat ``ready_for_client=false`` payload before any
+  bytes leave the server.
 """
 
 from __future__ import annotations
 
+import io
+import json
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -348,3 +357,399 @@ def test_feedback_preview_handles_missing_store(
     assert body["feedback_available"] is False
     assert isinstance(body.get("warnings"), list)
     assert "feedback_store_missing" in body["warnings"]
+
+
+# --------------------------------------------------------------------------- #
+# V2.10.0.2 — Safe client package download
+# --------------------------------------------------------------------------- #
+
+
+_DOWNLOAD_PATH_TEMPLATE = "/api/operator/jobs/{job_id}/client-package/download"
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _setup_ready_package(
+    run_dir: Path,
+    *,
+    summary_overrides: dict | None = None,
+    manifest_overrides: dict | None = None,
+    write_summary: bool = True,
+    write_manifest: bool = True,
+    write_package_dir: bool = True,
+) -> Path:
+    """Build a baseline ``ready_for_client=true`` run on disk.
+
+    Each download test starts from this and then mutates exactly one
+    gate so the failure under test is the only deviation from the
+    happy path. Returns the package dir for convenience.
+    """
+
+    package_dir = run_dir / "client_delivery_package"
+    if write_package_dir:
+        package_dir.mkdir(parents=True, exist_ok=True)
+        valid = package_dir / "valid_emails.xlsx"
+        valid.write_bytes(b"FAKE_XLSX_BYTES_FOR_V2_10_0_2_TESTS")
+        review = package_dir / "review_emails.xlsx"
+        review.write_bytes(b"REVIEW_BYTES")
+
+    if write_manifest and write_package_dir:
+        manifest = {
+            "report_version": "v2.9.6",
+            "generated_at": "2026-05-05T00:00:00+00:00",
+            "files_included": [
+                {
+                    "key": "valid_emails",
+                    "filename": "valid_emails.xlsx",
+                    "audience": "client_safe",
+                    "size_bytes": 35,
+                },
+                {
+                    "key": "review_emails",
+                    "filename": "review_emails.xlsx",
+                    "audience": "client_safe",
+                    "size_bytes": 12,
+                },
+            ],
+            "files_excluded": [],
+            "warnings": [],
+            "safe_count": 1,
+            "review_count": 1,
+            "rejected_count": 0,
+        }
+        if manifest_overrides:
+            manifest.update(manifest_overrides)
+        _write_json(
+            package_dir / "client_package_manifest.json", manifest
+        )
+
+    if write_summary:
+        summary = {
+            "report_version": "v2.9.7",
+            "ready_for_client": True,
+            "status": "ready",
+            "issues": [],
+        }
+        if summary_overrides:
+            summary.update(summary_overrides)
+        _write_json(run_dir / "operator_review_summary.json", summary)
+
+    return package_dir
+
+
+def _zip_namelist(content: bytes) -> set[str]:
+    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+        return set(zf.namelist())
+
+
+def test_download_blocks_when_operator_review_missing(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 1 — package present, summary absent: blocks with 409."""
+
+    job_id = "job_dl_missing_review"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_ready_package(run_dir, write_summary=False)
+
+    response = client.get(_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id))
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "operator_review_missing"
+    assert body["ready_for_client"] is False
+
+
+def test_download_blocks_when_ready_for_client_false(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 2 — review summary says ``ready_for_client=false``."""
+
+    job_id = "job_dl_not_ready"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_ready_package(
+        run_dir,
+        summary_overrides={"ready_for_client": False, "status": "warn"},
+    )
+
+    response = client.get(_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id))
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "not_ready_for_client"
+    assert body["ready_for_client"] is False
+    assert body["status"] == "warn"
+
+
+@pytest.mark.parametrize("status_value", ["block", "missing", None])
+def test_download_blocks_other_non_ready_statuses(
+    client: TestClient,
+    tmp_path: Path,
+    status_value: object,
+) -> None:
+    """Test 2b — block / missing / null status all gate the download."""
+
+    job_id = f"job_dl_status_{status_value}"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    overrides: dict[str, object] = {"ready_for_client": False}
+    if status_value is not None:
+        overrides["status"] = status_value
+    else:
+        overrides["status"] = None
+    _setup_ready_package(run_dir, summary_overrides=overrides)
+
+    response = client.get(_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id))
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "not_ready_for_client"
+    assert body["ready_for_client"] is False
+
+
+def test_download_blocks_when_ready_field_missing(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Missing ``ready_for_client`` must not be inferred as true."""
+
+    job_id = "job_dl_ready_missing"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_ready_package(run_dir, write_summary=False)
+    _write_json(
+        run_dir / "operator_review_summary.json",
+        {"status": "ready"},
+    )
+
+    response = client.get(_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id))
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "not_ready_for_client"
+    assert body["ready_for_client"] is False
+
+
+def test_download_blocks_when_package_dir_missing(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 3 — review says ready but no client_delivery_package/."""
+
+    job_id = "job_dl_pkg_missing"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_ready_package(run_dir, write_package_dir=False)
+
+    response = client.get(_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id))
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "client_package_missing"
+    assert body["ready_for_client"] is False
+
+
+def test_download_blocks_when_manifest_missing(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 4 — package dir exists but manifest absent."""
+
+    job_id = "job_dl_manifest_missing"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    package_dir = _setup_ready_package(run_dir, write_manifest=False)
+    assert not (package_dir / "client_package_manifest.json").exists()
+
+    response = client.get(_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id))
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "client_package_manifest_missing"
+    assert body["ready_for_client"] is False
+
+
+def test_download_blocks_when_manifest_unreadable(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Corrupt manifest must surface ``client_package_manifest_unreadable``."""
+
+    job_id = "job_dl_manifest_unreadable"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    package_dir = _setup_ready_package(run_dir)
+    (package_dir / "client_package_manifest.json").write_text(
+        "this is not json {", encoding="utf-8"
+    )
+
+    response = client.get(_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id))
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "client_package_manifest_unreadable"
+    assert body["ready_for_client"] is False
+
+
+@pytest.mark.parametrize(
+    "bad_audience",
+    ["operator_only", "technical_debug", "internal_only", "unknown", None],
+)
+def test_download_blocks_non_client_safe_in_manifest(
+    client: TestClient,
+    tmp_path: Path,
+    bad_audience: object,
+) -> None:
+    """Test 5 — any non-client_safe entry in files_included blocks."""
+
+    job_id = f"job_dl_audience_{bad_audience}"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    package_dir = _setup_ready_package(run_dir)
+
+    manifest = json.loads(
+        (package_dir / "client_package_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    manifest["files_included"].append(
+        {
+            "key": "leaked",
+            "filename": "leaked_artifact.json",
+            "audience": bad_audience,
+            "size_bytes": 0,
+        }
+    )
+    _write_json(package_dir / "client_package_manifest.json", manifest)
+
+    response = client.get(_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id))
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "client_package_contains_non_client_safe"
+    assert body["ready_for_client"] is False
+    bad = body.get("bad_files") or []
+    assert any(entry.get("filename") == "leaked_artifact.json" for entry in bad)
+
+
+@pytest.mark.parametrize(
+    "escaping_filename",
+    [
+        "../operator_review_summary.json",
+        "subdir/../../escape.txt",
+        "/etc/passwd",
+    ],
+)
+def test_download_blocks_path_traversal_in_manifest(
+    client: TestClient,
+    tmp_path: Path,
+    escaping_filename: str,
+) -> None:
+    """Test 6 — manifest filenames that escape the package dir block."""
+
+    job_id = "job_dl_path_escape"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    package_dir = _setup_ready_package(run_dir)
+
+    manifest = json.loads(
+        (package_dir / "client_package_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    manifest["files_included"] = [
+        {
+            "key": "escape",
+            "filename": escaping_filename,
+            "audience": "client_safe",
+            "size_bytes": 0,
+        }
+    ]
+    _write_json(package_dir / "client_package_manifest.json", manifest)
+
+    response = client.get(_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id))
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "client_package_path_escape"
+    assert body["ready_for_client"] is False
+
+
+def test_download_succeeds_for_ready_package(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 7 — full happy path returns a client_safe ZIP."""
+
+    job_id = "job_dl_happy"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    package_dir = _setup_ready_package(run_dir)
+
+    # Sentinel files in the run_dir that MUST NOT leak into the ZIP.
+    (run_dir / "smtp_runtime_summary.json").write_text(
+        "{\"smtp_candidates_seen\": 1}", encoding="utf-8"
+    )
+    (run_dir / "artifact_consistency.json").write_text(
+        "{}", encoding="utf-8"
+    )
+    (run_dir / "staging.sqlite3").write_bytes(b"SQLITE_PAYLOAD")
+    logs_dir = run_dir / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    (logs_dir / "run.log").write_text("log line\n", encoding="utf-8")
+    temp_dir = run_dir / "temp"
+    temp_dir.mkdir(exist_ok=True)
+    (temp_dir / "scratch.bin").write_bytes(b"scratch")
+
+    response = client.get(_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id))
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert (
+        "trashpanda_client_delivery_package"
+        in response.headers["content-disposition"]
+    )
+    assert job_id in response.headers["content-disposition"]
+    assert response.headers["x-trashpanda-audience"] == "client_safe"
+
+    names = _zip_namelist(response.content)
+    # Every package-dir file is present (including the manifest itself,
+    # which is part of the package and audience-classified safe by the
+    # builder).
+    assert "valid_emails.xlsx" in names
+    assert "review_emails.xlsx" in names
+    assert "client_package_manifest.json" in names
+
+    # And nothing from the run_dir leaks in.
+    forbidden = {
+        "operator_review_summary.json",
+        "smtp_runtime_summary.json",
+        "artifact_consistency.json",
+        "staging.sqlite3",
+    }
+    assert names.isdisjoint(forbidden), (
+        f"forbidden run-dir files leaked into ZIP: {names & forbidden}"
+    )
+    # No log/ or temp/ entries either.
+    assert not any(
+        n.startswith("logs/") or n.startswith("logs\\") for n in names
+    )
+    assert not any(
+        n.startswith("temp/") or n.startswith("temp\\") for n in names
+    )
+
+    # Sanity: the package_dir itself isn't named in the archive — every
+    # entry is package-relative.
+    assert all(not n.startswith("client_delivery_package") for n in names)
+    # And the resolved package dir really did contain those files.
+    assert (package_dir / "valid_emails.xlsx").is_file()
+
+
+def test_download_unknown_job_returns_structured_404(
+    client: TestClient,
+) -> None:
+    """Test 8 — unknown job_id reuses ``_resolve_run_dir`` 404."""
+
+    response = client.get(
+        _DOWNLOAD_PATH_TEMPLATE.format(job_id="does_not_exist")
+    )
+    assert response.status_code == 404
+    body = response.json()
+    assert body["error"]["error_type"] == "job_not_found"
+    assert body["error"]["details"]["job_id"] == "does_not_exist"

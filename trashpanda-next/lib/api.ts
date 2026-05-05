@@ -22,6 +22,13 @@ import type {
   ReviewQueue,
   TypoCorrections,
   InsightsResponse,
+  PreflightResult,
+  SmtpRuntimeSummary,
+  ArtifactConsistencyResult,
+  ClientPackageManifest,
+  OperatorReviewSummary,
+  FeedbackIngestionSummary,
+  FeedbackPreviewResult,
 } from "./types";
 
 export interface UploadResponse {
@@ -259,4 +266,159 @@ export function buildZipFilename(
   return stem
     ? `${stem}_trashpanda_results_${ts}.zip`
     : `trashpanda_results_${ts}.zip`;
+}
+
+// ── V2.10 Operator API wrappers ───────────────────────────────────────────
+//
+// Client-side fetch wrappers for the /api/operator/* surface. Every
+// wrapper hits a Next.js BFF route under /api/operator/... — those
+// route handlers are added in V2.10.1.3 and proxy to the Python backend.
+//
+// Delivery decisions live in the backend's V2.9.7 operator review
+// gate. These wrappers MUST NOT compute readiness; they only carry
+// payloads.
+
+export interface RunPreflightInput {
+  input_path: string;
+  output_dir?: string;
+  config_path?: string;
+  operator_confirmed_large_run?: boolean;
+  smtp_port_verified?: boolean;
+}
+
+export interface IngestFeedbackInput {
+  feedback_csv_path: string;
+  config_path?: string;
+}
+
+export interface FeedbackPreviewInput {
+  feedback_store_path?: string;
+  config_path?: string;
+  output_dir?: string;
+}
+
+export async function runPreflight(
+  input: RunPreflightInput,
+): Promise<PreflightResult> {
+  const res = await fetch("/api/operator/preflight", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return handleResponse<PreflightResult>(res);
+}
+
+export async function getOperatorJob(jobId: string): Promise<JobResult> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}`,
+    { cache: "no-store" },
+  );
+  return handleResponse<JobResult>(res);
+}
+
+export async function getSmtpRuntime(
+  jobId: string,
+): Promise<SmtpRuntimeSummary> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/smtp-runtime`,
+    { cache: "no-store" },
+  );
+  return handleResponse<SmtpRuntimeSummary>(res);
+}
+
+export async function getArtifactConsistency(
+  jobId: string,
+): Promise<ArtifactConsistencyResult> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/artifact-consistency`,
+    { cache: "no-store" },
+  );
+  return handleResponse<ArtifactConsistencyResult>(res);
+}
+
+export async function buildClientPackage(
+  jobId: string,
+): Promise<ClientPackageManifest> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/client-package`,
+    { method: "POST" },
+  );
+  return handleResponse<ClientPackageManifest>(res);
+}
+
+export async function getClientPackageManifest(
+  jobId: string,
+): Promise<ClientPackageManifest> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/client-package`,
+    { cache: "no-store" },
+  );
+  return handleResponse<ClientPackageManifest>(res);
+}
+
+export async function runOperatorReviewGate(
+  jobId: string,
+): Promise<OperatorReviewSummary> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/review-gate`,
+    { method: "POST" },
+  );
+  return handleResponse<OperatorReviewSummary>(res);
+}
+
+export async function getOperatorReviewSummary(
+  jobId: string,
+): Promise<OperatorReviewSummary> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/operator-review`,
+    { cache: "no-store" },
+  );
+  return handleResponse<OperatorReviewSummary>(res);
+}
+
+/**
+ * Fetches the only safe client-delivery ZIP endpoint.
+ *
+ * Returns the raw Response because the endpoint can return either:
+ * - 200 application/zip with Content-Disposition
+ * - 409 JSON ClientPackageDownloadError explaining why delivery is blocked
+ *
+ * Callers must branch on response.ok / response.status before reading the body.
+ * Always read Content-Disposition from the response; do not reconstruct filenames.
+ */
+export async function downloadClientPackage(
+  jobId: string,
+): Promise<Response> {
+  return fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/client-package/download`,
+    { cache: "no-store" },
+  );
+}
+
+export async function ingestFeedback(
+  input: IngestFeedbackInput,
+): Promise<FeedbackIngestionSummary> {
+  const res = await fetch("/api/operator/feedback/ingest", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return handleResponse<FeedbackIngestionSummary>(res);
+}
+
+export async function getFeedbackPreview(
+  input?: FeedbackPreviewInput,
+): Promise<FeedbackPreviewResult> {
+  if (input === undefined) {
+    const res = await fetch("/api/operator/feedback/preview", {
+      cache: "no-store",
+    });
+    return handleResponse<FeedbackPreviewResult>(res);
+  }
+  const res = await fetch("/api/operator/feedback/preview", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return handleResponse<FeedbackPreviewResult>(res);
 }

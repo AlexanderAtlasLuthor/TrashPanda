@@ -15,7 +15,19 @@ import type {
   ReviewQueue,
   TypoCorrections,
   InsightsResponse,
+  PreflightResult,
+  SmtpRuntimeSummary,
+  ArtifactConsistencyResult,
+  ClientPackageManifest,
+  OperatorReviewSummary,
+  FeedbackIngestionSummary,
+  FeedbackPreviewResult,
 } from "./types";
+import type {
+  RunPreflightInput,
+  IngestFeedbackInput,
+  FeedbackPreviewInput,
+} from "./api";
 import {
   createMockJob,
   getMockJob,
@@ -359,3 +371,190 @@ function _emptyInsights(jobId: string): InsightsResponse {
 }
 
 export const adapterMode = useProxy ? "proxy" : "mock";
+
+// ── V2.10 Operator adapter functions ───────────────────────────────────────
+//
+// Server-side proxy functions for the /api/operator/* BFF routes.
+// These require the Python backend and intentionally do not synthesize
+// mock operator state — operator workflows depend on real pipeline
+// state (review summary, package manifest, SMTP runtime, …) that mock
+// mode cannot fabricate convincingly. Without TRASHPANDA_BACKEND_URL,
+// every operator JSON adapter throws OperatorBackendUnavailableError;
+// the BFF routes map that to a 503 with a clear message.
+
+export class OperatorBackendUnavailableError extends Error {
+  constructor() {
+    super(
+      "Operator endpoints require the Python backend. Set TRASHPANDA_BACKEND_URL to enable /api/operator proxy routes.",
+    );
+    this.name = "OperatorBackendUnavailableError";
+  }
+}
+
+function assertOperatorBackendAvailable(): string {
+  if (!backendUrl) {
+    throw new OperatorBackendUnavailableError();
+  }
+  return backendUrl;
+}
+
+async function operatorJson<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  const baseUrl = assertOperatorBackendAvailable();
+  const res = await fetch(`${baseUrl}${path}`, {
+    cache: "no-store",
+    ...init,
+    headers: {
+      ...(init?.body ? { "content-type": "application/json" } : {}),
+      ...(init?.headers ?? {}),
+    },
+  });
+
+  if (!res.ok) {
+    let body: unknown = null;
+    try {
+      body = await res.json();
+    } catch {
+      body = null;
+    }
+    const message =
+      extractBackendMessage(body) ?? `Backend error (${res.status})`;
+    throw new Error(message);
+  }
+
+  return (await res.json()) as T;
+}
+
+export async function adapterRunOperatorPreflight(
+  input: RunPreflightInput,
+): Promise<PreflightResult> {
+  return operatorJson<PreflightResult>("/api/operator/preflight", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function adapterGetOperatorJob(
+  jobId: string,
+): Promise<JobResult> {
+  return operatorJson<JobResult>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}`,
+  );
+}
+
+export async function adapterGetOperatorSmtpRuntime(
+  jobId: string,
+): Promise<SmtpRuntimeSummary> {
+  return operatorJson<SmtpRuntimeSummary>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/smtp-runtime`,
+  );
+}
+
+export async function adapterGetOperatorArtifactConsistency(
+  jobId: string,
+): Promise<ArtifactConsistencyResult> {
+  return operatorJson<ArtifactConsistencyResult>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/artifact-consistency`,
+  );
+}
+
+export async function adapterBuildOperatorClientPackage(
+  jobId: string,
+): Promise<ClientPackageManifest> {
+  return operatorJson<ClientPackageManifest>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/client-package`,
+    { method: "POST" },
+  );
+}
+
+export async function adapterGetOperatorClientPackageManifest(
+  jobId: string,
+): Promise<ClientPackageManifest> {
+  return operatorJson<ClientPackageManifest>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/client-package`,
+  );
+}
+
+/**
+ * Streams the safe client-package ZIP straight back to the BFF route.
+ *
+ * Critical: returns the raw fetch Response so status, Content-Type,
+ * Content-Disposition, and X-TrashPanda-Audience flow through unchanged.
+ * The endpoint can return either:
+ *   - 200 application/zip with Content-Disposition
+ *   - 409 application/json ClientPackageDownloadError
+ * Never wrap, never parse, never reconstruct the filename. Never fall
+ * back to /jobs/{id}/artifacts/zip or /results/{id} — those are not the
+ * client delivery contract.
+ */
+export async function adapterDownloadOperatorClientPackage(
+  jobId: string,
+): Promise<Response> {
+  if (backendUrl) {
+    return fetch(
+      `${backendUrl}/api/operator/jobs/${encodeURIComponent(jobId)}/client-package/download`,
+      { cache: "no-store" },
+    );
+  }
+  return new Response(
+    JSON.stringify({
+      error: "client_package_download_requires_backend",
+      message:
+        "The safe client-package download requires the Python backend. Set TRASHPANDA_BACKEND_URL to enable /api/operator proxy routes.",
+      ready_for_client: false,
+    }),
+    {
+      status: 501,
+      headers: { "content-type": "application/json" },
+    },
+  );
+}
+
+export async function adapterRunOperatorReviewGate(
+  jobId: string,
+): Promise<OperatorReviewSummary> {
+  return operatorJson<OperatorReviewSummary>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/review-gate`,
+    { method: "POST" },
+  );
+}
+
+export async function adapterGetOperatorReviewSummary(
+  jobId: string,
+): Promise<OperatorReviewSummary> {
+  return operatorJson<OperatorReviewSummary>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/operator-review`,
+  );
+}
+
+export async function adapterIngestOperatorFeedback(
+  input: IngestFeedbackInput,
+): Promise<FeedbackIngestionSummary> {
+  return operatorJson<FeedbackIngestionSummary>(
+    "/api/operator/feedback/ingest",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function adapterGetOperatorFeedbackPreview(): Promise<FeedbackPreviewResult> {
+  return operatorJson<FeedbackPreviewResult>(
+    "/api/operator/feedback/preview",
+  );
+}
+
+export async function adapterBuildOperatorFeedbackPreview(
+  input: FeedbackPreviewInput,
+): Promise<FeedbackPreviewResult> {
+  return operatorJson<FeedbackPreviewResult>(
+    "/api/operator/feedback/preview",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}

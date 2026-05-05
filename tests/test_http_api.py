@@ -80,15 +80,26 @@ def test_get_job_returns_consistent_payload(client: TestClient) -> None:
 
 
 def test_get_artifact_downloads_existing_file(client: TestClient) -> None:
+    """V2.10.0.3 — ``processing_report_json`` is operator_only per
+    :mod:`app.artifact_contract`, so the legacy artifact route now
+    requires explicit operator context. The download itself still
+    works; we just have to declare we know we're pulling a non-client
+    artifact.
+    """
+
     started = _start_sample_job(client)
     payload = _wait_for_terminal_job(client, started["job_id"])
     assert payload["status"] == JobStatus.COMPLETED
 
-    response = client.get(f"/jobs/{started['job_id']}/artifacts/processing_report_json")
+    response = client.get(
+        f"/jobs/{started['job_id']}/artifacts/processing_report_json"
+        "?operator=true"
+    )
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/json")
     assert "processing_report.json" in response.headers["content-disposition"]
+    assert response.headers.get("x-trashpanda-audience") == "operator_only"
     assert response.content
 
 

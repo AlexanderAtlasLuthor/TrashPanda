@@ -225,3 +225,199 @@ export interface InsightsResponse {
   };
   rows: InsightRow[];
 }
+
+// ── V2.10 Operator contract types ──────────────────────────────────────────
+//
+// Wire-shape only. These mirror the JSON payloads emitted by the
+// backend's /api/operator/* endpoints and the safe client-package
+// download endpoint. They MUST NOT encode delivery decisions —
+// ready_for_client is decided server-side by the V2.9.7 operator
+// review gate, never by the frontend.
+
+export type ArtifactAudience =
+  | "client_safe"
+  | "operator_only"
+  | "technical_debug"
+  | "internal_only";
+
+export type OperatorSeverity = "warn" | "block";
+
+export interface OperatorIssue {
+  severity: OperatorSeverity;
+  code: string;
+  message: string;
+}
+
+export type PreflightStatus =
+  | "pass"
+  | "warn"
+  | "block"
+  | "missing"
+  | "error";
+
+export interface PreflightIssue {
+  severity: OperatorSeverity;
+  code: string;
+  message: string;
+  field?: string | null;
+  value?: string | number | boolean | null;
+}
+
+export interface PreflightResult {
+  status: PreflightStatus;
+  available?: boolean;
+  warning?: boolean;
+  issues?: PreflightIssue[];
+  total_rows?: number | null;
+  total_emails?: number | null;
+  unique_emails?: number | null;
+  duplicate_emails?: number | null;
+  invalid_emails?: number | null;
+  smtp_port_verified?: boolean | null;
+  operator_confirmed_large_run?: boolean | null;
+  input_filename?: string | null;
+  generated_at?: string | null;
+}
+
+export type GateStatus = "ready" | "warn" | "block" | "missing";
+
+export interface OperatorReviewIssue extends OperatorIssue {}
+
+export interface OperatorReviewSummary {
+  status: GateStatus;
+  available?: boolean;
+  ready_for_client: boolean;
+  issues?: OperatorReviewIssue[];
+  generated_at?: string | null;
+  job_id?: string | null;
+  package_manifest_path?: string | null;
+  reviewed_files?: number | null;
+  blocked_files?: number | null;
+  warnings_count?: number | null;
+}
+
+export interface ClientPackageFile {
+  filename: string;
+  path?: string | null;
+  size_bytes?: number | null;
+  audience: ArtifactAudience;
+  required?: boolean | null;
+  sha256?: string | null;
+}
+
+export interface ClientPackageExcludedFile {
+  filename: string;
+  path?: string | null;
+  audience?: ArtifactAudience | string | null;
+  reason?: string | null;
+}
+
+export interface ClientPackageWarning {
+  code: string;
+  message: string;
+  severity?: OperatorSeverity | "info" | null;
+}
+
+export interface ClientPackageManifest {
+  job_id?: string | null;
+  package_dir?: string | null;
+  package_name?: string | null;
+  generated_at?: string | null;
+  ready_for_client?: boolean | null;
+  files_included: ClientPackageFile[];
+  files_excluded?: ClientPackageExcludedFile[];
+  warnings?: ClientPackageWarning[];
+  status?: string | null;
+}
+
+export interface SmtpRuntimeSummary {
+  status?: string | null;
+  available?: boolean;
+  warning?: boolean;
+  smtp_dry_run?: boolean | null;
+  attempted?: number | null;
+  valid?: number | null;
+  invalid?: number | null;
+  timeout?: number | null;
+  tempfail?: number | null;
+  catch_all?: number | null;
+  coverage?: number | null;
+  timeout_seconds?: number | null;
+  rate_limit_per_second?: number | null;
+  generated_at?: string | null;
+  issues?: OperatorIssue[];
+}
+
+export interface ArtifactConsistencyResult {
+  status: "pass" | "fail" | "missing" | "warn" | "error";
+  available?: boolean;
+  warning?: boolean;
+  mutation_status?: string | null;
+  warnings?: ClientPackageWarning[];
+  issues?: OperatorIssue[];
+  generated_at?: string | null;
+}
+
+export type FeedbackBehaviorClass =
+  | "known_good"
+  | "known_risky"
+  | "cold_start"
+  | "unknown";
+
+export interface FeedbackIngestionSummary {
+  status?: string | null;
+  available?: boolean;
+  total_rows?: number | null;
+  accepted_rows?: number | null;
+  skipped_rows?: number | null;
+  error_rows?: number | null;
+  unique_emails?: number | null;
+  unique_domains?: number | null;
+  errors?: Array<{
+    row?: number | null;
+    code: string;
+    message: string;
+  }>;
+  generated_at?: string | null;
+}
+
+export interface FeedbackPreviewRecord {
+  domain: string;
+  behavior_class: FeedbackBehaviorClass;
+  total_observations?: number | null;
+  known_good?: number | null;
+  known_risky?: number | null;
+  bounce_rate?: number | null;
+  confidence?: number | null;
+  notes?: string[] | null;
+}
+
+export interface FeedbackPreviewResult {
+  status?: string | null;
+  available?: boolean;
+  total_domains?: number | null;
+  total_observations?: number | null;
+  known_good?: number | null;
+  known_risky?: number | null;
+  cold_start?: number | null;
+  unknown?: number | null;
+  records?: FeedbackPreviewRecord[];
+  warnings?: ClientPackageWarning[];
+  generated_at?: string | null;
+}
+
+// Flat 409 payload returned exclusively by
+// GET /api/operator/jobs/{job_id}/client-package/download when any
+// gate (review summary, ready_for_client, manifest, audience,
+// path-escape) blocks the download. NOT a generic API error envelope —
+// the rest of the app uses ApiError from lib/api.ts for that.
+export interface ClientPackageDownloadError {
+  error: string;
+  message: string;
+  ready_for_client: false;
+  status?: string | null;
+  bad_files?: Array<{
+    filename: string | null;
+    audience: string | null;
+  }>;
+}

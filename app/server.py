@@ -49,6 +49,13 @@ from .api_boundary import (
     load_job_summary,
     run_cleaning_job,
 )
+from .artifact_contract import (
+    ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    ARTIFACT_AUDIENCE_INTERNAL_ONLY,
+    ARTIFACT_AUDIENCE_OPERATOR_ONLY,
+    ARTIFACT_AUDIENCE_TECHNICAL_DEBUG,
+    get_artifact_audience,
+)
 from .db.read_path import load_artifact_record as load_db_artifact_record
 from .db.read_path import load_artifact_records as load_db_artifact_records
 from .db.read_path import load_job_record as load_db_job_record
@@ -834,7 +841,7 @@ _PUBLIC_REPORT_KEYS: tuple[str, ...] = (
 
 
 @app.get("/results/{job_id}")
-def get_results(job_id: str) -> dict[str, Any]:
+def get_results(job_id: str, response: Response) -> dict[str, Any]:
     """Return structured results for a completed job.
 
     Response shape::
@@ -850,12 +857,21 @@ def get_results(job_id: str) -> dict[str, Any]:
             "invalid":                {"count", "download_url", "filename"}
           },
           "reports":     {"<key>": "<download_url>", ...},
-          "artifacts_zip": "<download_url>"
+          "artifacts_zip": "<download_url>",
+          "delivery_contract": "not-client-delivery"
         }
 
     Returns 409 if the job is not yet completed, 404 if the job id is
     unknown. The download URLs point at the canonical
     ``/jobs/{id}/artifacts/...`` routes — no results data is duplicated.
+
+    V2.10.0.3 — this surface is operator-facing only. Both the
+    response body and the headers carry an explicit
+    ``not-client-delivery`` marker so a downstream UI cannot mistake
+    it for the client deliverable. The reports list mixes
+    ``operator_only`` and ``technical_debug`` keys that the
+    audience-guarded artifact route will refuse to serve without
+    operator context — that's intentional.
     """
     result = _load_job_result(job_id)
     if result is None:
@@ -903,6 +919,9 @@ def get_results(job_id: str) -> dict[str, Any]:
         if _db_artifact_path(job_id, key) is not None or _artifact_path(result, key) is not None:
             reports[key] = f"/jobs/{job_id}/artifacts/{key}"
 
+    response.headers["X-TrashPanda-Audience"] = ARTIFACT_AUDIENCE_OPERATOR_ONLY
+    response.headers["X-TrashPanda-Delivery-Contract"] = "not-client-delivery"
+
     return {
         "job_id": job_id,
         "status": status_value,
@@ -913,6 +932,7 @@ def get_results(job_id: str) -> dict[str, Any]:
         "buckets": buckets,
         "reports": reports,
         "artifacts_zip": f"/jobs/{job_id}/artifacts/zip",
+        "delivery_contract": "not-client-delivery",
     }
 
 
@@ -1808,8 +1828,96 @@ def _media_type_for(path: Path) -> str:
     return "application/octet-stream"
 
 
+# --------------------------------------------------------------------------- #
+# V2.10.0.3 — Legacy artifact route hardening
+#
+# These helpers gate the legacy ``/jobs/{id}/artifacts/{key}`` and
+# ``/jobs/{id}/artifacts/zip`` routes behind an explicit operator
+# acknowledgment. They are NOT auth (deferred to V2.10.x); they exist
+# to make sure no downstream UI can mistake the legacy surface for the
+# client delivery contract. Real client delivery now flows through
+# ``GET /api/operator/jobs/{id}/client-package/download`` (V2.10.0.2),
+# which strictly filters via :mod:`app.artifact_contract`.
+# --------------------------------------------------------------------------- #
+
+
+_OPERATOR_CONTEXT_HEADER = "x-trashpanda-operator-context"
+_OPERATOR_CONTEXT_TRUTHY = {"true", "1", "yes"}
+
+
+def _operator_context_active(request: Request) -> bool:
+    """Return True iff the caller declared explicit operator context.
+
+    Accepts either ``?operator=true`` (or ``1`` / ``yes``) or the
+    header ``X-TrashPanda-Operator-Context: true``. Header takes the
+    same lenient truthy values as the query param so an HTTP client
+    that can't easily tweak the URL can still opt in.
+    """
+
+    op_q = (request.query_params.get("operator") or "").strip().lower()
+    if op_q in _OPERATOR_CONTEXT_TRUTHY:
+        return True
+    op_h = (request.headers.get(_OPERATOR_CONTEXT_HEADER) or "").strip().lower()
+    return op_h in _OPERATOR_CONTEXT_TRUTHY
+
+
+def _audience_block_payload(
+    error: str,
+    message: str,
+    audience: str,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Flat 403 payload used by the legacy artifact guards.
+
+    Mirrors the V2.10.0.2 download endpoint's flat shape so the same
+    operator UI can branch on a top-level ``error`` / ``audience``
+    without unwrapping the nested ``error.error_type`` envelope used
+    elsewhere in this module.
+    """
+
+    payload: dict[str, Any] = {
+        "error": error,
+        "message": message,
+        "audience": audience,
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
 @app.get("/jobs/{job_id}/artifacts/zip")
-def get_artifacts_zip(job_id: str) -> Response:
+def get_artifacts_zip(job_id: str, request: Request) -> Response:
+    """Operator-only diagnostic ZIP of the full run directory.
+
+    NOT a client delivery contract. Default-blocks unless the caller
+    declares operator context (``?operator=true`` or the header
+    ``X-TrashPanda-Operator-Context: true``). When allowed, the
+    response carries ``X-TrashPanda-Audience: operator_only`` and
+    ``X-TrashPanda-Delivery-Contract: not-client-delivery`` so any
+    downstream UI cannot mistake it for the client package.
+
+    The real client deliverable is built and served by V2.10.0.2:
+    ``GET /api/operator/jobs/{job_id}/client-package/download``
+    (gated behind ``operator_review_summary.ready_for_client === true``).
+    """
+
+    if not _operator_context_active(request):
+        return JSONResponse(
+            status_code=403,
+            content=_audience_block_payload(
+                "legacy_zip_not_client_delivery",
+                "The legacy artifacts ZIP is operator-only and is not a "
+                "client delivery package. Use "
+                "/api/operator/jobs/{job_id}/client-package/download "
+                "after ready_for_client=true. Pass ?operator=true or "
+                "X-TrashPanda-Operator-Context: true to acknowledge "
+                "operator-only diagnostic use.",
+                ARTIFACT_AUDIENCE_OPERATOR_ONLY,
+                extra={"delivery_contract": "not-client-delivery"},
+            ),
+        )
+
     result = _load_job_result(job_id)
     if result is None:
         _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
@@ -1842,12 +1950,36 @@ def get_artifacts_zip(job_id: str) -> Response:
     return Response(
         content=zip_bytes,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{download_name}"',
+            "X-TrashPanda-Audience": ARTIFACT_AUDIENCE_OPERATOR_ONLY,
+            "X-TrashPanda-Delivery-Contract": "not-client-delivery",
+        },
     )
 
 
 @app.get("/jobs/{job_id}/artifacts/{key}")
-def get_artifact(job_id: str, key: str) -> FileResponse:
+def get_artifact(job_id: str, key: str, request: Request) -> Response:
+    """Audience-guarded artifact download.
+
+    Resolution order is unchanged (DB record → in-memory JobResult →
+    404). What changed in V2.10.0.3: once a real on-disk path is found,
+    the artifact's audience (per :mod:`app.artifact_contract`) decides
+    whether to serve it.
+
+    * ``client_safe``  → 200, ``X-TrashPanda-Audience: client_safe``.
+    * ``operator_only`` / ``technical_debug`` → 403 by default; allowed
+      with explicit operator context (``?operator=true`` or
+      ``X-TrashPanda-Operator-Context: true``), in which case the
+      audience header is set to the actual classification.
+    * ``internal_only`` (DB files, runtime stores, logs, conservative
+      default for unknown keys) → 403 always, even with operator context.
+
+    The 404 path is preserved verbatim so a missing-key probe doesn't
+    silently flip to 403 just because unknown keys default to
+    ``internal_only`` in the contract.
+    """
+
     path = _db_artifact_path(job_id, key, require_exists=True)
     if path is None:
         result = _load_job_result(job_id)
@@ -1873,8 +2005,39 @@ def get_artifact(job_id: str, key: str) -> FileResponse:
             },
         )
 
+    audience = get_artifact_audience(key)
+
+    if audience == ARTIFACT_AUDIENCE_INTERNAL_ONLY:
+        return JSONResponse(
+            status_code=403,
+            content=_audience_block_payload(
+                "artifact_not_downloadable",
+                "This artifact is internal-only and cannot be downloaded.",
+                ARTIFACT_AUDIENCE_INTERNAL_ONLY,
+                extra={"key": key},
+            ),
+        )
+
+    if audience in (
+        ARTIFACT_AUDIENCE_OPERATOR_ONLY,
+        ARTIFACT_AUDIENCE_TECHNICAL_DEBUG,
+    ):
+        if not _operator_context_active(request):
+            return JSONResponse(
+                status_code=403,
+                content=_audience_block_payload(
+                    "operator_artifact_requires_operator_context",
+                    "This artifact is operator-only or technical/debug "
+                    "and is not a client deliverable. Pass ?operator=true "
+                    "or X-TrashPanda-Operator-Context: true to acknowledge.",
+                    audience,
+                    extra={"key": key},
+                ),
+            )
+
     return FileResponse(
         path=path,
         filename=path.name,
         media_type=_media_type_for(path),
+        headers={"X-TrashPanda-Audience": audience},
     )

@@ -1,0 +1,182 @@
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--stroke-steel);
+}
+
+.titleWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.6px;
+  color: var(--ink-low);
+  text-transform: uppercase;
+}
+
+.title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  letter-spacing: 0.4px;
+  color: var(--ink-high);
+}
+
+.headMeta {
+  flex-shrink: 0;
+}
+
+.readyChip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  border-radius: 2px;
+  border: 1px solid transparent;
+}
+
+.readyChipOk {
+  color: var(--neon);
+  background: rgba(142, 255, 58, 0.1);
+  border-color: rgba(142, 255, 58, 0.4);
+  text-shadow: 0 0 8px var(--neon-glow);
+}
+
+.readyChipBlocked {
+  color: var(--danger);
+  background: rgba(255, 58, 92, 0.08);
+  border-color: rgba(255, 58, 92, 0.4);
+}
+
+.notice {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--warn);
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 184, 58, 0.32);
+  border-left: 3px solid var(--warn);
+  background: rgba(255, 184, 58, 0.06);
+  border-radius: 2px;
+}
+
+.downloadBtn {
+  align-self: flex-start;
+  padding: 11px 22px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--bg-void);
+  background: var(--neon);
+  border: 1px solid var(--neon);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+  font-weight: 700;
+}
+
+.downloadBtn:hover:not(:disabled) {
+  background: var(--neon-bright);
+  box-shadow: 0 0 18px var(--neon-glow);
+}
+
+.downloadBtn:disabled {
+  cursor: not-allowed;
+  background: rgba(125, 168, 208, 0.08);
+  color: var(--ink-low);
+  border-color: var(--ink-ghost);
+  box-shadow: none;
+}
+
+.disabledReason {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-low);
+  letter-spacing: 0.4px;
+}
+
+.blocked {
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 58, 92, 0.4);
+  border-left: 3px solid var(--danger);
+  background: rgba(255, 58, 92, 0.06);
+  border-radius: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.blockedTitle {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--danger);
+}
+
+.blockedMessage {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--ink-mid);
+  line-height: 1.5;
+}
+
+.blockedMeta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-low);
+}
+
+.badFiles {
+  margin: 4px 0 0;
+  padding: 0 0 0 18px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--danger);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.errorBox {
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 58, 92, 0.32);
+  border-left: 3px solid var(--danger);
+  background: rgba(255, 58, 92, 0.06);
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.success {
+  padding: 10px 12px;
+  border: 1px solid rgba(142, 255, 58, 0.32);
+  border-left: 3px solid var(--neon);
+  background: rgba(142, 255, 58, 0.06);
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--neon);
+}

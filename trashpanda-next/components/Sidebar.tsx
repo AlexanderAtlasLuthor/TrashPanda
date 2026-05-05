@@ -56,6 +56,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
   const isLeadDiscovery = pathname?.startsWith("/lead-discovery");
   const isDomainAudit = pathname?.startsWith("/domain-audit");
   const isPipelines = pathname?.startsWith("/pipelines");
+  const isOperator = pathname?.startsWith("/operator") ?? false;
 
   // Results / Insights / Review are all job-scoped. If we're inside any one
   // of them we can pull the jobId from the path and keep the other two
@@ -179,6 +180,29 @@ export function Sidebar({ open, onClose }: SidebarProps) {
               <svg viewBox="0 0 24 24">
                 <circle cx="12" cy="12" r="9" />
                 <path d="M12 7v5l3 3" />
+              </svg>
+            }
+          />
+        </div>
+
+        <div className={styles.section}>
+          <div className={styles.sectionLabel}>// Operator</div>
+          <NavLink
+            href="/operator"
+            active={isOperator}
+            label="Operator Console"
+            icon={
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 2l9 4v6c0 5-3.8 8.6-9 10-5.2-1.4-9-5-9-10V6l9-4z" />
+                <path d="M9 12l2 2 4-4" />
               </svg>
             }
           />
