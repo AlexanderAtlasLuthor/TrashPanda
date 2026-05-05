@@ -114,6 +114,13 @@ MAX_UPLOAD_MB: int = int(os.environ.get("TRASHPANDA_MAX_UPLOAD_MB", "100"))
 MAX_UPLOAD_BYTES: int = MAX_UPLOAD_MB * 1024 * 1024
 _UPLOAD_CHUNK_SIZE: int = 1024 * 1024  # 1 MiB streaming chunks
 
+# Hard wall-clock ceiling for a single job. After this many seconds the
+# cancellation flag is flipped automatically so cooperative loops (the
+# SMTP probe in particular) unwind. ``0`` disables the watchdog.
+MAX_JOB_WALL_CLOCK_SECONDS: int = int(
+    os.environ.get("TRASHPANDA_MAX_JOB_SECONDS", str(45 * 60))
+)
+
 ARTIFACT_KEYS: dict[str, tuple[str, str]] = {
     "valid_emails": ("client_outputs", "valid_emails"),
     "review_emails": ("client_outputs", "review_emails"),
@@ -593,6 +600,30 @@ def _queued_result(job_id: str, input_filename: str) -> JobResult:
     )
 
 
+def _arm_wall_clock_watchdog(job_id: str) -> threading.Timer | None:
+    """Install a Timer that flips the cancellation flag after the deadline.
+
+    Returns the Timer so the caller can cancel it on normal completion.
+    Watchdog is skipped when ``MAX_JOB_WALL_CLOCK_SECONDS`` is not
+    positive.
+    """
+
+    if MAX_JOB_WALL_CLOCK_SECONDS <= 0:
+        return None
+
+    def _trip() -> None:
+        if _cancellation.cancel(job_id):
+            LOGGER.warning(
+                "wall-clock watchdog tripped for job %s after %ds",
+                job_id, MAX_JOB_WALL_CLOCK_SECONDS,
+            )
+
+    timer = threading.Timer(float(MAX_JOB_WALL_CLOCK_SECONDS), _trip)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
 def _run_job(
     job_id: str,
     input_path: Path,
@@ -601,6 +632,7 @@ def _run_job(
 ) -> None:
     JOB_STORE.mark_running(job_id)
     persist_job_started(job_id)
+    watchdog = _arm_wall_clock_watchdog(job_id)
     try:
         result = run_cleaning_job(
             input_path=input_path,
@@ -609,13 +641,25 @@ def _run_job(
             job_id=job_id,
         )
     except Exception as exc:  # pragma: no cover - defensive guard
+        if watchdog is not None:
+            watchdog.cancel()
+        was_cancelled = _cancellation.is_cancelled(job_id)
+        message = (
+            "Processing was cancelled (wall-clock timeout exceeded "
+            f"after {MAX_JOB_WALL_CLOCK_SECONDS}s)."
+            if was_cancelled
+            else "Processing failed before a JobResult could be created."
+        )
         JOB_STORE.mark_failed(
             job_id=job_id,
             input_filename=input_path.name,
             error=JobError(
                 error_type=JobErrorType.PIPELINE_EXECUTION_ERROR,
-                message="Processing failed before a JobResult could be created.",
-                details={"exception_class": exc.__class__.__name__},
+                message=message,
+                details={
+                    "exception_class": exc.__class__.__name__,
+                    "cancelled": was_cancelled,
+                },
             ),
         )
         failed = JOB_STORE.get(job_id)
@@ -630,6 +674,9 @@ def _run_job(
                 error_details=error.details if error is not None else None,
             )
         return
+    finally:
+        if watchdog is not None:
+            watchdog.cancel()
 
     JOB_STORE.set_result(result)
     persist_job_completed(

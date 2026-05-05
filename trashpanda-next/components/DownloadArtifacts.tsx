@@ -9,6 +9,22 @@ interface DownloadArtifactsProps {
   inputFilename?: string | null;
 }
 
+// Preferred PRIMARY artifact, in order. The first one that the
+// backend actually produced becomes "USE THIS FIRST" in the UI.
+const PRIMARY_KEY_PREFERENCES: ReadonlyArray<string> = [
+  "approved_original_format",
+  "valid_emails",
+];
+
+function pickPrimaryKey(
+  available: Record<string, string | null>,
+): string | null {
+  for (const candidate of PRIMARY_KEY_PREFERENCES) {
+    if (available[candidate]) return candidate;
+  }
+  return null;
+}
+
 export function DownloadArtifacts({ jobId, artifacts, inputFilename }: DownloadArtifactsProps) {
   const clientOutputs = artifacts?.client_outputs ?? {};
   const technical = artifacts?.technical_csvs ?? {};
@@ -23,6 +39,8 @@ export function DownloadArtifacts({ jobId, artifacts, inputFilename }: DownloadA
       .filter(([, v]) => !!v)
       .map(([key, filename]) => ({ key, filename: filename as string })),
   ];
+
+  const primaryKey = pickPrimaryKey(clientOutputs);
 
   return (
     <div className={styles.panel}>
@@ -59,10 +77,12 @@ export function DownloadArtifacts({ jobId, artifacts, inputFilename }: DownloadA
         {CLIENT_OUTPUT_MANIFEST.map((item) => {
           const filename = clientOutputs[item.key] ?? item.filename;
           const available = !!clientOutputs[item.key];
+          const isPrimary = available && item.key === primaryKey;
           const itemClass = [
             styles.item,
             styles[item.severity],
             !available && styles.itemDisabled,
+            isPrimary && styles.itemPrimary,
           ]
             .filter(Boolean)
             .join(" ");
@@ -77,6 +97,9 @@ export function DownloadArtifacts({ jobId, artifacts, inputFilename }: DownloadA
             >
               <div className={styles.icon}>XLSX</div>
               <div className={styles.info}>
+                {isPrimary && (
+                  <div className={styles.primaryRibbon}>★ Recommended download</div>
+                )}
                 <div className={styles.label}>{item.label}</div>
                 <div className={styles.filename}>{filename}</div>
                 <div className={styles.description}>{item.description}</div>

@@ -193,7 +193,16 @@ def _is_role_based(email: str) -> bool:
 
 @dataclass(slots=True)
 class _RowDecision:
-    final_action: str  # confirmed_safe | recommended_send | review_catch_all | suppress
+    # final_action vocabulary (matches the V2 deliverability post-mortem):
+    #   confirmed_safe       SMTP-valid + no risk flags
+    #   recommended_send     high probability, offline-only
+    #   review_catch_all     Yahoo / AOL / Verizon-class / catch-all
+    #   suppress             SMTP invalid / disposable / DNS failure /
+    #                        domain-risk-medium-or-high / low probability
+    #   rejected             syntax invalid / hard-fail / duplicate /
+    #                        role-based — i.e. structural rejects that
+    #                        would never be sent regardless of policy
+    final_action: str
     risk_tier: str
     reason: str
     note: str
@@ -223,18 +232,38 @@ def _decide(row: pd.Series, config: ExtraStrictConfig) -> _RowDecision:
         else "offline_only"
     )
 
-    # ---- Hard suppress ---------------------------------------------------
+    # ---- Structural rejection (rejected tier) ----------------------------
+    # ``rejected`` covers rows that are not deliverable for *structural*
+    # reasons — bad syntax, hard-fail, duplicate, role-based — i.e. we
+    # would never send to them regardless of how strict the policy is.
     if hard_fail:
         return _RowDecision(
-            "suppress", "high", "hard_fail",
+            "rejected", "high", "hard_fail",
             "Structural failure: invalid syntax or missing MX.",
             smtp_status, "none", provider, probability, domain,
         )
-    if final_action_v2 == "auto_reject" or bucket in {"hard_fail", "duplicate"}:
+    if bucket == "duplicate" or final_action_v2 == "duplicate":
         return _RowDecision(
-            "suppress", "high", final_action_v2 or bucket or "rejected",
-            "Pipeline rejected this row.", smtp_status, "none",
-            provider, probability, domain,
+            "rejected", "high", "duplicate",
+            "Duplicate of another row in the upload.",
+            smtp_status, "none", provider, probability, domain,
+        )
+    if bucket == "hard_fail":
+        return _RowDecision(
+            "rejected", "high", "hard_fail",
+            "Pipeline marked this row as a structural hard-fail.",
+            smtp_status, "none", provider, probability, domain,
+        )
+
+    # ---- Policy suppression (suppress tier) ------------------------------
+    # ``suppress`` covers rows that *could* in theory be sent but are
+    # excluded by the extra-strict policy: SMTP-invalid mailbox,
+    # high/medium-risk domain, low probability, etc.
+    if final_action_v2 == "auto_reject":
+        return _RowDecision(
+            "suppress", "high", "v2_auto_reject",
+            "V2 decision engine rejected this row.",
+            smtp_status, "none", provider, probability, domain,
         )
     if smtp_status == "invalid":
         return _RowDecision(
@@ -280,7 +309,7 @@ def _decide(row: pd.Series, config: ExtraStrictConfig) -> _RowDecision:
     # ---- Role-based ------------------------------------------------------
     if config.role_based_excluded and role_based:
         return _RowDecision(
-            "suppress", "medium", "role_based_address",
+            "rejected", "medium", "role_based_address",
             "Role-based local part (info@, support@, …) — not a person.",
             smtp_status, confirmation_level, provider, probability, domain,
         )
@@ -341,6 +370,8 @@ def _recommended_action_for(decision: _RowDecision) -> str:
         return "send_with_caution"
     if decision.final_action == "review_catch_all":
         return "review"
+    if decision.final_action == "rejected":
+        return "do_not_send"
     return "suppress"
 
 
@@ -407,6 +438,7 @@ def _write_summary_text(
     recommended = counts.get("recommended_send", 0)
     catch_all = counts.get("review_catch_all", 0)
     suppressed = counts.get("suppress", 0)
+    rejected = counts.get("rejected", 0)
     primary = confirmed + recommended
 
     lines = [
@@ -417,7 +449,8 @@ def _write_summary_text(
         f"  confirmed_safe (SMTP-valid):    {confirmed}",
         f"  recommended_send (offline):     {recommended}",
         f"Review (catch-all/Yahoo-class):   {catch_all}",
-        f"Removed (extra risk):             {suppressed}",
+        f"Suppressed (policy):              {suppressed}",
+        f"Rejected (structural):            {rejected}",
         "",
         "Policy:",
         f"  min deliverability probability: {config.min_deliverability_probability:.2f}",
@@ -429,7 +462,8 @@ def _write_summary_text(
         "",
         "Outputs:",
         "  clean_final_extra_strict.xlsx  ← PRIMARY deliverable (send this)",
-        "  removed_extra_risk.xlsx        ← excluded rows + reason",
+        "  removed_extra_risk.xlsx        ← suppressed by extra-strict policy",
+        "  rejected_structural.xlsx       ← hard-fail / duplicate / role-based",
         "  review_catch_all.xlsx          ← Yahoo/AOL-class, validate via campaign",
         "  cleaning_summary.txt           ← this file",
         "  README_CLIENT.txt              ← one-page client instructions",
@@ -465,9 +499,15 @@ Other files
       real campaign feedback before bulk-sending.
 
   removed_extra_risk.xlsx
-      Rows removed under the extra-strict policy with the reason
-      filled in (low probability, role-based, high-risk domain,
-      hard-fail, …). Useful for audit; not for sending.
+      Rows suppressed by the extra-strict policy: low deliverability
+      probability, high/medium-risk domain, SMTP-invalid mailbox.
+      Useful for audit; not for sending.
+
+  rejected_structural.xlsx
+      Rows that are not deliverable for structural reasons:
+      hard-fail syntax / missing MX, duplicate of another row,
+      role-based local-part (info@, support@, …). These would
+      never be sent regardless of policy.
 
   cleaning_summary.txt
       Counts and policy thresholds used for this run.
@@ -494,6 +534,7 @@ class ExtraStrictResult:
     primary_xlsx: Path
     removed_xlsx: Path
     review_xlsx: Path
+    rejected_xlsx: Path
     summary_txt: Path
     readme_txt: Path
     counts: dict[str, int]
@@ -532,18 +573,22 @@ def run_extra_strict_clean(
     )
     review_mask = decisions["trashpanda_final_action"] == "review_catch_all"
     suppress_mask = decisions["trashpanda_final_action"] == "suppress"
+    rejected_mask = decisions["trashpanda_final_action"] == "rejected"
 
     primary_df = decisions.loc[primary_mask].reset_index(drop=True)
     review_df = decisions.loc[review_mask].reset_index(drop=True)
     suppress_df = decisions.loc[suppress_mask].reset_index(drop=True)
+    rejected_df = decisions.loc[rejected_mask].reset_index(drop=True)
 
     primary_xlsx = out_dir / "clean_final_extra_strict.xlsx"
     review_xlsx = out_dir / "review_catch_all.xlsx"
     removed_xlsx = out_dir / "removed_extra_risk.xlsx"
+    rejected_xlsx = out_dir / "rejected_structural.xlsx"
 
     _write_xlsx(primary_df, primary_xlsx, sheet="primary")
     _write_xlsx(review_df, review_xlsx, sheet="review")
     _write_xlsx(suppress_df, removed_xlsx, sheet="removed")
+    _write_xlsx(rejected_df, rejected_xlsx, sheet="rejected")
 
     counts = Counter(decisions["trashpanda_final_action"].tolist())
     summary_txt = _write_summary_text(out_dir, counts, len(decisions), config)
@@ -564,6 +609,7 @@ def run_extra_strict_clean(
             "primary_xlsx": primary_xlsx.name,
             "review_xlsx": review_xlsx.name,
             "removed_xlsx": removed_xlsx.name,
+            "rejected_xlsx": rejected_xlsx.name,
             "summary_txt": summary_txt.name,
             "readme_txt": readme_txt.name,
         },
@@ -578,6 +624,7 @@ def run_extra_strict_clean(
         primary_xlsx=primary_xlsx,
         removed_xlsx=removed_xlsx,
         review_xlsx=review_xlsx,
+        rejected_xlsx=rejected_xlsx,
         summary_txt=summary_txt,
         readme_txt=readme_txt,
         counts=dict(counts),

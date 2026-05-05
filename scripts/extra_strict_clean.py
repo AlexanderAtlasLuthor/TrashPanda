@@ -122,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"PRIMARY:         {result.primary_xlsx}")
     print(f"review_catchall: {result.review_xlsx}")
     print(f"removed:         {result.removed_xlsx}")
+    print(f"rejected:        {result.rejected_xlsx}")
     print(f"summary:         {result.summary_txt}")
     print(f"readme:          {result.readme_txt}")
     return 0

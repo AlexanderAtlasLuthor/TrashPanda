@@ -1,0 +1,35 @@
+# Operator-editable provider skip-list for SMTP live probing.
+#
+# One domain per line. Blank lines and lines starting with "#" are
+# ignored. Domains listed here are short-circuited by
+# ``app.validation_v2.smtp_probe.probe_email_smtplib`` as
+# ``inconclusive`` *without* opening a network connection — useful for
+# providers that accept the SMTP handshake and then bounce afterwards
+# (Yahoo / AOL / Verizon-class) or any other provider that turns out
+# to be unreliable for the customer's mailing-list workload.
+#
+# Comments and order are free-form; the loader normalises everything
+# to lowercase and de-duplicates.
+
+# --- Yahoo / Verizon Media family ----------------------------------
+yahoo.com
+ymail.com
+rocketmail.com
+verizon.net
+verizon-media.com
+
+# --- AOL family -----------------------------------------------------
+aol.com
+aim.com
+
+# --- AT&T / SBC legacy mail aliases (Yahoo-backed) -----------------
+sbcglobal.net
+att.net
+bellsouth.net
+ameritech.net
+pacbell.net
+swbell.net
+
+# --- Frontier (Yahoo-backed legacy) --------------------------------
+frontier.com
+frontiernet.net

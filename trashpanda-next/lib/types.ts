@@ -50,6 +50,40 @@ export interface JobLogs {
   lines: string[];
 }
 
+/**
+ * Live SMTP probe counters surfaced by the backend for a running job.
+ * Sourced from ``smtp_runtime_summary.json`` written during the run.
+ */
+export interface SmtpProgress {
+  attempted: number;
+  seen: number;
+  total: number;
+  valid: number;
+  invalid: number;
+  inconclusive: number;
+  timeout: number;
+  blocked: number;
+  ratio: number | null;
+  /** True when the run is hitting real MXs (not dry-run). */
+  live: boolean;
+}
+
+export interface JobProgress {
+  job_id: string;
+  status: JobStatus;
+  cancelled: boolean;
+  started_at?: string | null;
+  finished_at?: string | null;
+  smtp: SmtpProgress | null;
+}
+
+export interface JobCancelResponse {
+  job_id: string;
+  status: JobStatus | string;
+  cancelled: boolean;
+  reason: string;
+}
+
 export interface JobListItem {
   job_id: string;
   input_filename?: string | null;
@@ -315,6 +349,16 @@ export interface ClientPackageFile {
   // V2.9.6 manifest emits ``key`` (artifact-key stem) — kept optional
   // since older snapshots predate this field.
   key?: string | null;
+  /** Builder marks ONE file as the recommended PRIMARY download. */
+  primary?: boolean | null;
+}
+
+/** Primary-artifact block emitted by the V2 client package builder. */
+export interface PrimaryArtifactBlock {
+  key: string | null;
+  filename: string | null;
+  label: string;
+  reason?: string | null;
 }
 
 export interface ClientPackageExcludedFile {
@@ -345,6 +389,10 @@ export interface ClientPackageManifest {
   package_name?: string | null;
   generated_at?: string | null;
   ready_for_client?: boolean | null;
+  /** PRIMARY artifact pointer — the single "use this first" download. */
+  primary_artifact?: PrimaryArtifactBlock | null;
+  /** Filename of the always-on README inside the package. */
+  readme_filename?: string | null;
   files_included: ClientPackageFile[];
   files_excluded?: ClientPackageExcludedFile[];
   warnings?: ClientPackageWarning[];

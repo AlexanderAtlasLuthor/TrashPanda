@@ -40,11 +40,13 @@ Safety notes
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import time
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,6 +61,11 @@ _LOGGER = logging.getLogger(__name__)
 # deliverability signal. These accept the envelope at SMTP time and
 # bounce the message *after* the 250, so probing produces noise. We
 # return ``inconclusive`` for them up front and skip the network call.
+#
+# This in-code default is the *fallback*. The canonical operator-edited
+# list lives at ``configs/skip_smtp_providers.txt`` and is loaded by
+# :func:`load_skip_providers_from_file`. The in-code copy guarantees we
+# never lose the well-known opaque providers if the file is missing.
 DEFAULT_OPAQUE_PROVIDERS: frozenset[str] = frozenset(
     {
         "yahoo.com",
@@ -78,6 +85,50 @@ DEFAULT_OPAQUE_PROVIDERS: frozenset[str] = frozenset(
         "frontiernet.net",
     }
 )
+
+
+# Default location of the operator-editable skip-list (relative to the
+# project root). Override with ``TRASHPANDA_SKIP_SMTP_PROVIDERS_PATH``
+# for tests or non-standard layouts.
+_DEFAULT_SKIP_FILE = Path("configs") / "skip_smtp_providers.txt"
+
+
+def load_skip_providers_from_file(
+    path: str | Path | None = None,
+) -> frozenset[str]:
+    """Read the operator-editable skip-list and merge with the defaults.
+
+    The file format is one domain per line; blanks and ``#`` comments
+    are ignored. Domains are lowercased and de-duplicated. If the file
+    is missing or unreadable the in-code defaults are returned, so the
+    pipeline never silently loses Yahoo/AOL-class protection.
+    """
+
+    env_override = os.environ.get("TRASHPANDA_SKIP_SMTP_PROVIDERS_PATH")
+    candidate = (
+        Path(path)
+        if path is not None
+        else (Path(env_override) if env_override else _DEFAULT_SKIP_FILE)
+    )
+
+    domains: set[str] = set(DEFAULT_OPAQUE_PROVIDERS)
+    try:
+        if candidate.is_file():
+            for raw in candidate.read_text(encoding="utf-8").splitlines():
+                line = raw.split("#", 1)[0].strip().lower()
+                if line:
+                    domains.add(line)
+        else:
+            _LOGGER.debug(
+                "skip_smtp_providers: file not found at %s — using built-in defaults",
+                candidate,
+            )
+    except OSError as exc:  # pragma: no cover - defensive guard
+        _LOGGER.warning(
+            "skip_smtp_providers: failed to read %s (%s) — using built-in defaults",
+            candidate, exc,
+        )
+    return frozenset(domains)
 
 
 # --------------------------------------------------------------------------- #
@@ -142,8 +193,17 @@ def probe_email_dry_run(email: str, **_kwargs: object) -> SMTPResult:
 
 
 def _normalise_skip_set(skip: Iterable[str] | None) -> frozenset[str]:
+    """Resolve the effective skip-list for one probe invocation.
+
+    ``None`` (the default) loads the operator-editable file at
+    ``configs/skip_smtp_providers.txt`` and unions it with the in-code
+    defaults. Any explicit iterable — including the empty list — is
+    used verbatim, which lets tests opt in to live probing of opaque
+    providers when they need to.
+    """
+
     if skip is None:
-        return DEFAULT_OPAQUE_PROVIDERS
+        return load_skip_providers_from_file()
     return frozenset(s.strip().lower() for s in skip if s and s.strip())
 
 
@@ -192,6 +252,63 @@ def _too_little_budget(deadline: float | None, need: float) -> bool:
     return _budget_left(deadline) < need
 
 
+def _single_rcpt_conversation(
+    mx_host: str,
+    addr: str,
+    *,
+    sender: str,
+    helo_name: str,
+    deadline: float,
+    cmd_to: float,
+    cancel_check: Callable[[], bool] | None = None,
+) -> tuple[int | None, str]:
+    """Open one fresh SMTP connection and issue a single RCPT.
+
+    Returns ``(code, response_message)``. The MAIL FROM rejection is
+    surfaced as a synthetic ``(None, "MAIL FROM rejected: <code>")``
+    so callers can treat it as inconclusive.
+
+    Raises the underlying ``smtplib`` / socket exception so the outer
+    probe can translate it into a single ``SMTPResult``.
+    """
+
+    import smtplib
+
+    connect_to = max(0.5, min(cmd_to, _budget_left(deadline)))
+    smtp = smtplib.SMTP(mx_host, 25, timeout=connect_to)
+    try:
+        _apply_socket_timeout(smtp, min(cmd_to, _budget_left(deadline)))
+        smtp.helo(helo_name)
+
+        if cancel_check is not None and cancel_check():
+            return None, "cancelled"
+
+        _apply_socket_timeout(smtp, min(cmd_to, _budget_left(deadline)))
+        mail_code, _ = smtp.mail(sender)
+        if mail_code not in (250, 251):
+            return None, f"MAIL FROM rejected: {mail_code}"
+
+        if cancel_check is not None and cancel_check():
+            return None, "cancelled"
+
+        _apply_socket_timeout(smtp, min(cmd_to, _budget_left(deadline)))
+        code, raw_msg = smtp.rcpt(addr)
+        response = (
+            raw_msg.decode("utf-8", errors="replace")
+            if isinstance(raw_msg, bytes)
+            else str(raw_msg)
+        )[:200]
+        return code, response
+    finally:
+        try:
+            smtp.quit()
+        except Exception:  # pragma: no cover - quit() is best-effort
+            try:
+                smtp.close()
+            except Exception:
+                pass
+
+
 def probe_email_smtplib(
     email: str,
     *,
@@ -203,6 +320,7 @@ def probe_email_smtplib(
     cancel_check: Callable[[], bool] | None = None,
     skip_providers: Iterable[str] | None = None,
     enable_catch_all_check: bool = True,
+    catch_all_separate_connection: bool = True,
 ) -> SMTPResult:
     """Issue one ``RCPT TO`` probe against the address's MX.
 
@@ -223,13 +341,21 @@ def probe_email_smtplib(
         immediately and reports ``inconclusive``.
     skip_providers
         Domains in this set are skipped (returned as ``inconclusive``)
-        without any network I/O. Defaults to
-        :data:`DEFAULT_OPAQUE_PROVIDERS` (Yahoo/AOL/Verizon-class).
-        Pass an empty iterable to disable.
+        without any network I/O. ``None`` (default) loads the
+        operator-editable file at
+        ``configs/skip_smtp_providers.txt`` (merged with the in-code
+        Yahoo/AOL/Verizon-class defaults). Pass an empty iterable to
+        disable.
     enable_catch_all_check
         When True (default) a second ``RCPT`` for a random local-part
-        is issued on the same connection to detect catch-all hosts.
-        Skipped when the remaining budget is too small.
+        is issued to detect catch-all hosts. Skipped when the
+        remaining budget is too small.
+    catch_all_separate_connection
+        When True (default) the catch-all fake-RCPT is sent over a
+        *fresh* SMTP connection, so a slow real-RCPT cannot leak into
+        the catch-all read deadline (this matches the V2 deliverability
+        post-mortem recommendation). Set to False to fall back to the
+        legacy "same-connection" mode.
 
     All exceptions are caught and translated into an
     ``inconclusive=True`` result so the caller can iterate over many
@@ -273,10 +399,58 @@ def probe_email_smtplib(
     helo_name = local_hostname or socket.gethostname() or "localhost"
 
     try:
+        if catch_all_separate_connection:
+            # ---- Real RCPT on its own connection ------------------------
+            real_code, real_msg = _single_rcpt_conversation(
+                mx_host, email,
+                sender=sender, helo_name=helo_name,
+                deadline=deadline, cmd_to=cmd_to,
+                cancel_check=cancel_check,
+            )
+            if real_msg == "cancelled":
+                return SMTPResult(False, None, "cancelled", False, True)
+
+            success = real_code in (250, 251)
+            inconclusive = not success and (
+                real_code is None or 400 <= int(real_code) < 500
+            )
+
+            is_catch_all = False
+            if (
+                success
+                and enable_catch_all_check
+                and not _too_little_budget(deadline, cmd_to)
+                and not (cancel_check is not None and cancel_check())
+            ):
+                fake_local = f"trashpanda-probe-{uuid.uuid4().hex[:12]}"
+                fake_addr = f"{fake_local}@{domain_lc}"
+                try:
+                    fake_code, _ = _single_rcpt_conversation(
+                        mx_host, fake_addr,
+                        sender=sender, helo_name=helo_name,
+                        deadline=deadline, cmd_to=cmd_to,
+                        cancel_check=cancel_check,
+                    )
+                    is_catch_all = fake_code in (250, 251)
+                except (
+                    smtplib.SMTPException, OSError, TimeoutError, ConnectionError,
+                ):
+                    # Fake RCPT failed — fall through without claiming
+                    # catch-all. The real result is still authoritative.
+                    pass
+
+            return SMTPResult(
+                success=success,
+                response_code=real_code,
+                response_message=real_msg,
+                is_catch_all_like=is_catch_all,
+                inconclusive=inconclusive,
+            )
+
+        # ---- Legacy: real + fake RCPT on the same connection -----------
         # Cap connect time at the smaller of (per-cmd, remaining budget).
         connect_to = min(cmd_to, _budget_left(deadline))
         with smtplib.SMTP(mx_host, 25, timeout=connect_to) as smtp:
-            # Per-command deadlines.
             _apply_socket_timeout(smtp, min(cmd_to, _budget_left(deadline)))
             smtp.helo(helo_name)
 
@@ -301,9 +475,6 @@ def probe_email_smtplib(
             )[:200]
 
             is_catch_all = False
-            # Only run the catch-all probe if the user wants it AND we
-            # still have enough budget. A slow first RCPT must never
-            # push the catch-all fake-RCPT past the deadline.
             if (
                 success
                 and enable_catch_all_check
@@ -318,8 +489,6 @@ def probe_email_smtplib(
                     fake_code, _ = smtp.rcpt(fake_addr)
                     is_catch_all = fake_code in (250, 251)
                 except (smtplib.SMTPException, OSError, TimeoutError):
-                    # Fake RCPT timed out / rejected — fall through
-                    # without claiming catch-all.
                     pass
 
             inconclusive = not success and (code is None or 400 <= int(code) < 500)
@@ -342,6 +511,7 @@ def probe_email_smtplib(
 __all__ = [
     "DEFAULT_OPAQUE_PROVIDERS",
     "SMTPResult",
+    "load_skip_providers_from_file",
     "probe_email_dry_run",
     "probe_email_smtplib",
 ]

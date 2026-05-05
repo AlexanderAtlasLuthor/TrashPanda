@@ -7,8 +7,10 @@
  */
 
 import type {
+  JobCancelResponse,
   JobList,
   JobLogs,
+  JobProgress,
   JobResult,
   ReviewDecision,
   ReviewDecisions,
@@ -110,6 +112,57 @@ export async function adapterGetJob(jobId: string): Promise<JobResult | null> {
     return normalizeArtifactPaths(result);
   }
   return getMockJob(jobId);
+}
+
+/** Live progress (status + SMTP probe counters). */
+export async function adapterGetJobProgress(
+  jobId: string,
+): Promise<JobProgress | null> {
+  if (useProxy) {
+    const res = await fetch(
+      `${backendUrl}/jobs/${encodeURIComponent(jobId)}/progress`,
+      { cache: "no-store" },
+    );
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`Backend error (${res.status})`);
+    return (await res.json()) as JobProgress;
+  }
+  // Mock mode: synthesise a minimal payload from the in-memory job.
+  const job = getMockJob(jobId);
+  if (!job) return null;
+  return {
+    job_id: jobId,
+    status: job.status,
+    cancelled: false,
+    started_at: job.started_at ?? null,
+    finished_at: job.finished_at ?? null,
+    smtp: null,
+  };
+}
+
+/** Cooperatively cancel a running job. */
+export async function adapterCancelJob(
+  jobId: string,
+): Promise<JobCancelResponse | null> {
+  if (useProxy) {
+    const res = await fetch(
+      `${backendUrl}/jobs/${encodeURIComponent(jobId)}/cancel`,
+      { method: "POST" },
+    );
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`Backend error (${res.status})`);
+    return (await res.json()) as JobCancelResponse;
+  }
+  // Mock mode: pretend the cancellation flag was flipped so the UI
+  // exercise the disabled-cancel-button transition without a backend.
+  const job = getMockJob(jobId);
+  if (!job) return null;
+  return {
+    job_id: jobId,
+    status: job.status,
+    cancelled: job.status !== "completed" && job.status !== "failed",
+    reason: "mock cancellation",
+  };
 }
 
 /**

@@ -72,6 +72,13 @@ _AUDIENCE_BY_KEY: dict[str, str] = {
     "hard_fail_emails": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     # V2.10.8.2 — safe-only partial delivery anchor file.
     "safe_only_delivery_note": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    # Always-on README that names the PRIMARY artifact for the customer.
+    "client_readme": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    # Filename stem alias — the README ships as ``README_CLIENT.txt``
+    # (caps for visibility in file managers). The lowercase stem is
+    # matched here so the artifact-contract resolver classifies it as
+    # ``client_safe`` without renaming the on-disk file.
+    "readme_client": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     # ---- operator_only: operator/founder/admin reports ------------------- #
     "processing_report_json": ARTIFACT_AUDIENCE_OPERATOR_ONLY,
     "processing_report_csv": ARTIFACT_AUDIENCE_OPERATOR_ONLY,

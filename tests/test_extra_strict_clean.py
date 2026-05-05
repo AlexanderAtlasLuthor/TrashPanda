@@ -156,10 +156,16 @@ class TestExtraStrictClean:
         removed = _read_xlsx(result.removed_xlsx)
         assert "weak@example-corp.com" in removed["email"].tolist()
 
-    def test_role_based_is_suppressed(self, sample_run: Path) -> None:
+    def test_role_based_is_rejected(self, sample_run: Path) -> None:
+        # Role-based addresses are *structural* rejects (the local part
+        # is not a person), not policy suppressions. They land in the
+        # ``rejected`` tier so the customer can audit them separately.
         result = run_extra_strict_clean(sample_run)
+        rejected = _read_xlsx(result.rejected_xlsx)
+        assert "info@example-corp.com" in rejected["email"].tolist()
+        # And not in the policy-suppressed bucket.
         removed = _read_xlsx(result.removed_xlsx)
-        assert "info@example-corp.com" in removed["email"].tolist()
+        assert "info@example-corp.com" not in removed["email"].tolist()
 
     def test_high_risk_domain_is_suppressed(self, sample_run: Path) -> None:
         result = run_extra_strict_clean(sample_run)
@@ -191,10 +197,13 @@ class TestExtraStrictClean:
         assert rows.iloc[0]["trashpanda_final_action"] == "recommended_send"
         assert rows.iloc[0]["trashpanda_confirmation_level"] == "offline_only"
 
-    def test_hard_fail_is_suppressed(self, sample_run: Path) -> None:
+    def test_hard_fail_is_rejected(self, sample_run: Path) -> None:
+        # Hard-fail (bad syntax / missing MX) is a structural reject —
+        # belongs in ``rejected_structural.xlsx``, not the policy
+        # suppression bucket.
         result = run_extra_strict_clean(sample_run)
-        removed = _read_xlsx(result.removed_xlsx)
-        emails = removed["email"].tolist()
+        rejected = _read_xlsx(result.rejected_xlsx)
+        emails = rejected["email"].tolist()
         assert any(e.startswith("broken@") for e in emails)
 
     def test_summary_and_readme_written(self, sample_run: Path) -> None:

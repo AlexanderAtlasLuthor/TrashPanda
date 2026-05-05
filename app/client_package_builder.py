@@ -53,6 +53,76 @@ _MANIFEST_FILENAME = "client_package_manifest.json"
 _SAFE_ONLY_NOTE_FILENAME = "SAFE_ONLY_DELIVERY_NOTE.txt"
 _SAFE_ONLY_NOTE_KEY = "safe_only_delivery_note"
 
+# Always-on README that tells the customer which file to use first.
+# Generalises the older safe-only-only note: every package now ships
+# a one-page client guide regardless of safe-only status.
+_README_FILENAME = "README_CLIENT.txt"
+_README_KEY = "client_readme"
+
+# Preferred PRIMARY artifact, in order of preference. The first one
+# present in ``files_included`` wins. ``approved_original_format``
+# preserves the customer's input columns and is therefore the most
+# useful "single deliverable"; ``valid_emails`` falls back when the
+# original-format export was suppressed.
+_PRIMARY_KEY_PREFERENCES: tuple[str, ...] = (
+    "approved_original_format",
+    "valid_emails",
+)
+
+
+_README_BODY_TEMPLATE = """\
+TrashPanda — Client delivery package
+====================================
+
+USE THIS FILE FIRST:
+  {primary_filename}
+
+It contains the rows we are willing to recommend for immediate use.
+Each row carries explanatory columns so you can see *why* each
+address survived the pipeline.
+
+Other files in this package
+---------------------------
+  valid_emails.xlsx
+      Verified addresses with explanatory columns
+      (final_action, smtp_status, deliverability_probability,
+      catch_all_flag, recommended_action, …).
+
+  review_emails.xlsx
+      Addresses that need a manual review before sending. Often
+      catch-all providers (Yahoo / AOL / Verizon-class) where no
+      automated system can confirm deliverability without sending.
+
+  invalid_or_bounce_risk.xlsx
+      Addresses we recommend NOT sending to (hard syntax failures,
+      MX failures, duplicates, history-flagged risky domains).
+
+  duplicate_emails.xlsx, hard_fail_emails.xlsx
+      Subsets of invalid_or_bounce_risk.xlsx broken out by reason.
+
+  approved_original_format.xlsx
+      The valid rows in the same column layout as your original
+      upload, ready to drop straight back into your campaign tool.
+
+  summary_report.xlsx
+      Counts and category breakdown for this run.
+
+  SAFE_ONLY_DELIVERY_NOTE.txt
+      Only present for partial-delivery runs. Read it before sending.
+
+If you saw a high bounce rate on a previous delivery, also ask for
+the "Extra Strict Offline" XLSX — same data, more aggressive filter
+that separates Yahoo/AOL automatically.
+"""
+
+
+def _resolve_primary_key(files_included: list["ClientPackageFile"]) -> str | None:
+    keys_present = {f.key for f in files_included}
+    for preferred in _PRIMARY_KEY_PREFERENCES:
+        if preferred in keys_present:
+            return preferred
+    return None
+
 # Filenames whose row counts get surfaced in the manifest. The XLSX
 # convention is set by ``app.client_output._write_xlsx`` — first sheet
 # holds the email rows with a header.
@@ -355,6 +425,51 @@ def build_client_delivery_package(
         "rejected_count": rejected_count_int,
     }
 
+    # ---- Always-on README and PRIMARY artifact pointer ------------------
+    primary_key = _resolve_primary_key(files_included)
+    primary_filename: str | None = None
+    if primary_key is not None:
+        for f in files_included:
+            if f.key == primary_key:
+                primary_filename = f.package_path.name
+                break
+
+    readme_path = package_dir / _README_FILENAME
+    readme_body = _README_BODY_TEMPLATE.format(
+        primary_filename=primary_filename or "valid_emails.xlsx"
+    )
+    try:
+        readme_path.write_text(readme_body, encoding="utf-8")
+        files_included.append(
+            ClientPackageFile(
+                key=_README_KEY,
+                source_path=readme_path,
+                package_path=readme_path,
+                audience=ARTIFACT_AUDIENCE_CLIENT_SAFE,
+                size_bytes=int(readme_path.stat().st_size),
+            )
+        )
+    except OSError as exc:  # pragma: no cover - defensive guard
+        warnings.append(
+            ClientPackageWarning(
+                code="readme_write_failed",
+                message=f"Failed to write {_README_FILENAME}: {exc!s}",
+            )
+        )
+
+    primary_block: dict[str, Any] = {
+        "key": primary_key,
+        "filename": primary_filename,
+        "label": "Recommended download",
+        "reason": (
+            "approved_original_format preserves the customer's columns"
+            if primary_key == "approved_original_format"
+            else "valid_emails carries the explanatory trashpanda_* columns"
+            if primary_key == "valid_emails"
+            else None
+        ),
+    }
+
     generated_at = _utc_now_iso()
 
     manifest = {
@@ -362,12 +477,15 @@ def build_client_delivery_package(
         "generated_at": generated_at,
         "source_run_dir": str(run_dir_path),
         "package_dir": str(package_dir),
+        "primary_artifact": primary_block,
+        "readme_filename": _README_FILENAME,
         "files_included": [
             {
                 "key": f.key,
                 "filename": f.package_path.name,
                 "audience": f.audience,
                 "size_bytes": int(f.size_bytes),
+                "primary": (f.key == primary_key) if primary_key else False,
             }
             for f in files_included
         ],

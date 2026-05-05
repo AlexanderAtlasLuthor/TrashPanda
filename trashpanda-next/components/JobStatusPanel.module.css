@@ -323,3 +323,114 @@
     text-align: left;
   }
 }
+
+/* ── SMTP live probe warning ───────────────────────────────────────── */
+.smtpLiveWarning {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 80, 80, 0.5);
+  border-radius: 6px;
+  background: rgba(255, 80, 80, 0.08);
+  color: #ffb7b7;
+  font-size: 12px;
+  line-height: 1.4;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.smtpLiveDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ff5050;
+  flex: 0 0 8px;
+  margin-top: 4px;
+  box-shadow: 0 0 6px rgba(255, 80, 80, 0.7);
+  animation: pulse 1.4s infinite ease-in-out;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+/* ── SMTP probe counter block ──────────────────────────────────────── */
+.smtpProgress {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--stroke-soft);
+  border-radius: 6px;
+  background: var(--surface-low);
+  font-size: 11px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.smtpProgress .label {
+  color: var(--ink-low);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+
+.smtpProgress .value {
+  color: var(--ink-high);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.smtpProgressBar {
+  grid-column: 1 / -1;
+  height: 4px;
+  background: var(--stroke-soft);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.smtpProgressBarFill {
+  height: 100%;
+  background: var(--neon, #39ff14);
+  transition: width 200ms linear;
+}
+
+/* ── Cancel button ─────────────────────────────────────────────────── */
+.actions {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.cancelButton {
+  appearance: none;
+  border: 1px solid rgba(255, 80, 80, 0.6);
+  background: transparent;
+  color: #ff8080;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.cancelButton:hover:not(:disabled) {
+  background: rgba(255, 80, 80, 0.12);
+  color: #ffd2d2;
+}
+
+.cancelButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cancelNote {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--ink-low);
+  font-style: italic;
+}

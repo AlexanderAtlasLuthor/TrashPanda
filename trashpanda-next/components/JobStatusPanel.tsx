@@ -1,4 +1,14 @@
-import type { JobResult, JobStatus } from "@/lib/types";
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+
+import { cancelJob, getJobProgress } from "@/lib/api";
+import type {
+  JobProgress,
+  JobResult,
+  JobStatus,
+  SmtpProgress,
+} from "@/lib/types";
 import styles from "./JobStatusPanel.module.css";
 import { useEtaEstimator } from "./useEtaEstimator";
 
@@ -68,11 +78,106 @@ interface JobStatusPanelProps {
   logLines?: string[];
 }
 
+function SmtpLiveWarning() {
+  return (
+    <div className={styles.smtpLiveWarning} role="alert">
+      <span className={styles.smtpLiveDot} aria-hidden="true" />
+      <span>
+        <strong>SMTP LIVE EN CURSO.</strong> This run is opening real
+        connections to recipient mail servers. Yahoo / AOL / Verizon-class
+        domains are skipped automatically because they cannot be confirmed
+        without sending. Use the Cancel button if a probe stalls.
+      </span>
+    </div>
+  );
+}
+
+interface SmtpProgressBlockProps {
+  smtp: SmtpProgress;
+}
+
+function SmtpProgressBlock({ smtp }: SmtpProgressBlockProps) {
+  const ratio =
+    smtp.ratio !== null && smtp.ratio !== undefined
+      ? Math.max(0, Math.min(1, smtp.ratio))
+      : smtp.total > 0
+        ? smtp.attempted / smtp.total
+        : 0;
+  const pct = Math.round(ratio * 100);
+
+  return (
+    <div className={styles.smtpProgress}>
+      <span className={styles.label}>SMTP probes</span>
+      <span className={styles.value}>
+        {smtp.attempted}
+        {smtp.total > 0 ? ` / ${smtp.total}` : ""}
+        {smtp.total > 0 ? `  (${pct}%)` : ""}
+      </span>
+      <span className={styles.label}>Valid · invalid · timeout</span>
+      <span className={styles.value}>
+        {smtp.valid} · {smtp.invalid} · {smtp.timeout}
+      </span>
+      {smtp.total > 0 && (
+        <div className={styles.smtpProgressBar} aria-hidden="true">
+          <div
+            className={styles.smtpProgressBarFill}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function JobStatusPanel({ result, logLines = [] }: JobStatusPanelProps) {
   const activeIdx = estimateStage(result);
   const eta = useEtaEstimator(result, logLines);
   const fileExt =
     result.input_filename?.toLowerCase().endsWith(".xlsx") ? "XLSX" : "CSV";
+
+  // ── Live SMTP progress (polled while running) ────────────────────────
+  const [progress, setProgress] = useState<JobProgress | null>(null);
+  const isPollable = result.status === "queued" || result.status === "running";
+
+  useEffect(() => {
+    if (!isPollable) {
+      setProgress(null);
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const p = await getJobProgress(result.job_id);
+        if (!cancelled) setProgress(p);
+      } catch {
+        // Polling failures are non-fatal; the panel still renders the
+        // base status from ``result``.
+      }
+    };
+    tick();
+    const id = setInterval(tick, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [isPollable, result.job_id]);
+
+  // ── Cancel control ───────────────────────────────────────────────────
+  const [cancelState, setCancelState] = useState<
+    "idle" | "pending" | "cancelled" | "error"
+  >("idle");
+  const onCancel = useCallback(async () => {
+    setCancelState("pending");
+    try {
+      const res = await cancelJob(result.job_id);
+      setCancelState(res.cancelled ? "cancelled" : "cancelled");
+    } catch {
+      setCancelState("error");
+    }
+  }, [result.job_id]);
+
+  const smtpLive = Boolean(progress?.smtp?.live);
+  const smtp = progress?.smtp ?? null;
 
   return (
     <div className={styles.panel}>
@@ -133,6 +238,12 @@ export function JobStatusPanel({ result, logLines = [] }: JobStatusPanelProps) {
           })}
         </div>
 
+        {smtpLive && <SmtpLiveWarning />}
+
+        {smtp && (smtp.total > 0 || smtp.attempted > 0) && (
+          <SmtpProgressBlock smtp={smtp} />
+        )}
+
         {eta.label && (
           <div
             className={[styles.eta, styles[`eta_${eta.state}`]]
@@ -141,6 +252,38 @@ export function JobStatusPanel({ result, logLines = [] }: JobStatusPanelProps) {
           >
             <span className={styles.etaPrefix}>ETA</span>
             <span className={styles.etaValue}>{eta.label}</span>
+          </div>
+        )}
+
+        {isPollable && (
+          <div className={styles.actions}>
+            <button
+              type="button"
+              className={styles.cancelButton}
+              onClick={onCancel}
+              disabled={
+                cancelState === "pending" ||
+                cancelState === "cancelled" ||
+                progress?.cancelled === true
+              }
+              aria-label="Cancel this job"
+            >
+              {cancelState === "pending"
+                ? "Cancelling…"
+                : cancelState === "cancelled" || progress?.cancelled
+                  ? "Cancellation requested"
+                  : "Cancel job"}
+            </button>
+          </div>
+        )}
+        {cancelState === "error" && (
+          <div className={styles.cancelNote}>
+            Could not reach the cancel endpoint — try again in a moment.
+          </div>
+        )}
+        {(cancelState === "cancelled" || progress?.cancelled) && (
+          <div className={styles.cancelNote}>
+            Cancellation flag set. SMTP probes will unwind within seconds.
           </div>
         )}
 

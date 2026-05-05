@@ -316,10 +316,25 @@ def test_builder_uses_artifact_contract(monkeypatch, tmp_path: Path) -> None:
 
     result = build_client_delivery_package(run_dir)
 
-    assert result.files_included == ()
-    # Only the manifest itself should sit in the package directory.
-    actual_files = [p.name for p in result.package_dir.iterdir() if p.is_file()]
-    assert actual_files == ["client_package_manifest.json"]
+    # The artifact contract is the source of truth for which run-dir
+    # files get *copied* into the package: with the contract refusing
+    # everything, no run-dir file should make it across.
+    copied_keys = [f.key for f in result.files_included if f.key != "client_readme"]
+    assert copied_keys == []
+
+    # The builder-generated README is always-on (V2-extras post-mortem
+    # fix): it's not a run-dir artifact, so the contract refusal does
+    # not gate it. It must still be marked ``client_safe`` so the
+    # safe-only delivery channel can never leak it as operator-only.
+    readme_entries = [f for f in result.files_included if f.key == "client_readme"]
+    assert len(readme_entries) == 1
+    assert readme_entries[0].audience == "client_safe"
+
+    # On disk: manifest + the README, nothing else.
+    actual_files = sorted(
+        p.name for p in result.package_dir.iterdir() if p.is_file()
+    )
+    assert actual_files == ["README_CLIENT.txt", "client_package_manifest.json"]
 
 
 def test_builder_does_not_import_public_report_keys() -> None:

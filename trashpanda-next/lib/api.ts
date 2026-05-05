@@ -14,8 +14,10 @@
  */
 
 import type {
+  JobCancelResponse,
   JobList,
   JobLogs,
+  JobProgress,
   JobResult,
   ReviewDecision,
   ReviewDecisions,
@@ -105,6 +107,33 @@ export async function getJob(jobId: string): Promise<JobResult> {
     cache: "no-store",
   });
   return handleResponse<JobResult>(res);
+}
+
+/**
+ * Live progress for a running job (probe counters + cancel state).
+ *
+ * Backend contract:
+ *   GET /api/jobs/:jobId/progress -> JobProgress
+ */
+export async function getJobProgress(jobId: string): Promise<JobProgress> {
+  const res = await fetch(
+    `/api/jobs/${encodeURIComponent(jobId)}/progress`,
+    { cache: "no-store" },
+  );
+  return handleResponse<JobProgress>(res);
+}
+
+/**
+ * Cooperatively cancel a running job. The SMTP probe loop respects the
+ * flag and unwinds within seconds; structural pipeline stages may
+ * complete the current chunk before exiting.
+ */
+export async function cancelJob(jobId: string): Promise<JobCancelResponse> {
+  const res = await fetch(
+    `/api/jobs/${encodeURIComponent(jobId)}/cancel`,
+    { method: "POST" },
+  );
+  return handleResponse<JobCancelResponse>(res);
 }
 
 /**
