@@ -82,7 +82,37 @@ sudo systemctl restart trashpanda-backend
 
 ## Auto-restarting SSH tunnel (on your laptop)
 
-Three options; pick the one that fits your OS.
+### Pre-flight: passwordless SSH
+
+The tunnel supervisor cannot prompt for a password — it has to
+reconnect on its own when the link drops. Set up key-based auth
+*once* before running the tunnel:
+
+**Windows (one-shot helper):**
+
+```powershell
+cd C:\path\to\TrashPanda
+.\deploy\setup_ssh_key.ps1 -VpsHost root@192.3.105.145
+```
+
+The helper generates `~/.ssh/id_ed25519` if missing, asks for the
+VPS password **once**, appends the public key to the VPS's
+`/root/.ssh/authorized_keys`, and verifies that `ssh root@<vps>`
+no longer prompts. Idempotent — safe to re-run after key rotation.
+
+**macOS / Linux:**
+
+```bash
+ssh-keygen -t ed25519       # if you don't already have a key
+ssh-copy-id root@192.3.105.145
+ssh root@192.3.105.145 'echo "passwordless OK"'   # should NOT prompt
+```
+
+Until passwordless ssh works, `tunnel.ps1` / `tunnel.sh` will hang
+on the password prompt and you'll see the supervisor loop without
+ever bringing the tunnel up.
+
+### Three tunnel options; pick the one that fits your OS.
 
 ### Option A — Windows (PowerShell supervisor)
 

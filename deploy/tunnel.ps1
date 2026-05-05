@@ -50,14 +50,14 @@ $ErrorActionPreference = "Stop"
 function Write-Log {
     param([string]$Level, [string]$Message)
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $line = "[$timestamp] [$Level] $Message"
+    $line = "[${timestamp}] [${Level}] ${Message}"
     Write-Host $line
     Add-Content -Path $LogPath -Value $line
 }
 
 Write-Log "INFO" "starting tunnel supervisor"
 Write-Log "INFO" "  local:${LocalPort} -> ${VpsHost}:127.0.0.1:${VpsPort}"
-Write-Log "INFO" "  log file: $LogPath"
+Write-Log "INFO" "  log file: ${LogPath}"
 Write-Log "INFO" "press Ctrl+C to stop"
 
 $attempt = 0
