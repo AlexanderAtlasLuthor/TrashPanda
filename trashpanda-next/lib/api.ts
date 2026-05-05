@@ -470,6 +470,22 @@ export interface ClientBundleSummary {
   safe_count: number;
   review_count: number;
   rejected_count: number;
+  delivery_state?:
+    | "cleaning_completed"
+    | "smtp_verification_pending"
+    | "smtp_verified"
+    | "ready_to_send"
+    | "blocked"
+    | "failed";
+  smtp_verification_status?: "disabled" | "dry_run" | "not_run" | "verified";
+  smtp_enabled?: boolean;
+  smtp_dry_run?: boolean;
+  smtp_candidates_seen?: number;
+  smtp_candidates_attempted?: number;
+  smtp_not_tested_count?: number;
+  high_risk_count?: number;
+  blocking_reason?: string | null;
+  operator_message?: string;
   issues: Array<{ severity: string; code: string; message: string }>;
 }
 

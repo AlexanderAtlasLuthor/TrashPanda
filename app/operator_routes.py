@@ -1193,6 +1193,25 @@ _CLIENT_BUNDLE_SUPPORT_FILES: tuple[str, ...] = (
     "SAFE_ONLY_DELIVERY_NOTE.txt",
 )
 
+DELIVERY_STATE_CLEANING_COMPLETED = "cleaning_completed"
+DELIVERY_STATE_SMTP_PENDING = "smtp_verification_pending"
+DELIVERY_STATE_SMTP_VERIFIED = "smtp_verified"
+DELIVERY_STATE_READY_TO_SEND = "ready_to_send"
+DELIVERY_STATE_BLOCKED = "blocked"
+DELIVERY_STATE_FAILED = "failed"
+
+SMTP_VERIFICATION_STATUS_DISABLED = "disabled"
+SMTP_VERIFICATION_STATUS_DRY_RUN = "dry_run"
+SMTP_VERIFICATION_STATUS_NOT_RUN = "not_run"
+SMTP_VERIFICATION_STATUS_VERIFIED = "verified"
+
+
+def _coerce_count(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
 
 def _bundle_filename(run_dir: Path, job_id: str) -> str:
     """Build a friendly ZIP filename: ``<input>_clean_<YYYY-MM-DD>.zip``."""
@@ -1228,6 +1247,125 @@ def _read_manifest(package_dir: Path) -> dict[str, Any] | None:
     except Exception:
         return None
     return data if isinstance(data, dict) else None
+
+
+def _read_smtp_runtime_for_run(run_dir: Path) -> dict[str, Any] | None:
+    path = run_dir / _SMTP_RUNTIME_SUMMARY_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _job_summary_counts(job_id: str) -> dict[str, int]:
+    """Best-effort counts from the stored job summary."""
+
+    from . import server
+
+    result = server._load_job_result(job_id)
+    summary = getattr(result, "summary", None) if result is not None else None
+    return {
+        "safe_count": _coerce_count(getattr(summary, "total_valid", 0)),
+        "review_count": _coerce_count(getattr(summary, "total_review", 0)),
+        "rejected_count": _coerce_count(
+            getattr(summary, "total_invalid_or_bounce_risk", 0)
+        ),
+    }
+
+
+def _delivery_state_metadata(
+    *,
+    safe_count: int,
+    review_count: int,
+    rejected_count: int,
+    smtp_runtime: dict[str, Any] | None,
+    ready_for_client: bool = False,
+    available: bool = False,
+    package_build_failed: bool = False,
+) -> dict[str, Any]:
+    """Derive the operator delivery state for the one-click bundle."""
+
+    smtp_enabled = bool((smtp_runtime or {}).get("smtp_enabled", False))
+    smtp_dry_run = bool((smtp_runtime or {}).get("smtp_dry_run", True))
+    smtp_candidates_seen = _coerce_count(
+        (smtp_runtime or {}).get("smtp_candidates_seen")
+    )
+    smtp_candidates_attempted = _coerce_count(
+        (smtp_runtime or {}).get("smtp_candidates_attempted")
+    )
+    smtp_not_tested_count = _coerce_count(
+        (smtp_runtime or {}).get("smtp_not_tested_count")
+    )
+
+    if not smtp_enabled:
+        smtp_status = SMTP_VERIFICATION_STATUS_DISABLED
+    elif smtp_dry_run:
+        smtp_status = SMTP_VERIFICATION_STATUS_DRY_RUN
+    elif smtp_candidates_attempted <= 0:
+        smtp_status = SMTP_VERIFICATION_STATUS_NOT_RUN
+    else:
+        smtp_status = SMTP_VERIFICATION_STATUS_VERIFIED
+
+    smtp_pending = review_count > 0 and (
+        not smtp_enabled or smtp_dry_run or smtp_candidates_attempted <= 0
+    )
+
+    blocking_reason: str | None = None
+    if smtp_pending:
+        delivery_state = DELIVERY_STATE_SMTP_PENDING
+        blocking_reason = "smtp_verification_pending"
+        operator_message = (
+            "SMTP verification has not run yet. "
+            f"{review_count:,} rows are pending SMTP verification."
+        )
+    elif package_build_failed:
+        delivery_state = DELIVERY_STATE_BLOCKED
+        blocking_reason = "client_package_build_failed"
+        operator_message = "Client package could not be built for this job."
+    elif available and ready_for_client:
+        delivery_state = DELIVERY_STATE_READY_TO_SEND
+        operator_message = "Ready to send."
+    elif available and smtp_status == SMTP_VERIFICATION_STATUS_VERIFIED:
+        delivery_state = DELIVERY_STATE_SMTP_VERIFIED
+        operator_message = (
+            "SMTP verification ran. Operator review warnings remain before "
+            "full delivery."
+        )
+    elif safe_count == 0 and smtp_status == SMTP_VERIFICATION_STATUS_VERIFIED:
+        delivery_state = DELIVERY_STATE_BLOCKED
+        blocking_reason = "no_safe_rows_after_smtp"
+        operator_message = "No rows are safe to send yet."
+    else:
+        delivery_state = DELIVERY_STATE_CLEANING_COMPLETED
+        operator_message = (
+            "Cleaning completed. Delivery readiness still needs verification."
+        )
+
+    return {
+        "delivery_state": delivery_state,
+        "smtp_verification_status": smtp_status,
+        "smtp_enabled": smtp_enabled,
+        "smtp_dry_run": smtp_dry_run,
+        "smtp_candidates_seen": smtp_candidates_seen,
+        "smtp_candidates_attempted": smtp_candidates_attempted,
+        "smtp_not_tested_count": smtp_not_tested_count,
+        "safe_count": safe_count,
+        "review_count": review_count,
+        "high_risk_count": rejected_count,
+        "blocking_reason": blocking_reason,
+        "operator_message": operator_message,
+    }
+
+
+def _smtp_pending_issue(message: str) -> dict[str, str]:
+    return {
+        "severity": "warn",
+        "code": "smtp_verification_pending",
+        "message": message,
+    }
 
 
 def _ensure_review_summary(run_dir: Path) -> dict[str, Any] | None:
@@ -1282,15 +1420,21 @@ def _resolve_primary_filename(manifest: dict[str, Any]) -> str | None:
     return None
 
 
-def _bundle_blocked_response(error: str, message: str) -> Response:
+def _bundle_blocked_response(
+    error: str,
+    message: str,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> Response:
+    payload: dict[str, Any] = {
+        "error": error,
+        "message": message,
+        "ready_for_client": False,
+    }
+    if extra:
+        payload.update(extra)
     return Response(
-        content=json.dumps(
-            {
-                "error": error,
-                "message": message,
-                "ready_for_client": False,
-            }
-        ),
+        content=json.dumps(payload),
         media_type="application/json",
         status_code=409,
     )
@@ -1307,20 +1451,34 @@ def operator_download_client_bundle(job_id: str) -> Any:
     """
 
     run_dir = _resolve_run_dir(job_id)
-
-    review = _ensure_review_summary(run_dir)
-    if review is None:
+    smtp_runtime = _read_smtp_runtime_for_run(run_dir)
+    job_counts = _job_summary_counts(job_id)
+    pre_delivery = _delivery_state_metadata(
+        safe_count=job_counts["safe_count"],
+        review_count=job_counts["review_count"],
+        rejected_count=job_counts["rejected_count"],
+        smtp_runtime=smtp_runtime,
+    )
+    if pre_delivery["delivery_state"] == DELIVERY_STATE_SMTP_PENDING:
         return _bundle_blocked_response(
-            "review_gate_unavailable",
-            "Review gate could not be evaluated for this job. The pipeline "
-            "may still be running, or the artifact contract is incomplete.",
+            "smtp_verification_pending",
+            str(pre_delivery["operator_message"]),
+            extra=pre_delivery,
         )
 
     package_dir = _ensure_client_package(run_dir)
     if package_dir is None:
+        failed_delivery = _delivery_state_metadata(
+            safe_count=job_counts["safe_count"],
+            review_count=job_counts["review_count"],
+            rejected_count=job_counts["rejected_count"],
+            smtp_runtime=smtp_runtime,
+            package_build_failed=True,
+        )
         return _bundle_blocked_response(
             "client_package_missing",
             "Client package could not be built for this job.",
+            extra=failed_delivery,
         )
 
     manifest = _read_manifest(package_dir)
@@ -1330,13 +1488,24 @@ def operator_download_client_bundle(job_id: str) -> Any:
             "Client package manifest is missing or unreadable.",
         )
 
+    review = run_operator_review_for_job(run_dir, package_dir=package_dir)
+
     primary_filename = _resolve_primary_filename(manifest)
     safe_count = int(manifest.get("safe_count") or 0)
     if primary_filename is None or safe_count <= 0:
+        review_count = int(manifest.get("review_count") or 0)
+        rejected_count = int(manifest.get("rejected_count") or 0)
+        delivery = _delivery_state_metadata(
+            safe_count=safe_count,
+            review_count=review_count,
+            rejected_count=rejected_count,
+            smtp_runtime=smtp_runtime,
+            ready_for_client=bool(review.get("ready_for_client")),
+        )
         return _bundle_blocked_response(
-            "no_safe_rows",
-            "This job has no rows we are willing to recommend for sending. "
-            "Re-run with extra-strict filtering or fix the input list.",
+            delivery.get("blocking_reason") or "no_safe_rows",
+            str(delivery["operator_message"]),
+            extra=delivery,
         )
 
     ready = bool(review.get("ready_for_client"))
@@ -1394,9 +1563,64 @@ def operator_get_client_bundle_summary(job_id: str) -> Any:
 
     run_dir = _resolve_run_dir(job_id)
 
-    review = _ensure_review_summary(run_dir) or {}
+    smtp_runtime = _read_smtp_runtime_for_run(run_dir)
+    job_counts = _job_summary_counts(job_id)
+    pre_delivery = _delivery_state_metadata(
+        safe_count=job_counts["safe_count"],
+        review_count=job_counts["review_count"],
+        rejected_count=job_counts["rejected_count"],
+        smtp_runtime=smtp_runtime,
+    )
+    if pre_delivery["delivery_state"] == DELIVERY_STATE_SMTP_PENDING:
+        return _operator_response(
+            {
+                "available": False,
+                "ready_for_client": False,
+                "delivery_mode": "safe_only_partial",
+                "primary_filename": None,
+                "download_filename": None,
+                "safe_count": job_counts["safe_count"],
+                "review_count": job_counts["review_count"],
+                "rejected_count": job_counts["rejected_count"],
+                "issues": [
+                    _smtp_pending_issue(str(pre_delivery["operator_message"]))
+                ],
+                **pre_delivery,
+            }
+        )
+
     package_dir = _ensure_client_package(run_dir)
+    if package_dir is None:
+        delivery = _delivery_state_metadata(
+            safe_count=job_counts["safe_count"],
+            review_count=job_counts["review_count"],
+            rejected_count=job_counts["rejected_count"],
+            smtp_runtime=smtp_runtime,
+            package_build_failed=True,
+        )
+        return _operator_response(
+            {
+                "available": False,
+                "ready_for_client": False,
+                "delivery_mode": "safe_only_partial",
+                "primary_filename": None,
+                "download_filename": None,
+                "safe_count": job_counts["safe_count"],
+                "review_count": job_counts["review_count"],
+                "rejected_count": job_counts["rejected_count"],
+                "issues": [
+                    {
+                        "severity": "block",
+                        "code": "client_package_build_failed",
+                        "message": str(delivery["operator_message"]),
+                    }
+                ],
+                **delivery,
+            }
+        )
+
     manifest = _read_manifest(package_dir) if package_dir else None
+    review = run_operator_review_for_job(run_dir, package_dir=package_dir)
 
     safe_count = int((manifest or {}).get("safe_count") or 0)
     review_count = int((manifest or {}).get("review_count") or 0)
@@ -1407,6 +1631,14 @@ def operator_get_client_bundle_summary(job_id: str) -> Any:
     ready = bool(review.get("ready_for_client"))
     available = bool(primary_filename and safe_count > 0)
     download_name = _bundle_filename(run_dir, job_id) if available else None
+    delivery = _delivery_state_metadata(
+        safe_count=safe_count,
+        review_count=review_count,
+        rejected_count=rejected_count,
+        smtp_runtime=smtp_runtime,
+        ready_for_client=ready,
+        available=available,
+    )
 
     return _operator_response(
         {
@@ -1419,6 +1651,7 @@ def operator_get_client_bundle_summary(job_id: str) -> Any:
             "review_count": review_count,
             "rejected_count": rejected_count,
             "issues": review.get("issues") or [],
+            **delivery,
         }
     )
 

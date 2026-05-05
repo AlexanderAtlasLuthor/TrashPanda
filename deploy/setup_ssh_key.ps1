@@ -81,19 +81,8 @@ Write-Host "    You'll be prompted for the VPS password ONCE."
 #      - ensures /root/.ssh exists with the right perms
 #      - appends our pubkey only if it isn't already there
 #      - prints "added" / "already present" so we can confirm
-$remote = @(
-    'mkdir -p ~/.ssh',
-    'chmod 700 ~/.ssh',
-    'touch ~/.ssh/authorized_keys',
-    'chmod 600 ~/.ssh/authorized_keys',
-    "KEY=$($pubKey.Trim())",
-    'if grep -qF "$KEY" ~/.ssh/authorized_keys 2>/dev/null; then',
-    '    echo "[remote] key already present"',
-    'else',
-    '    echo "$KEY" >> ~/.ssh/authorized_keys',
-    '    echo "[remote] key added"',
-    'fi'
-) -join '; '
+$keyValue = $pubKey.Trim()
+$remote = "mkdir -p ~/.ssh; chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; KEY='$keyValue'; if grep -qF `"'`$KEY`"' ~/.ssh/authorized_keys 2>/dev/null; then echo '[remote] key already present'; else echo `"`$KEY`" >> ~/.ssh/authorized_keys; echo '[remote] key added'; fi"
 
 Section "Step 3/4: install key on VPS (one password prompt)"
 & ssh -o PreferredAuthentications=password `

@@ -38,6 +38,34 @@ def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:
             writer.writerow({k: row.get(k, "") for k in fields})
 
 
+def _write_smtp_runtime(
+    run_dir: Path,
+    *,
+    enabled: bool,
+    dry_run: bool,
+    seen: int,
+    attempted: int,
+    not_tested: int,
+    valid: int = 0,
+) -> None:
+    (run_dir / "smtp_runtime_summary.json").write_text(
+        json.dumps(
+            {
+                "report_version": "v2.9.3",
+                "smtp_enabled": enabled,
+                "smtp_dry_run": dry_run,
+                "smtp_candidates_seen": seen,
+                "smtp_candidates_attempted": attempted,
+                "smtp_not_tested_count": not_tested,
+                "smtp_valid_count": valid,
+                "smtp_invalid_count": 0,
+                "smtp_inconclusive_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _seed_run_dir(tmp_path: Path, job_id: str) -> Path:
     """Build a tiny but realistic run dir for the bundle endpoints."""
 
@@ -75,6 +103,15 @@ def _seed_run_dir(tmp_path: Path, job_id: str) -> Path:
         ],
     )
     _write_csv(run_dir / "removed_invalid.csv", [])
+    _write_smtp_runtime(
+        run_dir,
+        enabled=True,
+        dry_run=False,
+        seen=4,
+        attempted=4,
+        not_tested=0,
+        valid=3,
+    )
 
     return run_dir
 
@@ -110,6 +147,7 @@ class TestClientBundleSummary:
         assert body["primary_filename"] == "approved_original_format.xlsx"
         assert body["delivery_mode"] in {"full", "safe_only_partial"}
         assert body["download_filename"] is not None
+        assert body["smtp_verification_status"] == "verified"
 
     def test_returns_unavailable_when_run_dir_missing(
         self, client: TestClient
@@ -119,6 +157,85 @@ class TestClientBundleSummary:
         )
         # _resolve_run_dir raises 404 when the run dir doesn't exist.
         assert res.status_code in (404, 409, 500)
+
+    def test_reports_smtp_pending_instead_of_no_safe_when_smtp_not_run(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        run_dir = _seed_run_dir(tmp_path, "job_pending")
+        _write_xlsx(run_dir / "valid_emails.xlsx", rows=0)
+        _write_xlsx(run_dir / "approved_original_format.xlsx", rows=0)
+        _write_xlsx(run_dir / "review_emails.xlsx", rows=3)
+        _write_xlsx(run_dir / "invalid_or_bounce_risk.xlsx", rows=1)
+        _write_smtp_runtime(
+            run_dir,
+            enabled=False,
+            dry_run=True,
+            seen=0,
+            attempted=0,
+            not_tested=4,
+        )
+
+        res = client.get(
+            "/api/operator/jobs/job_pending/client-bundle/summary",
+        )
+
+        assert res.status_code == 200
+        body = res.json()
+        assert body["available"] is False
+        assert body["delivery_state"] == "smtp_verification_pending"
+        assert body["smtp_verification_status"] == "disabled"
+        assert "SMTP verification has not run yet" in body["operator_message"]
+        assert "No rows are safe to send yet" not in body["operator_message"]
+
+    def test_reports_blocked_no_safe_after_real_smtp(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        run_dir = _seed_run_dir(tmp_path, "job_blocked")
+        _write_xlsx(run_dir / "valid_emails.xlsx", rows=0)
+        _write_xlsx(run_dir / "approved_original_format.xlsx", rows=0)
+        _write_xlsx(run_dir / "review_emails.xlsx", rows=3)
+        _write_xlsx(run_dir / "invalid_or_bounce_risk.xlsx", rows=1)
+        _write_smtp_runtime(
+            run_dir,
+            enabled=True,
+            dry_run=False,
+            seen=3,
+            attempted=3,
+            not_tested=0,
+        )
+
+        res = client.get(
+            "/api/operator/jobs/job_blocked/client-bundle/summary",
+        )
+
+        assert res.status_code == 200
+        body = res.json()
+        assert body["available"] is False
+        assert body["delivery_state"] == "blocked"
+        assert body["blocking_reason"] == "no_safe_rows_after_smtp"
+        assert body["operator_message"] == "No rows are safe to send yet."
+
+    def test_builds_package_before_review_gate_summary(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        run_dir = _seed_run_dir(tmp_path, "job_ordering")
+
+        res = client.get(
+            "/api/operator/jobs/job_ordering/client-bundle/summary",
+        )
+
+        assert res.status_code == 200
+        body = res.json()
+        assert body["available"] is True
+        assert (run_dir / "client_delivery_package").is_dir()
+        review = json.loads(
+            (run_dir / "operator_review_summary.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert review["package_dir"] is not None
+        issue_codes = {issue["code"] for issue in body["issues"]}
+        assert "client_package_missing" not in issue_codes
 
 
 # --------------------------------------------------------------------------- #

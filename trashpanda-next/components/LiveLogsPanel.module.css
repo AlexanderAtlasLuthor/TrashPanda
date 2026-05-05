@@ -75,6 +75,12 @@
   background: rgba(142, 255, 58, 0.06);
 }
 
+.activityBadge.smtp {
+  color: var(--warn);
+  border-color: rgba(255, 184, 58, 0.55);
+  background: rgba(255, 184, 58, 0.08);
+}
+
 .collapseBtn {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -97,6 +103,32 @@
 /* ── Body (visible when expanded) ── */
 .body {
   overflow: hidden;
+}
+
+.activityNotice {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(255, 184, 58, 0.25);
+  background: rgba(255, 184, 58, 0.06);
+}
+
+.noticeLabel {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.9px;
+  color: var(--warn);
+  white-space: nowrap;
+}
+
+.noticeText {
+  min-width: 0;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-mid);
 }
 
 /* ── Log scroll area ── */
@@ -210,5 +242,9 @@
   }
   .activityBadge {
     display: none;
+  }
+  .activityNotice {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
 }

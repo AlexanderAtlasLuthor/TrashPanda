@@ -16,6 +16,7 @@
 }
 
 .errorCard,
+.pendingCard,
 .blockedCard {
   margin: 28px 0;
   padding: 16px 18px;
@@ -36,6 +37,26 @@
 .errorMessage {
   color: var(--ink-mid);
   font-size: 13px;
+}
+
+.pendingCard {
+  border: 1px solid rgba(255, 200, 100, 0.45);
+  background: rgba(255, 200, 100, 0.07);
+}
+.pendingTitle {
+  font-weight: 700;
+  color: #ffd28a;
+}
+.pendingMessage {
+  color: var(--ink-mid);
+  font-size: 13px;
+}
+.pendingAction {
+  color: var(--ink-low);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .blockedCard {

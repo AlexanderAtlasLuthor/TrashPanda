@@ -87,13 +87,45 @@ export function SendToClientButton({
   }
 
   if (!summary.available) {
+    if (summary.delivery_state === "smtp_verification_pending") {
+      return (
+        <div className={styles.pendingCard}>
+          <div className={styles.pendingTitle}>
+            SMTP verification has not run yet
+          </div>
+          <div className={styles.pendingMessage}>
+            {summary.operator_message ??
+              `${summary.review_count.toLocaleString()} rows are pending verification.`}
+          </div>
+          <div className={styles.pendingAction}>
+            Rerun with production SMTP config.
+          </div>
+        </div>
+      );
+    }
+
+    if (summary.delivery_state === "cleaning_completed") {
+      return (
+        <div className={styles.pendingCard}>
+          <div className={styles.pendingTitle}>
+            Cleaning completed
+          </div>
+          <div className={styles.pendingMessage}>
+            {summary.operator_message ??
+              "Delivery readiness still needs verification."}
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className={styles.blockedCard}>
         <div className={styles.blockedTitle}>
           No rows are safe to send yet
         </div>
         <div className={styles.blockedMessage}>
-          {summary.issues[0]?.message ??
+          {summary.operator_message ??
+            summary.issues[0]?.message ??
             "This job didn't produce any rows we'd recommend sending. " +
               "Re-run with extra-strict filtering, or fix the input list and try again."}
         </div>

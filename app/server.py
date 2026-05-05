@@ -121,6 +121,16 @@ MAX_JOB_WALL_CLOCK_SECONDS: int = int(
     os.environ.get("TRASHPANDA_MAX_JOB_SECONDS", str(45 * 60))
 )
 
+
+def _effective_config_path(config_path: str | None) -> str | None:
+    """Return explicit config_path or deployment default, if configured."""
+
+    if config_path is not None and config_path.strip():
+        return config_path.strip()
+    env_default = os.environ.get("TRASHPANDA_DEFAULT_JOB_CONFIG_PATH", "").strip()
+    return env_default or None
+
+
 ARTIFACT_KEYS: dict[str, tuple[str, str]] = {
     "valid_emails": ("client_outputs", "valid_emails"),
     "review_emails": ("client_outputs", "review_emails"),
@@ -813,7 +823,13 @@ async def create_job(
     )
     if db_job_id is None:
         LOGGER.debug("DB persistence skipped for legacy job %s", job_id)
-    background_tasks.add_task(_run_job, job_id, input_path, output_root, config_path)
+    background_tasks.add_task(
+        _run_job,
+        job_id,
+        input_path,
+        output_root,
+        _effective_config_path(config_path),
+    )
 
     return job_result_to_dict(result)
 

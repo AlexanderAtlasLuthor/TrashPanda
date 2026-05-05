@@ -1,0 +1,106 @@
+# Production profile for real delivery-readiness runs.
+#
+# Intentionally separate from configs/default.yaml so local development,
+# tests, and dry-run diagnostics never open live SMTP sockets by accident.
+#
+# Deployment selection:
+# - pass this path explicitly as config_path, or
+# - set TRASHPANDA_DEFAULT_JOB_CONFIG_PATH=configs/production_smtp.yaml.
+
+chunk_size: 50000
+max_workers: 20
+high_confidence_threshold: 70
+review_threshold: 40
+fallback_to_a_record: true
+invalid_if_disposable: true
+dns_timeout_seconds: 4.0
+retry_dns_times: 1
+export_review_bucket: true
+keep_original_columns: true
+log_level: INFO
+staging_db_name: staging.sqlite3
+temp_dir_name: temp
+
+rollout:
+  profile: production_full
+  require_preflight: true
+  block_uncapped_live_smtp: true
+  max_rows_without_confirmation: 1000
+  package_client_artifacts: true
+  require_operator_review: true
+
+post_passes:
+  mutate_materialized_outputs: false
+
+smtp_probe:
+  enabled: true
+  dry_run: false
+  max_candidates_per_run: 1000
+  timeout_seconds: 10
+  rate_limit_per_second: 2.0
+  retries: 1
+  retry_temp_failures: true
+  max_retries: 1
+  sender_address: trashpanda-probe@localhost
+  sample_size: 1000
+  max_per_domain: 3
+  negative_adjustment_trigger_threshold: 3
+
+typo_correction:
+  mode: "suggest_only"
+  max_edit_distance: 2
+  whitelist:
+    - gmail.com
+    - yahoo.com
+    - outlook.com
+    - hotmail.com
+    - icloud.com
+  require_original_no_mx: true
+
+history:
+  enabled: true
+  backend: sqlite
+  sqlite_path: runtime/history/domain_history.sqlite
+  apply_light_confidence_adjustment: true
+  max_positive_adjustment: 3
+  max_negative_adjustment: 5
+  min_observations_for_labeling: 5
+  min_observations_for_adjustment: 5
+  allow_bucket_flip_from_history: false
+  write_summary_report: true
+  write_adjustment_report: true
+
+bounce_ingestion:
+  enabled: true
+  store_path: runtime/feedback/bounce_outcomes.sqlite
+  min_observations_for_domain_reputation: 5
+  medium_hard_bounce_rate: 0.08
+  high_hard_bounce_rate: 0.20
+  high_blocked_rate: 0.10
+  complaint_is_high_risk: true
+
+domain_intelligence:
+  enabled: true
+  min_observations_for_reputation: 3
+  cold_start_default_risk: unknown
+  high_risk_blocks_auto_approve: true
+  cold_start_requires_smtp_valid: true
+
+catch_all:
+  enabled: true
+  method: smtp
+  cache_by_domain: true
+  default_on_unknown: review
+
+probability:
+  enabled: true
+  high_threshold: 0.80
+  medium_threshold: 0.50
+  write_summary_report: true
+
+decision:
+  enabled: true
+  approve_threshold: 0.80
+  review_threshold: 0.50
+  enable_bucket_override: true
+  write_summary_report: true

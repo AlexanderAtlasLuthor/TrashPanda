@@ -13,35 +13,74 @@ import styles from "./JobStatusPanel.module.css";
 import { useEtaEstimator } from "./useEtaEstimator";
 
 const STAGES: Array<{ name: string; desc: string }> = [
-  { name: "INGEST", desc: "Read CSV/XLSX · parse rows into memory" },
+  { name: "INGEST", desc: "Read CSV/XLSX and parse rows into memory" },
   { name: "NORMALIZE", desc: "Lowercase, trim, strip invisible chars" },
   { name: "VALIDATE", desc: "RFC 5322 structural check" },
-  { name: "TYPO FIX", desc: "Fuzzy match common domains · gmial → gmail" },
-  { name: "DEDUPLICATE", desc: "Hash compare · keep most complete record" },
+  { name: "TYPO FIX", desc: "Fuzzy match common domains" },
   { name: "MX LOOKUP", desc: "Verify domain accepts mail" },
-  { name: "CLASSIFY & EXPORT", desc: "Tag green/yellow/red · emit xlsx" },
+  { name: "SCORE", desc: "Calculate deliverability and policy signals" },
+  { name: "SMTP VERIFY", desc: "Live MX checks; slower than structural cleaning" },
+  { name: "CLASSIFY & EXPORT", desc: "Tag green/yellow/red and emit xlsx" },
 ];
 
-/**
- * Map status + age to an estimated current stage. Backend doesn't yet
- * stream stage-level progress, so we use time elapsed since started_at
- * as a rough progress indicator. When the backend later exposes a
- * current_stage field, wire it here.
- */
-function estimateStage(result: JobResult): number {
+const BACKEND_STAGE_ACTIVE_INDEX: Record<string, number> = {
+  header_normalization: 1,
+  structural_validation: 1,
+  value_normalization: 2,
+  technical_metadata: 2,
+  email_syntax_validation: 3,
+  domain_extraction: 3,
+  typo_correction: 4,
+  domain_comparison: 4,
+  dns_enrichment: 5,
+  typo_suggestion_validation: 5,
+  scoring: 5,
+  scoring_v2: 5,
+  scoring_comparison: 6,
+  smtp_verification: 7,
+  catch_all_detection: 7,
+  domain_intelligence: 7,
+  decision: 7,
+  completeness: 7,
+  email_normalization: 7,
+  dedupe: 7,
+  staging_persistence: 7,
+};
+
+function latestBackendStage(logLines: string[]): string | null {
+  for (const raw of logLines.slice().reverse()) {
+    const msg = raw.split(" | ").slice(2).join(" | ").trim() || raw;
+    const match = msg.match(/\bstage=([a-zA-Z0-9_]+)/);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+function isSmtpQuietWindow(result: JobResult, logLines: string[]): boolean {
+  return (
+    result.status === "running" &&
+    latestBackendStage(logLines) === "scoring_comparison"
+  );
+}
+
+function estimateStage(result: JobResult, logLines: string[] = []): number {
   if (result.status === "queued") return -1;
   if (result.status === "completed") return STAGES.length;
   if (result.status === "failed") return -1;
 
+  const latestStage = latestBackendStage(logLines);
+  if (latestStage && BACKEND_STAGE_ACTIVE_INDEX[latestStage] !== undefined) {
+    return BACKEND_STAGE_ACTIVE_INDEX[latestStage];
+  }
+
   const started = result.started_at ? Date.parse(result.started_at) : Date.now();
   const elapsed = Math.max(0, Date.now() - started);
-  // rough heuristic: each stage ~1.2s during mock, gives a believable marquee
   const idx = Math.floor(elapsed / 1200);
   return Math.min(STAGES.length - 1, idx);
 }
 
 function formatTimestamp(iso: string | null | undefined): string {
-  if (!iso) return "—";
+  if (!iso) return "-";
   try {
     const d = new Date(iso);
     return d.toLocaleTimeString([], {
@@ -50,14 +89,14 @@ function formatTimestamp(iso: string | null | undefined): string {
       second: "2-digit",
     });
   } catch {
-    return "—";
+    return "-";
   }
 }
 
 function statusLabel(status: JobStatus): string {
   switch (status) {
     case "queued":
-      return "Upload received · waiting for worker";
+      return "Upload received - waiting for worker";
     case "running":
       return "Cleaning pipeline in progress";
     case "completed":
@@ -71,9 +110,7 @@ interface JobStatusPanelProps {
   result: JobResult;
   /**
    * Streaming log lines from the same poll cycle as `result`. Used by the
-   * ETA estimator to derive a real throughput readout from `[TIMING]` lines.
-   * Optional so existing call sites that don't have logs still compile; in
-   * that case the ETA row degrades to "Estimating..." while running.
+   * ETA estimator and stage inference.
    */
   logLines?: string[];
 }
@@ -113,9 +150,9 @@ function SmtpProgressBlock({ smtp }: SmtpProgressBlockProps) {
         {smtp.total > 0 ? ` / ${smtp.total}` : ""}
         {smtp.total > 0 ? `  (${pct}%)` : ""}
       </span>
-      <span className={styles.label}>Valid · invalid · timeout</span>
+      <span className={styles.label}>Valid - invalid - timeout</span>
       <span className={styles.value}>
-        {smtp.valid} · {smtp.invalid} · {smtp.timeout}
+        {smtp.valid} - {smtp.invalid} - {smtp.timeout}
       </span>
       {smtp.total > 0 && (
         <div className={styles.smtpProgressBar} aria-hidden="true">
@@ -130,12 +167,11 @@ function SmtpProgressBlock({ smtp }: SmtpProgressBlockProps) {
 }
 
 export function JobStatusPanel({ result, logLines = [] }: JobStatusPanelProps) {
-  const activeIdx = estimateStage(result);
+  const activeIdx = estimateStage(result, logLines);
   const eta = useEtaEstimator(result, logLines);
   const fileExt =
     result.input_filename?.toLowerCase().endsWith(".xlsx") ? "XLSX" : "CSV";
 
-  // ── Live SMTP progress (polled while running) ────────────────────────
   const [progress, setProgress] = useState<JobProgress | null>(null);
   const isPollable = result.status === "queued" || result.status === "running";
 
@@ -151,7 +187,7 @@ export function JobStatusPanel({ result, logLines = [] }: JobStatusPanelProps) {
         if (!cancelled) setProgress(p);
       } catch {
         // Polling failures are non-fatal; the panel still renders the
-        // base status from ``result``.
+        // base status from `result`.
       }
     };
     tick();
@@ -162,7 +198,6 @@ export function JobStatusPanel({ result, logLines = [] }: JobStatusPanelProps) {
     };
   }, [isPollable, result.job_id]);
 
-  // ── Cancel control ───────────────────────────────────────────────────
   const [cancelState, setCancelState] = useState<
     "idle" | "pending" | "cancelled" | "error"
   >("idle");
@@ -178,6 +213,7 @@ export function JobStatusPanel({ result, logLines = [] }: JobStatusPanelProps) {
 
   const smtpLive = Boolean(progress?.smtp?.live);
   const smtp = progress?.smtp ?? null;
+  const smtpPhaseInferred = isSmtpQuietWindow(result, logLines);
 
   return (
     <div className={styles.panel}>
@@ -238,7 +274,7 @@ export function JobStatusPanel({ result, logLines = [] }: JobStatusPanelProps) {
           })}
         </div>
 
-        {smtpLive && <SmtpLiveWarning />}
+        {(smtpLive || smtpPhaseInferred) && <SmtpLiveWarning />}
 
         {smtp && (smtp.total > 0 || smtp.attempted > 0) && (
           <SmtpProgressBlock smtp={smtp} />
@@ -269,7 +305,7 @@ export function JobStatusPanel({ result, logLines = [] }: JobStatusPanelProps) {
               aria-label="Cancel this job"
             >
               {cancelState === "pending"
-                ? "Cancelling…"
+                ? "Cancelling..."
                 : cancelState === "cancelled" || progress?.cancelled
                   ? "Cancellation requested"
                   : "Cancel job"}
@@ -278,7 +314,7 @@ export function JobStatusPanel({ result, logLines = [] }: JobStatusPanelProps) {
         )}
         {cancelState === "error" && (
           <div className={styles.cancelNote}>
-            Could not reach the cancel endpoint — try again in a moment.
+            Could not reach the cancel endpoint - try again in a moment.
           </div>
         )}
         {(cancelState === "cancelled" || progress?.cancelled) && (
@@ -289,8 +325,8 @@ export function JobStatusPanel({ result, logLines = [] }: JobStatusPanelProps) {
 
         {result.status === "queued" && (
           <div className={styles.hint}>
-            The panda is spinning up. This usually takes a few seconds. You
-            can leave this page and come back — the job keeps running on the
+            The worker is spinning up. This usually takes a few seconds. You
+            can leave this page and come back; the job keeps running on the
             server.
           </div>
         )}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from app import server
 from app.config import (
     ROLLOUT_PROFILE_LOCAL_DEV,
     ROLLOUT_PROFILE_PILOT_SAMPLE,
@@ -111,3 +112,36 @@ def test_existing_v2_config_sections_still_load() -> None:
     assert cfg.catch_all.enabled is True
     assert cfg.domain_intelligence.enabled is True
     assert cfg.bounce_ingestion.enabled is True
+
+
+def test_production_smtp_config_enables_live_smtp() -> None:
+    cfg = load_config(
+        config_path=_project_root() / "configs" / "production_smtp.yaml",
+        base_dir=_project_root(),
+    )
+
+    assert cfg.rollout.profile == "production_full"
+    assert cfg.rollout.require_preflight is True
+    assert cfg.smtp_probe.enabled is True
+    assert cfg.smtp_probe.dry_run is False
+    assert cfg.smtp_probe.max_candidates_per_run == 1000
+    assert cfg.smtp_probe.timeout_seconds == 10
+    assert cfg.smtp_probe.rate_limit_per_second > 0
+    assert cfg.smtp_probe.max_retries == 1
+
+
+def test_default_job_config_env_is_used_only_when_no_explicit_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "TRASHPANDA_DEFAULT_JOB_CONFIG_PATH",
+        "configs/production_smtp.yaml",
+    )
+
+    assert (
+        server._effective_config_path(None)
+        == "configs/production_smtp.yaml"
+    )
+    assert server._effective_config_path("configs/default.yaml") == (
+        "configs/default.yaml"
+    )
