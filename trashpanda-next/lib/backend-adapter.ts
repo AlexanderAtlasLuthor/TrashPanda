@@ -521,6 +521,59 @@ export async function adapterDownloadOperatorClientPackage(
   );
 }
 
+/**
+ * V2.10.8.3 — Streams the *safe-only partial* client-package ZIP back
+ * to the BFF route. Parallel to ``adapterDownloadOperatorClientPackage``
+ * but for the partial-delivery channel.
+ *
+ * Critical: returns the raw fetch Response so status, Content-Type,
+ * Content-Disposition, X-TrashPanda-Audience,
+ * X-TrashPanda-Delivery-Mode, X-TrashPanda-Ready-For-Client, and
+ * X-TrashPanda-Ready-For-Client-Partial all flow through unchanged.
+ * The endpoint can return either:
+ *   - 200 application/zip with Content-Disposition
+ *   - 409 application/json SafeOnlyDownloadError
+ * Never wrap, never parse, never reconstruct the filename. Never fall
+ * back to /jobs/{id}/artifacts/zip or /results/{id}.
+ *
+ * The override header is forwarded only when non-empty; the backend
+ * rejects the request with ``safe_only_override_required`` when the
+ * value isn't exactly ``safe-only``, so an empty header pass-through
+ * would just be wasted bytes.
+ */
+export async function adapterDownloadOperatorClientPackageSafeOnly(
+  jobId: string,
+  overrideHeader: string,
+): Promise<Response> {
+  if (!backendUrl) {
+    return new Response(
+      JSON.stringify({
+        error: "backend_not_configured",
+        message: "Backend API base URL is not configured.",
+        ready_for_client: false,
+        ready_for_client_partial: false,
+      }),
+      {
+        status: 501,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  }
+
+  const headers: Record<string, string> = {};
+  if (overrideHeader) {
+    headers["X-TrashPanda-Operator-Override"] = overrideHeader;
+  }
+
+  return fetch(
+    `${backendUrl}/api/operator/jobs/${encodeURIComponent(jobId)}/client-package/download-safe-only`,
+    {
+      cache: "no-store",
+      headers,
+    },
+  );
+}
+
 export async function adapterRunOperatorReviewGate(
   jobId: string,
 ): Promise<OperatorReviewSummary> {

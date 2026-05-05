@@ -100,6 +100,12 @@ class OperatorReviewResult:
     high_risk_domain_count: int | None
     cold_start_count: int | None
     approved_original_present: bool
+    ready_for_client_partial: bool
+    partial_delivery_mode: str | None
+    partial_delivery_requires_override: bool
+    partial_delivery_allowed_count: int | None
+    partial_delivery_excluded_count: int | None
+    partial_delivery_reason: str | None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-friendly dict (paths as strings, no dataclasses)."""
@@ -132,6 +138,16 @@ class OperatorReviewResult:
             "high_risk_domain_count": self.high_risk_domain_count,
             "cold_start_count": self.cold_start_count,
             "approved_original_present": self.approved_original_present,
+            "ready_for_client_partial": self.ready_for_client_partial,
+            "partial_delivery_mode": self.partial_delivery_mode,
+            "partial_delivery_requires_override": (
+                self.partial_delivery_requires_override
+            ),
+            "partial_delivery_allowed_count": self.partial_delivery_allowed_count,
+            "partial_delivery_excluded_count": (
+                self.partial_delivery_excluded_count
+            ),
+            "partial_delivery_reason": self.partial_delivery_reason,
         }
 
 
@@ -534,6 +550,42 @@ def run_operator_review_gate(
         status = STATUS_READY
         ready = True
 
+    # ---- V2.10.8.1: partial readiness contract -------------------------- #
+    # Partial readiness signals that, while the run is not fully ready
+    # for client delivery, a safe-only subset exists that *could* be
+    # delivered (subject to operator override). The actual safe-only
+    # artifact filtering, manifest, and download endpoint land in a
+    # later subphase — this only exposes the contract.
+    safe_count_int = int(safe_count or 0)
+    review_count_int = int(review_count or 0)
+    rejected_count_int = int(rejected_count or 0)
+
+    ready_for_client_partial = (
+        not ready
+        and has_warn
+        and not has_block
+        and safe_count_int > 0
+        and approved_original_present
+    )
+
+    if ready_for_client_partial:
+        partial_delivery_mode: str | None = "safe_only"
+        partial_delivery_requires_override = True
+        partial_delivery_allowed_count: int | None = safe_count_int
+        partial_delivery_excluded_count: int | None = (
+            review_count_int + rejected_count_int
+        )
+        partial_delivery_reason: str | None = (
+            f"Safe-only delivery is available because {safe_count_int} "
+            "safe rows exist, but the full run is not ready."
+        )
+    else:
+        partial_delivery_mode = None
+        partial_delivery_requires_override = False
+        partial_delivery_allowed_count = None
+        partial_delivery_excluded_count = None
+        partial_delivery_reason = None
+
     summary_path = run_dir_path / _OPERATOR_SUMMARY_FILENAME
     generated_at = _utc_now_iso()
 
@@ -558,6 +610,12 @@ def run_operator_review_gate(
         high_risk_domain_count=high_risk_domain_count,
         cold_start_count=cold_start_count,
         approved_original_present=approved_original_present,
+        ready_for_client_partial=ready_for_client_partial,
+        partial_delivery_mode=partial_delivery_mode,
+        partial_delivery_requires_override=partial_delivery_requires_override,
+        partial_delivery_allowed_count=partial_delivery_allowed_count,
+        partial_delivery_excluded_count=partial_delivery_excluded_count,
+        partial_delivery_reason=partial_delivery_reason,
     )
 
     # Best-effort atomic summary write — does not change the in-memory

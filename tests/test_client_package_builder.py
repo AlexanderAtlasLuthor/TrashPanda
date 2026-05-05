@@ -558,3 +558,231 @@ def test_legacy_public_keys_rejected_by_package_builder(
     # not the client delivery contract — we are not changing it here.
     assert "processing_report_json" in _PUBLIC_REPORT_KEYS
     assert "domain_summary" in _PUBLIC_REPORT_KEYS
+
+
+# --------------------------------------------------------------------------- #
+# V2.10.8.2 — Safe-only delivery note + manifest extension
+# --------------------------------------------------------------------------- #
+
+
+_SAFE_ONLY_NOTE_FILENAME = "SAFE_ONLY_DELIVERY_NOTE.txt"
+
+
+def _build_partial_run(
+    run_dir: Path,
+    *,
+    valid_rows: int,
+    review_rows: int,
+    rejected_rows: int,
+    include_approved_original: bool = True,
+) -> None:
+    """Build a run whose row mix exercises the partial-delivery rule."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    _write_xlsx(run_dir / "valid_emails.xlsx", rows=valid_rows)
+    _write_xlsx(run_dir / "review_emails.xlsx", rows=review_rows)
+    _write_xlsx(run_dir / "invalid_or_bounce_risk.xlsx", rows=rejected_rows)
+    _write_summary_xlsx(run_dir / "summary_report.xlsx")
+    if include_approved_original:
+        _write_xlsx(
+            run_dir / "approved_original_format.xlsx",
+            rows=max(valid_rows, 1),
+        )
+
+
+def test_safe_only_note_created_when_partial_applies(tmp_path: Path) -> None:
+    """WY-100 shape: warn-only run with safe rows AND review/rejected rows."""
+    run_dir = tmp_path / "run"
+    _build_partial_run(
+        run_dir,
+        valid_rows=7,
+        review_rows=59,
+        rejected_rows=34,
+    )
+
+    result = build_client_delivery_package(run_dir)
+
+    note = result.package_dir / _SAFE_ONLY_NOTE_FILENAME
+    assert note.is_file()
+    body = note.read_text(encoding="utf-8")
+    # Every line called out by the spec must be present verbatim.
+    for snippet in (
+        "This is a safe-only partial delivery package.",
+        "The full run is NOT ready_for_client.",
+        "safe_count: 7",
+        "review_count: 59",
+        "rejected_count: 34",
+        "delivery_mode: safe_only_partial",
+    ):
+        assert snippet in body, f"missing line in note: {snippet!r}"
+    # Sanity: the note ends with a trailing newline, per spec.
+    assert body.endswith("\n")
+
+
+def test_safe_only_note_appears_in_main_files_included(tmp_path: Path) -> None:
+    """The note is itself client_safe; the main manifest must list it."""
+    run_dir = tmp_path / "run"
+    _build_partial_run(run_dir, valid_rows=7, review_rows=3, rejected_rows=0)
+
+    result = build_client_delivery_package(run_dir)
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+
+    note_entries = [
+        f for f in manifest["files_included"]
+        if f["filename"] == _SAFE_ONLY_NOTE_FILENAME
+    ]
+    assert len(note_entries) == 1, manifest["files_included"]
+    entry = note_entries[0]
+    assert entry["key"] == "safe_only_delivery_note"
+    assert entry["audience"] == "client_safe"
+
+
+def test_safe_only_delivery_block_supported(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _build_partial_run(
+        run_dir,
+        valid_rows=7,
+        review_rows=59,
+        rejected_rows=34,
+    )
+
+    result = build_client_delivery_package(run_dir)
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+
+    block = manifest["safe_only_delivery"]
+    assert block["supported"] is True
+    assert block["note_filename"] == _SAFE_ONLY_NOTE_FILENAME
+    assert block["safe_count"] == 7
+    assert block["review_count"] == 59
+    assert block["rejected_count"] == 34
+
+
+def test_safe_only_files_included_excludes_review_and_rejected(
+    tmp_path: Path,
+) -> None:
+    """The safe-only sub-list is a strict subset — review/rejected/etc.
+    XLSXs may sit in the main package but must never appear here."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir)  # safe=5, review=3, rejected=2 → partial applies
+
+    result = build_client_delivery_package(run_dir)
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+
+    block = manifest["safe_only_delivery"]
+    assert block["supported"] is True
+    safe_only_filenames = {f["filename"] for f in block["files_included"]}
+
+    expected_included = {
+        "valid_emails.xlsx",
+        "approved_original_format.xlsx",
+        "summary_report.xlsx",
+        _SAFE_ONLY_NOTE_FILENAME,
+    }
+    assert expected_included <= safe_only_filenames, (
+        f"safe-only must include {expected_included - safe_only_filenames}"
+    )
+
+    must_be_excluded = {
+        "review_emails.xlsx",
+        "invalid_or_bounce_risk.xlsx",
+        "duplicate_emails.xlsx",
+        "hard_fail_emails.xlsx",
+    }
+    leaked = must_be_excluded & safe_only_filenames
+    assert not leaked, f"safe-only leaked review/rejected files: {leaked}"
+
+    # And the strict subset is exactly what the spec says — no surprises.
+    assert safe_only_filenames == expected_included, (
+        f"unexpected safe-only files: {safe_only_filenames ^ expected_included}"
+    )
+
+
+def test_safe_only_note_absent_when_safe_count_zero(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _build_partial_run(
+        run_dir,
+        valid_rows=0,
+        review_rows=3,
+        rejected_rows=2,
+    )
+
+    result = build_client_delivery_package(run_dir)
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+
+    assert not (result.package_dir / _SAFE_ONLY_NOTE_FILENAME).exists()
+    block = manifest["safe_only_delivery"]
+    assert block["supported"] is False
+    assert block["note_filename"] is None
+    assert block["files_included"] == []
+
+
+def test_safe_only_note_absent_when_no_review_or_rejected(tmp_path: Path) -> None:
+    """No review and no rejected ⇒ the full package IS the delivery —
+    a safe-only side-channel would be redundant."""
+    run_dir = tmp_path / "run"
+    _build_partial_run(
+        run_dir,
+        valid_rows=5,
+        review_rows=0,
+        rejected_rows=0,
+    )
+
+    result = build_client_delivery_package(run_dir)
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+
+    assert not (result.package_dir / _SAFE_ONLY_NOTE_FILENAME).exists()
+    block = manifest["safe_only_delivery"]
+    assert block["supported"] is False
+    assert block["note_filename"] is None
+    assert block["files_included"] == []
+
+
+def test_full_package_keeps_review_and_rejected_when_partial_applies(
+    tmp_path: Path,
+) -> None:
+    """Regression guard: V2.10.8.2 must NOT remove review/rejected
+    XLSXs from the main client delivery package — only the safe-only
+    sub-list filters them out."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir)  # partial applies
+
+    result = build_client_delivery_package(run_dir)
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+
+    main_filenames = {f["filename"] for f in manifest["files_included"]}
+    # Full delivery still carries these client_safe files.
+    assert "review_emails.xlsx" in main_filenames
+    assert "invalid_or_bounce_risk.xlsx" in main_filenames
+    assert "duplicate_emails.xlsx" in main_filenames
+    assert "hard_fail_emails.xlsx" in main_filenames
+
+    # And — still — none of them appear in the safe-only sub-list.
+    safe_only_filenames = {
+        f["filename"] for f in manifest["safe_only_delivery"]["files_included"]
+    }
+    assert "review_emails.xlsx" not in safe_only_filenames
+    assert "invalid_or_bounce_risk.xlsx" not in safe_only_filenames
+    assert "duplicate_emails.xlsx" not in safe_only_filenames
+    assert "hard_fail_emails.xlsx" not in safe_only_filenames
+
+
+def test_stale_safe_only_note_is_removed_on_rebuild(tmp_path: Path) -> None:
+    """If a previous build produced the note but a rebuild's counts no
+    longer satisfy the partial rule, the disk must agree with the
+    manifest (note absent, supported=false)."""
+    run_dir = tmp_path / "run"
+    _build_partial_run(run_dir, valid_rows=7, review_rows=3, rejected_rows=2)
+    first = build_client_delivery_package(run_dir)
+    assert (first.package_dir / _SAFE_ONLY_NOTE_FILENAME).is_file()
+
+    # Rewrite review/rejected to zero rows → partial no longer applies.
+    _write_xlsx(run_dir / "review_emails.xlsx", rows=0)
+    _write_xlsx(run_dir / "invalid_or_bounce_risk.xlsx", rows=0)
+
+    second = build_client_delivery_package(run_dir)
+    manifest = json.loads(second.manifest_path.read_text(encoding="utf-8"))
+
+    assert not (second.package_dir / _SAFE_ONLY_NOTE_FILENAME).exists()
+    assert manifest["safe_only_delivery"]["supported"] is False
+    assert manifest["safe_only_delivery"]["note_filename"] is None

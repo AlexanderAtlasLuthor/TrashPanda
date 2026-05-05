@@ -294,6 +294,15 @@ export interface OperatorReviewSummary {
   reviewed_files?: number | null;
   blocked_files?: number | null;
   warnings_count?: number | null;
+  // V2.10.8.1 — partial readiness contract. ``ready_for_client`` stays
+  // strict (full delivery); these surface the optional safe-only
+  // partial-delivery channel computed by the operator review gate.
+  ready_for_client_partial?: boolean;
+  partial_delivery_mode?: "safe_only" | "none" | string | null;
+  partial_delivery_requires_override?: boolean;
+  partial_delivery_allowed_count?: number | null;
+  partial_delivery_excluded_count?: number | null;
+  partial_delivery_reason?: string | null;
 }
 
 export interface ClientPackageFile {
@@ -303,6 +312,9 @@ export interface ClientPackageFile {
   audience: ArtifactAudience;
   required?: boolean | null;
   sha256?: string | null;
+  // V2.9.6 manifest emits ``key`` (artifact-key stem) — kept optional
+  // since older snapshots predate this field.
+  key?: string | null;
 }
 
 export interface ClientPackageExcludedFile {
@@ -318,6 +330,15 @@ export interface ClientPackageWarning {
   severity?: OperatorSeverity | "info" | null;
 }
 
+export interface SafeOnlyDeliveryBlock {
+  supported: boolean;
+  note_filename?: string | null;
+  files_included?: ClientPackageFile[];
+  safe_count?: number | null;
+  review_count?: number | null;
+  rejected_count?: number | null;
+}
+
 export interface ClientPackageManifest {
   job_id?: string | null;
   package_dir?: string | null;
@@ -328,6 +349,13 @@ export interface ClientPackageManifest {
   files_excluded?: ClientPackageExcludedFile[];
   warnings?: ClientPackageWarning[];
   status?: string | null;
+  // V2.10.8.2 — safe-only partial delivery contract. ``delivery_mode``
+  // and ``full_run_ready_for_client`` are advisory wire-shape fields
+  // future builders may emit; ``safe_only_delivery`` is the block the
+  // V2.10.8.3 download endpoint inspects.
+  delivery_mode?: "full" | "safe_only_partial" | string | null;
+  full_run_ready_for_client?: boolean | null;
+  safe_only_delivery?: SafeOnlyDeliveryBlock | null;
 }
 
 export interface SmtpRuntimeSummary {
@@ -411,13 +439,38 @@ export interface FeedbackPreviewResult {
 // gate (review summary, ready_for_client, manifest, audience,
 // path-escape) blocks the download. NOT a generic API error envelope —
 // the rest of the app uses ApiError from lib/api.ts for that.
+//
+// V2.10.8.3: ``ready_for_client`` widened from the literal ``false`` to
+// ``boolean`` because the safe-only download endpoint emits
+// ``safe_only_not_required`` with ``ready_for_client: true`` (telling
+// the operator UI to redirect to the standard endpoint).
+// ``ready_for_client_partial`` is also surfaced so the UI can branch
+// on the partial-delivery channel without unwrapping a nested envelope.
 export interface ClientPackageDownloadError {
   error: string;
   message: string;
-  ready_for_client: false;
+  ready_for_client: boolean;
+  ready_for_client_partial?: boolean;
   status?: string | null;
   bad_files?: Array<{
     filename: string | null;
     audience: string | null;
   }>;
+  missing_files?: string[];
+}
+
+// V2.10.8.3 — flat 409 payload returned exclusively by the safe-only
+// partial download endpoint. Mirrors ClientPackageDownloadError but
+// always surfaces ``ready_for_client_partial`` because every safe-only
+// gate's payload distinguishes "no partial available" from
+// "partial available but blocked by another gate". Same flat shape;
+// not a generic API error envelope.
+export interface SafeOnlyDownloadError {
+  error: string;
+  message: string;
+  ready_for_client: boolean;
+  ready_for_client_partial?: boolean;
+  status?: string | null;
+  bad_files?: Array<{ filename: string | null; audience: string | null }>;
+  missing_files?: string[];
 }

@@ -33,9 +33,11 @@ from pathlib import Path
 from typing import Any
 
 from .artifact_contract import (
+    ARTIFACT_AUDIENCE_CLIENT_SAFE,
     ARTIFACT_AUDIENCE_INTERNAL_ONLY,
     get_artifact_audience,
     is_client_safe_artifact,
+    is_safe_only_artifact,
 )
 from .atomic_io import atomic_write_json
 
@@ -43,6 +45,13 @@ from .atomic_io import atomic_write_json
 _REPORT_VERSION = "v2.9.6"
 _DEFAULT_PACKAGE_SUBDIR = "client_delivery_package"
 _MANIFEST_FILENAME = "client_package_manifest.json"
+
+# V2.10.8.2 — safe-only partial delivery anchor file. Generated only
+# when the run has both safe rows and at least one
+# review/rejected row, so the future safe-only download endpoint has
+# a self-describing artifact to ship alongside the safe XLSXs.
+_SAFE_ONLY_NOTE_FILENAME = "SAFE_ONLY_DELIVERY_NOTE.txt"
+_SAFE_ONLY_NOTE_KEY = "safe_only_delivery_note"
 
 # Filenames whose row counts get surfaced in the manifest. The XLSX
 # convention is set by ``app.client_output._write_xlsx`` — first sheet
@@ -277,6 +286,75 @@ def build_client_delivery_package(
         if warn is not None:
             warnings.append(warn)
 
+    # ---- V2.10.8.2: safe-only partial delivery note --------------------- #
+    # Only synthesize the note when partial delivery actually applies:
+    # at least one safe row, and at least one row that the full client
+    # package would carry but a safe-only delivery must drop.
+    safe_count_int = int(counts["safe_count"] or 0)
+    review_count_int = int(counts["review_count"] or 0)
+    rejected_count_int = int(counts["rejected_count"] or 0)
+    partial_applies = safe_count_int > 0 and (
+        review_count_int > 0 or rejected_count_int > 0
+    )
+
+    note_path = package_dir / _SAFE_ONLY_NOTE_FILENAME
+    # Keep on-disk state in sync with the manifest contract: a stale
+    # note from a previous build must not survive a rebuild whose
+    # counts no longer satisfy the partial-applies rule.
+    if note_path.exists() and not partial_applies:
+        try:
+            note_path.unlink()
+        except OSError:  # pragma: no cover - defensive
+            pass
+
+    if partial_applies:
+        note_body = (
+            "This is a safe-only partial delivery package.\n"
+            "\n"
+            "The full run is NOT ready_for_client.\n"
+            "Only SMTP-confirmed safe rows are included.\n"
+            "Review, catch-all, inconclusive, rejected, technical, debug, "
+            "and internal artifacts are excluded.\n"
+            "\n"
+            f"safe_count: {safe_count_int}\n"
+            f"review_count: {review_count_int}\n"
+            f"rejected_count: {rejected_count_int}\n"
+            "delivery_mode: safe_only_partial\n"
+        )
+        note_path.write_text(note_body, encoding="utf-8")
+        files_included.append(
+            ClientPackageFile(
+                key=_SAFE_ONLY_NOTE_KEY,
+                source_path=note_path,
+                package_path=note_path,
+                audience=ARTIFACT_AUDIENCE_CLIENT_SAFE,
+                size_bytes=int(note_path.stat().st_size),
+            )
+        )
+
+    # Safe-only delivery manifest block. ``files_included`` here is a
+    # *strict subset* of the main files_included filtered by the
+    # safe-only allowlist (see app.artifact_contract). Counts are
+    # always the actual run counts, regardless of supported state.
+    safe_only_files = [
+        {
+            "key": f.key,
+            "filename": f.package_path.name,
+            "audience": f.audience,
+            "size_bytes": int(f.size_bytes),
+        }
+        for f in files_included
+        if is_safe_only_artifact(f.package_path.name)
+    ]
+    safe_only_block: dict[str, Any] = {
+        "supported": bool(partial_applies),
+        "note_filename": _SAFE_ONLY_NOTE_FILENAME if partial_applies else None,
+        "files_included": safe_only_files if partial_applies else [],
+        "safe_count": safe_count_int,
+        "review_count": review_count_int,
+        "rejected_count": rejected_count_int,
+    }
+
     generated_at = _utc_now_iso()
 
     manifest = {
@@ -298,6 +376,7 @@ def build_client_delivery_package(
         "safe_count": counts["safe_count"],
         "review_count": counts["review_count"],
         "rejected_count": counts["rejected_count"],
+        "safe_only_delivery": safe_only_block,
     }
     manifest_path = package_dir / _MANIFEST_FILENAME
     atomic_write_json(manifest_path, manifest)

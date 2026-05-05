@@ -406,6 +406,68 @@ export async function downloadClientPackage(
   );
 }
 
+/**
+ * Fetches the *partial* safe-only client-delivery ZIP endpoint.
+ *
+ * V2.10.8.3 contract: this is a separate channel, not a fallback for
+ * ``downloadClientPackage``. It is only valid when the run reports
+ * ``ready_for_client=false`` AND ``ready_for_client_partial=true`` AND
+ * ``partial_delivery_mode=safe_only`` AND the operator has explicitly
+ * confirmed the override. The two endpoints are mutually exclusive:
+ * a full-ready run uses the standard endpoint, and the safe-only
+ * endpoint will reject ``ready_for_client=true`` runs with
+ * ``safe_only_not_required``.
+ *
+ * Returns the raw Response. The endpoint can return either:
+ * - 200 application/zip with Content-Disposition (and the V2.10.8.3
+ *   X-TrashPanda-Delivery-Mode / -Ready-For-Client / -Ready-For-Client-Partial
+ *   advisory headers)
+ * - 409 application/json SafeOnlyDownloadError explaining the gate.
+ *
+ * Callers must branch on response.ok / response.status before reading
+ * the body. Always read Content-Disposition from the response; do not
+ * reconstruct filenames.
+ *
+ * Override semantics:
+ * - When ``overrideConfirmed=false`` no network request is made; a
+ *   synthetic 409 Response is returned so the UI can render the
+ *   "operator must confirm" branch without a round-trip. This means
+ *   accidental clicks on a not-yet-confirmed control cannot leak any
+ *   bytes, even client-safe ones.
+ * - When ``overrideConfirmed=true`` the wire request carries the
+ *   exact ``X-TrashPanda-Operator-Override: safe-only`` header the
+ *   backend requires. No other override values are sent.
+ */
+export async function downloadSafeOnlyClientPackage(
+  jobId: string,
+  overrideConfirmed: boolean,
+): Promise<Response> {
+  if (!overrideConfirmed) {
+    return new Response(
+      JSON.stringify({
+        error: "safe_only_override_not_confirmed",
+        message: "Operator must confirm the safe-only delivery override.",
+        ready_for_client: false,
+        ready_for_client_partial: false,
+      }),
+      {
+        status: 409,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  }
+
+  return fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/client-package/download-safe-only`,
+    {
+      cache: "no-store",
+      headers: {
+        "X-TrashPanda-Operator-Override": "safe-only",
+      },
+    },
+  );
+}
+
 export async function ingestFeedback(
   input: IngestFeedbackInput,
 ): Promise<FeedbackIngestionSummary> {

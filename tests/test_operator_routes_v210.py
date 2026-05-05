@@ -753,3 +753,777 @@ def test_download_unknown_job_returns_structured_404(
     body = response.json()
     assert body["error"]["error_type"] == "job_not_found"
     assert body["error"]["details"]["job_id"] == "does_not_exist"
+
+
+# --------------------------------------------------------------------------- #
+# V2.10.8.3 — Safe-only partial download
+# --------------------------------------------------------------------------- #
+
+
+_SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE = (
+    "/api/operator/jobs/{job_id}/client-package/download-safe-only"
+)
+_SAFE_ONLY_OVERRIDE_HEADERS = {"X-TrashPanda-Operator-Override": "safe-only"}
+_SAFE_ONLY_NOTE_FILENAME = "SAFE_ONLY_DELIVERY_NOTE.txt"
+
+
+def _setup_safe_only_partial_package(
+    run_dir: Path,
+    *,
+    summary_overrides: dict | None = None,
+    manifest_overrides: dict | None = None,
+    safe_only_block_overrides: dict | None = None,
+    write_summary: bool = True,
+    write_manifest: bool = True,
+    write_package_dir: bool = True,
+    write_note: bool = True,
+    safe_only_files_override: list | None = None,
+) -> Path:
+    """Build a baseline ``ready_for_client_partial=true`` run on disk.
+
+    Each safe-only download test starts from this and then mutates
+    exactly one gate so the failure under test is the only deviation
+    from the WY-100 partial happy path. Returns the package dir.
+
+    Layout produced (all files physically present unless overridden):
+
+        run_dir/
+            operator_review_summary.json   ← ready=False, partial=True, mode=safe_only
+            client_delivery_package/
+                client_package_manifest.json   ← full + safe_only_delivery block
+                valid_emails.xlsx              ← safe-only allowlisted
+                approved_original_format.xlsx  ← safe-only allowlisted
+                summary_report.xlsx            ← safe-only allowlisted
+                SAFE_ONLY_DELIVERY_NOTE.txt    ← safe-only allowlisted
+                review_emails.xlsx             ← client_safe but NOT safe-only
+                invalid_or_bounce_risk.xlsx    ← client_safe but NOT safe-only
+    """
+
+    package_dir = run_dir / "client_delivery_package"
+    if write_package_dir:
+        package_dir.mkdir(parents=True, exist_ok=True)
+        (package_dir / "valid_emails.xlsx").write_bytes(b"VALID_XLSX")
+        (package_dir / "approved_original_format.xlsx").write_bytes(b"AOF_XLSX")
+        (package_dir / "summary_report.xlsx").write_bytes(b"SUMMARY_XLSX")
+        (package_dir / "review_emails.xlsx").write_bytes(b"REVIEW_XLSX")
+        (package_dir / "invalid_or_bounce_risk.xlsx").write_bytes(b"REJECTED_XLSX")
+        if write_note:
+            (package_dir / _SAFE_ONLY_NOTE_FILENAME).write_text(
+                "This is a safe-only partial delivery package.\n"
+                "\n"
+                "The full run is NOT ready_for_client.\n"
+                "Only SMTP-confirmed safe rows are included.\n"
+                "Review, catch-all, inconclusive, rejected, technical, debug, "
+                "and internal artifacts are excluded.\n"
+                "\n"
+                "safe_count: 7\n"
+                "review_count: 59\n"
+                "rejected_count: 34\n"
+                "delivery_mode: safe_only_partial\n",
+                encoding="utf-8",
+            )
+
+    safe_only_files_default = [
+        {
+            "key": "valid_emails",
+            "filename": "valid_emails.xlsx",
+            "audience": "client_safe",
+            "size_bytes": 10,
+        },
+        {
+            "key": "approved_original_format",
+            "filename": "approved_original_format.xlsx",
+            "audience": "client_safe",
+            "size_bytes": 8,
+        },
+        {
+            "key": "summary_report",
+            "filename": "summary_report.xlsx",
+            "audience": "client_safe",
+            "size_bytes": 12,
+        },
+        {
+            "key": "safe_only_delivery_note",
+            "filename": _SAFE_ONLY_NOTE_FILENAME,
+            "audience": "client_safe",
+            "size_bytes": 280,
+        },
+    ]
+    safe_only_files = (
+        safe_only_files_override
+        if safe_only_files_override is not None
+        else safe_only_files_default
+    )
+
+    if write_manifest and write_package_dir:
+        # Main files_included carries every client_safe file in the
+        # package — including the review/rejected XLSXs that the
+        # safe-only sub-list filters out.
+        manifest = {
+            "report_version": "v2.9.6",
+            "generated_at": "2026-05-05T00:00:00+00:00",
+            "files_included": [
+                {
+                    "key": "valid_emails",
+                    "filename": "valid_emails.xlsx",
+                    "audience": "client_safe",
+                    "size_bytes": 10,
+                },
+                {
+                    "key": "approved_original_format",
+                    "filename": "approved_original_format.xlsx",
+                    "audience": "client_safe",
+                    "size_bytes": 8,
+                },
+                {
+                    "key": "summary_report",
+                    "filename": "summary_report.xlsx",
+                    "audience": "client_safe",
+                    "size_bytes": 12,
+                },
+                {
+                    "key": "review_emails",
+                    "filename": "review_emails.xlsx",
+                    "audience": "client_safe",
+                    "size_bytes": 10,
+                },
+                {
+                    "key": "invalid_or_bounce_risk",
+                    "filename": "invalid_or_bounce_risk.xlsx",
+                    "audience": "client_safe",
+                    "size_bytes": 12,
+                },
+                {
+                    "key": "safe_only_delivery_note",
+                    "filename": _SAFE_ONLY_NOTE_FILENAME,
+                    "audience": "client_safe",
+                    "size_bytes": 280,
+                },
+            ],
+            "files_excluded": [],
+            "warnings": [],
+            "safe_count": 7,
+            "review_count": 59,
+            "rejected_count": 34,
+            "safe_only_delivery": {
+                "supported": True,
+                "note_filename": _SAFE_ONLY_NOTE_FILENAME,
+                "files_included": safe_only_files,
+                "safe_count": 7,
+                "review_count": 59,
+                "rejected_count": 34,
+            },
+        }
+        if safe_only_block_overrides is not None:
+            manifest["safe_only_delivery"].update(safe_only_block_overrides)
+        if manifest_overrides:
+            manifest.update(manifest_overrides)
+        _write_json(package_dir / "client_package_manifest.json", manifest)
+
+    if write_summary:
+        summary = {
+            "report_version": "v2.9.7",
+            "ready_for_client": False,
+            "ready_for_client_partial": True,
+            "partial_delivery_mode": "safe_only",
+            "partial_delivery_requires_override": True,
+            "partial_delivery_allowed_count": 7,
+            "partial_delivery_excluded_count": 93,
+            "status": "warn",
+            "issues": [],
+        }
+        if summary_overrides is not None:
+            summary.update(summary_overrides)
+        _write_json(run_dir / "operator_review_summary.json", summary)
+
+    return package_dir
+
+
+def test_safe_only_blocks_when_override_header_missing(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 1 — partial-ready run, no override header ⇒ 409."""
+
+    job_id = "job_so_no_header"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(run_dir)
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "safe_only_override_required"
+    assert body["ready_for_client"] is False
+    assert body["ready_for_client_partial"] is True
+
+
+@pytest.mark.parametrize(
+    "header_value", ["full", "", "Safe-Only", "SAFE-ONLY", "safe_only"]
+)
+def test_safe_only_blocks_when_override_header_wrong(
+    client: TestClient,
+    tmp_path: Path,
+    header_value: str,
+) -> None:
+    """Test 2 — wrong override header value ⇒ 409 (case-sensitive value)."""
+
+    job_id = f"job_so_wrong_header_{header_value or 'empty'}"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(run_dir)
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers={"X-TrashPanda-Operator-Override": header_value},
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "safe_only_override_required"
+    assert body["ready_for_client_partial"] is True
+
+
+def test_safe_only_blocks_when_partial_false(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 3 — partial=false ⇒ safe_only_unavailable."""
+
+    job_id = "job_so_partial_false"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(
+        run_dir,
+        summary_overrides={"ready_for_client_partial": False},
+    )
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "safe_only_unavailable"
+    assert body["ready_for_client"] is False
+    assert body["ready_for_client_partial"] is False
+
+
+def test_safe_only_blocks_when_full_ready(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 4 — full-ready runs must not use the partial endpoint."""
+
+    job_id = "job_so_full_ready"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(
+        run_dir,
+        summary_overrides={
+            "ready_for_client": True,
+            "ready_for_client_partial": False,
+            "status": "ready",
+        },
+    )
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "safe_only_not_required"
+    assert body["ready_for_client"] is True
+    assert body["ready_for_client_partial"] is False
+
+
+@pytest.mark.parametrize("mode", ["none", "full_only", None, ""])
+def test_safe_only_blocks_when_mode_invalid(
+    client: TestClient,
+    tmp_path: Path,
+    mode: object,
+) -> None:
+    """Test 5 — partial=true but mode != safe_only ⇒ safe_only_mode_invalid."""
+
+    job_id = f"job_so_mode_{mode!r}"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(
+        run_dir,
+        summary_overrides={"partial_delivery_mode": mode},
+    )
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "safe_only_mode_invalid"
+    assert body["ready_for_client"] is False
+    assert body["ready_for_client_partial"] is True
+
+
+def test_safe_only_blocks_when_summary_missing(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """No operator_review_summary.json ⇒ operator_review_missing."""
+
+    job_id = "job_so_summary_missing"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(run_dir, write_summary=False)
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "operator_review_missing"
+    assert body["ready_for_client"] is False
+    assert body["ready_for_client_partial"] is False
+
+
+def test_safe_only_blocks_when_summary_unreadable(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Corrupt operator_review_summary.json ⇒ operator_review_unreadable."""
+
+    job_id = "job_so_summary_unreadable"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(run_dir)
+    (run_dir / "operator_review_summary.json").write_text(
+        "this is not json {", encoding="utf-8"
+    )
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "operator_review_unreadable"
+    assert body["ready_for_client_partial"] is False
+
+
+def test_safe_only_blocks_when_package_dir_missing(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 6 — partial-ready summary but no client_delivery_package/."""
+
+    job_id = "job_so_pkg_missing"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(run_dir, write_package_dir=False)
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "client_package_missing"
+    assert body["ready_for_client_partial"] is True
+
+
+def test_safe_only_blocks_when_manifest_missing(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 7 — package dir exists but manifest absent."""
+
+    job_id = "job_so_manifest_missing"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(run_dir, write_manifest=False)
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "client_package_manifest_missing"
+    assert body["ready_for_client_partial"] is True
+
+
+def test_safe_only_blocks_when_manifest_unreadable(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 8 — corrupt manifest ⇒ client_package_manifest_unreadable."""
+
+    job_id = "job_so_manifest_unreadable"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    package_dir = _setup_safe_only_partial_package(run_dir)
+    (package_dir / "client_package_manifest.json").write_text(
+        "this is not json {", encoding="utf-8"
+    )
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "client_package_manifest_unreadable"
+    assert body["ready_for_client_partial"] is True
+
+
+def test_safe_only_blocks_when_safe_only_block_absent(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 9a — manifest lacks safe_only_delivery block."""
+
+    job_id = "job_so_block_absent"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    package_dir = _setup_safe_only_partial_package(run_dir)
+    manifest_path = package_dir / "client_package_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("safe_only_delivery", None)
+    _write_json(manifest_path, manifest)
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "safe_only_manifest_missing"
+    assert body["ready_for_client_partial"] is True
+
+
+def test_safe_only_blocks_when_safe_only_unsupported(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 9b — safe_only_delivery.supported=false."""
+
+    job_id = "job_so_unsupported"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(
+        run_dir,
+        safe_only_block_overrides={"supported": False},
+    )
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "safe_only_manifest_missing"
+
+
+def test_safe_only_blocks_when_note_missing(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 10 — manifest claims supported=true but the note is gone."""
+
+    job_id = "job_so_note_missing"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    package_dir = _setup_safe_only_partial_package(run_dir, write_note=False)
+    assert not (package_dir / _SAFE_ONLY_NOTE_FILENAME).exists()
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "safe_only_note_missing"
+    assert body["ready_for_client_partial"] is True
+
+
+@pytest.mark.parametrize(
+    "bad_audience", ["operator_only", "technical_debug", "internal_only", None]
+)
+def test_safe_only_blocks_non_client_safe_audience(
+    client: TestClient,
+    tmp_path: Path,
+    bad_audience: object,
+) -> None:
+    """Test 11 — any non-client_safe audience in safe-only block ⇒ 409."""
+
+    job_id = f"job_so_audience_{bad_audience}"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(
+        run_dir,
+        safe_only_files_override=[
+            {
+                "key": "valid_emails",
+                "filename": "valid_emails.xlsx",
+                "audience": bad_audience,
+                "size_bytes": 10,
+            },
+            {
+                "key": "safe_only_delivery_note",
+                "filename": _SAFE_ONLY_NOTE_FILENAME,
+                "audience": "client_safe",
+                "size_bytes": 280,
+            },
+        ],
+    )
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "safe_only_contains_non_client_safe"
+    assert body["ready_for_client_partial"] is True
+    bad = body.get("bad_files") or []
+    assert any(entry.get("filename") == "valid_emails.xlsx" for entry in bad)
+
+
+def test_safe_only_blocks_non_safe_only_artifact(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 12 — review_emails.xlsx is client_safe but NOT safe-only."""
+
+    job_id = "job_so_subset_violation"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(
+        run_dir,
+        safe_only_files_override=[
+            {
+                "key": "valid_emails",
+                "filename": "valid_emails.xlsx",
+                "audience": "client_safe",
+                "size_bytes": 10,
+            },
+            {
+                "key": "review_emails",
+                "filename": "review_emails.xlsx",
+                "audience": "client_safe",
+                "size_bytes": 10,
+            },
+            {
+                "key": "safe_only_delivery_note",
+                "filename": _SAFE_ONLY_NOTE_FILENAME,
+                "audience": "client_safe",
+                "size_bytes": 280,
+            },
+        ],
+    )
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "safe_only_contains_non_safe_only"
+    assert body["ready_for_client_partial"] is True
+    bad = body.get("bad_files") or []
+    assert any(entry.get("filename") == "review_emails.xlsx" for entry in bad)
+
+
+@pytest.mark.parametrize(
+    "escaping_filename",
+    [
+        "../secret.txt",
+        "subdir/../../escape.txt",
+        "/etc/passwd",
+    ],
+)
+def test_safe_only_blocks_path_traversal(
+    client: TestClient,
+    tmp_path: Path,
+    escaping_filename: str,
+) -> None:
+    """Test 13 — manifest filenames that escape the package dir block."""
+
+    job_id = "job_so_path_escape"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(
+        run_dir,
+        safe_only_files_override=[
+            {
+                "key": "valid_emails",
+                "filename": "valid_emails.xlsx",
+                "audience": "client_safe",
+                "size_bytes": 10,
+            },
+            {
+                "key": "safe_only_delivery_note",
+                "filename": _SAFE_ONLY_NOTE_FILENAME,
+                "audience": "client_safe",
+                "size_bytes": 280,
+            },
+            {
+                "key": "valid_emails",
+                "filename": escaping_filename,
+                "audience": "client_safe",
+                "size_bytes": 0,
+            },
+        ],
+    )
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "safe_only_path_escape"
+    assert body["ready_for_client_partial"] is True
+
+
+def test_safe_only_blocks_when_listed_file_missing(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 14 — manifest references a file that isn't on disk."""
+
+    job_id = "job_so_file_missing"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    package_dir = _setup_safe_only_partial_package(run_dir)
+    # Remove summary_report.xlsx but leave it advertised in the manifest.
+    (package_dir / "summary_report.xlsx").unlink()
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "safe_only_file_missing"
+    assert body["ready_for_client_partial"] is True
+    assert "summary_report.xlsx" in (body.get("missing_files") or [])
+
+
+def test_safe_only_happy_path_returns_zip(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 15 — full happy path returns a safe-only ZIP with correct headers."""
+
+    job_id = "job_so_happy"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(run_dir)
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    cd = response.headers["content-disposition"]
+    assert "trashpanda_safe_only_client_package" in cd
+    assert job_id in cd
+    assert response.headers["x-trashpanda-audience"] == "client_safe"
+    assert response.headers["x-trashpanda-delivery-mode"] == "safe_only_partial"
+    assert response.headers["x-trashpanda-ready-for-client"] == "false"
+    assert response.headers["x-trashpanda-ready-for-client-partial"] == "true"
+
+
+def test_safe_only_zip_carries_only_safe_only_files(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Test 16 — ZIP names are exactly the safe-only allowlist, prefixed."""
+
+    job_id = "job_so_zip_contents"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(run_dir)
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+    assert response.status_code == 200
+    names = _zip_namelist(response.content)
+
+    expected_present = {
+        "client_delivery_package/valid_emails.xlsx",
+        "client_delivery_package/approved_original_format.xlsx",
+        "client_delivery_package/summary_report.xlsx",
+        f"client_delivery_package/{_SAFE_ONLY_NOTE_FILENAME}",
+    }
+    assert names == expected_present, (
+        f"safe-only ZIP carried unexpected files: "
+        f"missing={expected_present - names} extra={names - expected_present}"
+    )
+
+    # The strict-subset invariant: review/rejected/duplicate/hard-fail
+    # XLSXs are present in the package on disk but MUST NOT appear here.
+    forbidden = {
+        "client_delivery_package/review_emails.xlsx",
+        "client_delivery_package/invalid_or_bounce_risk.xlsx",
+        "client_delivery_package/duplicate_emails.xlsx",
+        "client_delivery_package/hard_fail_emails.xlsx",
+        "client_delivery_package/client_package_manifest.json",
+    }
+    assert names.isdisjoint(forbidden), (
+        f"forbidden files leaked into safe-only ZIP: {names & forbidden}"
+    )
+
+
+def test_safe_only_unknown_job_returns_structured_404(
+    client: TestClient,
+) -> None:
+    """Unknown job_id reuses ``_resolve_run_dir`` 404 like the full endpoint."""
+
+    response = client.get(
+        _SAFE_ONLY_DOWNLOAD_PATH_TEMPLATE.format(job_id="does_not_exist"),
+        headers=_SAFE_ONLY_OVERRIDE_HEADERS,
+    )
+    assert response.status_code == 404
+    body = response.json()
+    assert body["error"]["error_type"] == "job_not_found"
+
+
+# --------------------------------------------------------------------------- #
+# Test 17 — Full download endpoint regression: partial readiness must NOT
+# unlock the standard download endpoint.
+# --------------------------------------------------------------------------- #
+
+
+def test_full_download_still_blocks_when_only_partial_ready(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Regression: ready_for_client_partial=true ≠ ready_for_client=true.
+
+    The V2.10.8 contract is explicit: partial readiness is a separate
+    channel that requires its own endpoint AND override header. The
+    full download must keep returning ``not_ready_for_client`` for any
+    run where ``ready_for_client`` is not exactly ``True``, regardless
+    of partial readiness.
+    """
+
+    job_id = "job_full_dl_partial_only"
+    run_dir = _create_run_dir(tmp_path, job_id)
+    _setup_safe_only_partial_package(run_dir)
+
+    # No override header — the full endpoint doesn't honor partial readiness.
+    response = client.get(_DOWNLOAD_PATH_TEMPLATE.format(job_id=job_id))
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "not_ready_for_client"
+    assert body["ready_for_client"] is False
+    # The full endpoint payload does NOT promote ``ready_for_client_partial``
+    # to a top-level field — partial is a different contract.
+    assert "ready_for_client_partial" not in body

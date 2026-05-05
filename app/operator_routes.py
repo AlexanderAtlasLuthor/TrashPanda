@@ -48,6 +48,7 @@ from .api_boundary import (
     run_operator_review_for_job,
     run_rollout_preflight,
 )
+from .artifact_contract import is_safe_only_artifact
 from .config import load_config, resolve_project_paths
 
 
@@ -62,6 +63,13 @@ _ARTIFACT_CONSISTENCY_FILENAME = "artifact_consistency.json"
 _OPERATOR_REVIEW_SUMMARY_FILENAME = "operator_review_summary.json"
 _CLIENT_PACKAGE_DIR_NAME = "client_delivery_package"
 _CLIENT_PACKAGE_MANIFEST_FILENAME = "client_package_manifest.json"
+
+# V2.10.8.3 — safe-only partial delivery contract.
+_SAFE_ONLY_NOTE_FILENAME = "SAFE_ONLY_DELIVERY_NOTE.txt"
+_SAFE_ONLY_OVERRIDE_HEADER = "X-TrashPanda-Operator-Override"
+_SAFE_ONLY_OVERRIDE_VALUE = "safe-only"
+_SAFE_ONLY_DELIVERY_MODE = "safe_only"
+_SAFE_ONLY_DELIVERY_LABEL = "safe_only_partial"
 
 
 # Standard "missing" payloads. Returned with HTTP 200 so the operator
@@ -665,6 +673,307 @@ def operator_download_client_package(job_id: str) -> Any:
     headers = {
         "Content-Disposition": f'attachment; filename="{download_name}"',
         **_CLIENT_DOWNLOAD_AUDIENCE_HEADERS,
+    }
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers=headers,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# V2.10.8.3 — Safe-only partial client package download
+# --------------------------------------------------------------------------- #
+
+
+@router.get("/jobs/{job_id}/client-package/download-safe-only")
+def operator_download_safe_only_client_package(
+    job_id: str,
+    request: Request,
+) -> Any:
+    """Stream the *safe-only* partial client delivery package as a ZIP.
+
+    Distinct from the full download endpoint: this is the partial-
+    delivery channel exposed when ``ready_for_client=false`` but the
+    operator review gate flagged ``ready_for_client_partial=true`` with
+    ``partial_delivery_mode="safe_only"``. The response carries only the
+    artifacts in ``manifest.safe_only_delivery.files_included`` — a
+    *strict subset* of the package's ``client_safe`` files, never
+    ``review_emails``, ``invalid_or_bounce_risk``, ``duplicate_emails``,
+    or ``hard_fail_emails`` (see :mod:`app.artifact_contract`).
+
+    Gates, in order — every failure yields ``409 Conflict`` with a flat
+    payload containing the appropriate ``ready_for_client`` and
+    ``ready_for_client_partial`` flags so the operator UI can branch
+    without unwrapping:
+
+    1. ``operator_review_summary.json`` exists and is valid JSON;
+    2. ``ready_for_client`` is not ``True`` (full-ready ⇒ use the
+       standard endpoint);
+    3. ``ready_for_client_partial`` is exactly ``True``;
+    4. ``partial_delivery_mode`` is exactly ``"safe_only"``;
+    5. the request carries ``X-TrashPanda-Operator-Override: safe-only``;
+    6. ``client_delivery_package/`` exists;
+    7. ``client_package_manifest.json`` exists and is valid JSON;
+    8. ``manifest.safe_only_delivery`` is supported, references the
+       expected note filename, and has a non-empty ``files_included``;
+    9. ``SAFE_ONLY_DELIVERY_NOTE.txt`` exists physically on disk;
+    10. every entry has ``audience == "client_safe"``;
+    11. every entry passes :func:`is_safe_only_artifact` (subset gate);
+    12. every entry resolves inside the package directory;
+    13. every entry exists on disk.
+
+    The ZIP is built ONLY from the manifest's
+    ``safe_only_delivery.files_included`` — no ``rglob`` walk —
+    so review/rejected XLSXs and ``client_package_manifest.json``
+    are excluded by construction.
+    """
+
+    run_dir = _resolve_run_dir(job_id)
+
+    # --- 1) Read operator review summary ------------------------------- #
+    summary_path = run_dir / _OPERATOR_REVIEW_SUMMARY_FILENAME
+    if not summary_path.is_file():
+        return _download_blocked_response(
+            "operator_review_missing",
+            "Operator review summary is required before safe-only download.",
+            extra={"ready_for_client_partial": False},
+        )
+
+    try:
+        summary_data: Any = json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        _LOGGER.warning(
+            "operator_review_summary.json unreadable for %s: %s", job_id, exc
+        )
+        return _download_blocked_response(
+            "operator_review_unreadable",
+            "Operator review summary could not be read before safe-only download.",
+            extra={"ready_for_client_partial": False},
+        )
+    if not isinstance(summary_data, dict):
+        return _download_blocked_response(
+            "operator_review_unreadable",
+            "Operator review summary could not be read before safe-only download.",
+            extra={"ready_for_client_partial": False},
+        )
+
+    # --- 2) Full-ready runs use the standard endpoint ------------------ #
+    if summary_data.get("ready_for_client") is True:
+        return _download_blocked_response(
+            "safe_only_not_required",
+            "Full delivery is already ready; use the standard client "
+            "package download endpoint.",
+            extra={
+                "ready_for_client": True,
+                "ready_for_client_partial": False,
+            },
+        )
+
+    # --- 3) Partial readiness must be on ------------------------------- #
+    if summary_data.get("ready_for_client_partial") is not True:
+        return _download_blocked_response(
+            "safe_only_unavailable",
+            "Safe-only partial delivery is not available for this run.",
+            extra={"ready_for_client_partial": False},
+        )
+
+    # --- 4) Delivery mode must be safe_only ---------------------------- #
+    if summary_data.get("partial_delivery_mode") != _SAFE_ONLY_DELIVERY_MODE:
+        return _download_blocked_response(
+            "safe_only_mode_invalid",
+            "Safe-only partial delivery mode is not enabled for this run.",
+            extra={"ready_for_client_partial": True},
+        )
+
+    # --- 5) Operator override header ----------------------------------- #
+    # Header name is matched case-insensitively by HTTP/Starlette; the
+    # *value* must match exactly per the V2.10.8.3 contract.
+    override_value = request.headers.get(_SAFE_ONLY_OVERRIDE_HEADER)
+    if override_value != _SAFE_ONLY_OVERRIDE_VALUE:
+        return _download_blocked_response(
+            "safe_only_override_required",
+            "Safe-only partial delivery requires explicit operator override.",
+            extra={"ready_for_client_partial": True},
+        )
+
+    # --- 6) Package directory ------------------------------------------ #
+    package_dir = run_dir / _CLIENT_PACKAGE_DIR_NAME
+    if not package_dir.is_dir():
+        return _download_blocked_response(
+            "client_package_missing",
+            "Client delivery package is missing.",
+            extra={"ready_for_client_partial": True},
+        )
+
+    # --- 7) Manifest --------------------------------------------------- #
+    manifest_path = package_dir / _CLIENT_PACKAGE_MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        return _download_blocked_response(
+            "client_package_manifest_missing",
+            "Client package manifest is missing.",
+            extra={"ready_for_client_partial": True},
+        )
+
+    try:
+        manifest_data: Any = json.loads(
+            manifest_path.read_text(encoding="utf-8")
+        )
+    except Exception as exc:
+        _LOGGER.warning(
+            "client_package_manifest.json unreadable for %s: %s", job_id, exc
+        )
+        return _download_blocked_response(
+            "client_package_manifest_unreadable",
+            "Client package manifest could not be read.",
+            extra={"ready_for_client_partial": True},
+        )
+    if not isinstance(manifest_data, dict):
+        return _download_blocked_response(
+            "client_package_manifest_unreadable",
+            "Client package manifest could not be read.",
+            extra={"ready_for_client_partial": True},
+        )
+
+    # --- 8) safe_only_delivery block ----------------------------------- #
+    safe_only = manifest_data.get("safe_only_delivery")
+    safe_only_files: Any = None
+    if isinstance(safe_only, dict):
+        safe_only_files = safe_only.get("files_included")
+    if (
+        not isinstance(safe_only, dict)
+        or safe_only.get("supported") is not True
+        or safe_only.get("note_filename") != _SAFE_ONLY_NOTE_FILENAME
+        or not isinstance(safe_only_files, list)
+        or not safe_only_files
+    ):
+        return _download_blocked_response(
+            "safe_only_manifest_missing",
+            "Safe-only delivery manifest block is missing or unsupported.",
+            extra={"ready_for_client_partial": True},
+        )
+
+    # --- 9) The note must exist physically on disk --------------------- #
+    note_path = package_dir / _SAFE_ONLY_NOTE_FILENAME
+    if not note_path.is_file():
+        return _download_blocked_response(
+            "safe_only_note_missing",
+            "SAFE_ONLY_DELIVERY_NOTE.txt is required for safe-only delivery.",
+            extra={"ready_for_client_partial": True},
+        )
+
+    # --- 10) audience == client_safe ----------------------------------- #
+    bad_audience: list[dict[str, Any]] = []
+    for entry in safe_only_files:
+        if not isinstance(entry, dict):
+            bad_audience.append({"filename": None, "audience": None})
+            continue
+        if entry.get("audience") != _CLIENT_SAFE_AUDIENCE:
+            bad_audience.append(
+                {
+                    "filename": entry.get("filename"),
+                    "audience": entry.get("audience"),
+                }
+            )
+    if bad_audience:
+        return _download_blocked_response(
+            "safe_only_contains_non_client_safe",
+            "Safe-only package contains non-client-safe artifacts.",
+            extra={
+                "ready_for_client_partial": True,
+                "bad_files": bad_audience,
+            },
+        )
+
+    # --- 11) Subset gate: must pass is_safe_only_artifact -------------- #
+    bad_subset: list[dict[str, Any]] = []
+    for entry in safe_only_files:
+        if not isinstance(entry, dict):
+            continue
+        token = entry.get("key") or entry.get("filename") or ""
+        if not is_safe_only_artifact(str(token)):
+            bad_subset.append(
+                {"key": entry.get("key"), "filename": entry.get("filename")}
+            )
+    if bad_subset:
+        return _download_blocked_response(
+            "safe_only_contains_non_safe_only",
+            "Safe-only package contains artifacts outside the safe-only "
+            "allowlist.",
+            extra={
+                "ready_for_client_partial": True,
+                "bad_files": bad_subset,
+            },
+        )
+
+    # --- 12) Path-escape gate ------------------------------------------ #
+    package_dir_resolved = package_dir.resolve()
+    for entry in safe_only_files:
+        if not isinstance(entry, dict):
+            continue
+        if _manifest_filename_escapes_package(
+            entry.get("filename"), package_dir_resolved, package_dir
+        ):
+            return _download_blocked_response(
+                "safe_only_path_escape",
+                "Safe-only manifest contains a filename outside the "
+                "package directory.",
+                extra={"ready_for_client_partial": True},
+            )
+
+    # --- 13) Every listed file must exist on disk ---------------------- #
+    missing_files: list[str] = []
+    for entry in safe_only_files:
+        if not isinstance(entry, dict):
+            continue
+        filename = entry.get("filename")
+        if not isinstance(filename, str):
+            continue
+        if not (package_dir / filename).is_file():
+            missing_files.append(filename)
+    if missing_files:
+        return _download_blocked_response(
+            "safe_only_file_missing",
+            "Safe-only manifest references a missing file.",
+            extra={
+                "ready_for_client_partial": True,
+                "missing_files": missing_files,
+            },
+        )
+
+    # --- Build the safe-only ZIP from the manifest list ONLY ----------- #
+    # No directory walk: the ZIP carries strictly what the manifest
+    # advertises. ``client_package_manifest.json`` is therefore excluded
+    # by construction unless explicitly listed (which by V2.10.8.2 it is
+    # not). Arcnames are prefixed with ``client_delivery_package/`` so
+    # the operator can extract the partial delivery alongside an
+    # existing full package without name collisions.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for entry in safe_only_files:
+            if not isinstance(entry, dict):
+                continue
+            filename = entry.get("filename")
+            if not isinstance(filename, str) or not filename:
+                continue
+            file_path = package_dir / filename
+            try:
+                resolved = file_path.resolve()
+                resolved.relative_to(package_dir_resolved)
+            except (OSError, ValueError):
+                # Defense-in-depth: should be caught above.
+                continue
+            arcname = f"{_CLIENT_PACKAGE_DIR_NAME}/{filename}"
+            zf.write(file_path, arcname=arcname)
+    zip_bytes = buf.getvalue()
+
+    download_name = f"trashpanda_safe_only_client_package_{job_id}.zip"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{download_name}"',
+        "X-TrashPanda-Audience": _CLIENT_SAFE_AUDIENCE,
+        "X-TrashPanda-Delivery-Mode": _SAFE_ONLY_DELIVERY_LABEL,
+        "X-TrashPanda-Ready-For-Client": "false",
+        "X-TrashPanda-Ready-For-Client-Partial": "true",
     }
     return Response(
         content=zip_bytes,

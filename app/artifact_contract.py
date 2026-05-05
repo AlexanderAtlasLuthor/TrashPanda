@@ -70,6 +70,8 @@ _AUDIENCE_BY_KEY: dict[str, str] = {
     "approved_original_format": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     "duplicate_emails": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     "hard_fail_emails": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    # V2.10.8.2 — safe-only partial delivery anchor file.
+    "safe_only_delivery_note": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     # ---- operator_only: operator/founder/admin reports ------------------- #
     "processing_report_json": ARTIFACT_AUDIENCE_OPERATOR_ONLY,
     "processing_report_csv": ARTIFACT_AUDIENCE_OPERATOR_ONLY,
@@ -99,6 +101,27 @@ _AUDIENCE_BY_KEY: dict[str, str] = {
 
 # Public-facing alias of the mapping. Defensive copy on access.
 ARTIFACT_AUDIENCE_BY_KEY: dict[str, str] = dict(_AUDIENCE_BY_KEY)
+
+
+# --------------------------------------------------------------------------- #
+# V2.10.8.2 — Safe-only delivery allowlist
+#
+# A *strict subset* of the client_safe set. Safe-only delivery is the
+# partial-delivery channel: when the full run is not ready_for_client
+# but a safe subset exists, only these artifacts may be handed out.
+# Notably excludes review_emails, invalid_or_bounce_risk,
+# duplicate_emails, and hard_fail_emails — which remain client_safe
+# for the controlled full delivery path.
+# --------------------------------------------------------------------------- #
+
+_SAFE_ONLY_DELIVERY_KEYS: frozenset[str] = frozenset(
+    {
+        "valid_emails",
+        "approved_original_format",
+        "summary_report",
+        "safe_only_delivery_note",
+    }
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -176,6 +199,14 @@ def get_artifact_audience(key_or_filename: str) -> str:
     if stem in _AUDIENCE_BY_KEY:
         return _AUDIENCE_BY_KEY[stem]
 
+    # 2b) case-insensitive stem match — for protocol filenames whose
+    # on-disk casing differs from the canonical lowercase artifact key
+    # (e.g. ``SAFE_ONLY_DELIVERY_NOTE.txt``). Additive: every previously
+    # matching path returned in step 1 or 2 already.
+    stem_lower = stem.lower()
+    if stem_lower != stem and stem_lower in _AUDIENCE_BY_KEY:
+        return _AUDIENCE_BY_KEY[stem_lower]
+
     # 3) internal heuristics
     lower = raw.lower()
     for suffix in _INTERNAL_FILENAME_SUFFIXES:
@@ -192,6 +223,45 @@ def get_artifact_audience(key_or_filename: str) -> str:
 def is_client_safe_artifact(key_or_filename: str) -> bool:
     """Return ``True`` only when the artifact is explicitly client-safe."""
     return get_artifact_audience(key_or_filename) == ARTIFACT_AUDIENCE_CLIENT_SAFE
+
+
+def is_safe_only_artifact(key_or_filename: str) -> bool:
+    """Return ``True`` only when the artifact is in the safe-only subset.
+
+    The safe-only subset is a strict subset of ``client_safe``: an
+    artifact that is ``client_safe`` but not in the safe-only allowlist
+    (such as ``review_emails`` or ``invalid_or_bounce_risk``) may still
+    appear in a full client delivery package, but must NEVER appear in
+    a safe-only partial delivery.
+
+    Resolution mirrors :func:`get_artifact_audience` so callers may
+    pass either an artifact key or a filename.
+    """
+    if not key_or_filename:
+        return False
+
+    raw = _normalize(key_or_filename)
+
+    # Resolve to a canonical key by the same precedence as the
+    # audience lookup: direct, stem, then lowercased stem.
+    candidate: str | None = None
+    if raw in _AUDIENCE_BY_KEY:
+        candidate = raw
+    else:
+        stem = _strip_extension(raw)
+        if stem in _AUDIENCE_BY_KEY:
+            candidate = stem
+        else:
+            stem_lower = stem.lower()
+            if stem_lower in _AUDIENCE_BY_KEY:
+                candidate = stem_lower
+
+    if candidate is None:
+        return False
+    if candidate not in _SAFE_ONLY_DELIVERY_KEYS:
+        return False
+    # Must additionally be client_safe — keeps the two contracts aligned.
+    return _AUDIENCE_BY_KEY[candidate] == ARTIFACT_AUDIENCE_CLIENT_SAFE
 
 
 def list_artifacts_by_audience(audience: str) -> tuple[str, ...]:
@@ -229,6 +299,7 @@ __all__ = [
     "ARTIFACT_AUDIENCE_TECHNICAL_DEBUG",
     "get_artifact_audience",
     "is_client_safe_artifact",
+    "is_safe_only_artifact",
     "iter_known_audiences",
     "known_artifact_keys",
     "list_artifacts_by_audience",

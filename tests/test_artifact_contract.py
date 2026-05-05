@@ -18,6 +18,7 @@ from app.artifact_contract import (
     ARTIFACT_AUDIENCES,
     get_artifact_audience,
     is_client_safe_artifact,
+    is_safe_only_artifact,
     known_artifact_keys,
     list_artifacts_by_audience,
 )
@@ -334,3 +335,99 @@ def test_internal_path_fragments_classified_internal_only() -> None:
     )
     for name in samples:
         assert get_artifact_audience(name) == ARTIFACT_AUDIENCE_INTERNAL_ONLY
+
+
+# --------------------------------------------------------------------------- #
+# V2.10.8.2 — Safe-only allowlist
+#
+# The safe-only subset is a *strict subset* of client_safe used for
+# the partial-delivery channel. The contract must keep:
+#
+#     client_safe ≠ safe_only
+#
+# i.e. review/rejected/duplicate/hard-fail XLSXs remain client_safe
+# (they belong in the full delivery package) but must NEVER pass the
+# safe-only filter.
+# --------------------------------------------------------------------------- #
+
+
+def test_safe_only_allows_strict_safe_subset() -> None:
+    # Filenames the safe-only delivery channel may carry.
+    assert is_safe_only_artifact("valid_emails.xlsx") is True
+    assert is_safe_only_artifact("approved_original_format.xlsx") is True
+    assert is_safe_only_artifact("summary_report.xlsx") is True
+    assert is_safe_only_artifact("SAFE_ONLY_DELIVERY_NOTE.txt") is True
+    # Bare keys must also resolve.
+    assert is_safe_only_artifact("valid_emails") is True
+    assert is_safe_only_artifact("approved_original_format") is True
+    assert is_safe_only_artifact("summary_report") is True
+    assert is_safe_only_artifact("safe_only_delivery_note") is True
+
+
+def test_safe_only_excludes_client_safe_review_and_rejected() -> None:
+    """client_safe ≠ safe_only — the partial channel is stricter."""
+    # These remain client_safe so the *full* delivery still ships them …
+    assert is_client_safe_artifact("review_emails.xlsx") is True
+    assert is_client_safe_artifact("invalid_or_bounce_risk.xlsx") is True
+    assert is_client_safe_artifact("duplicate_emails.xlsx") is True
+    assert is_client_safe_artifact("hard_fail_emails.xlsx") is True
+    # … but NONE of them may pass the safe-only filter.
+    assert is_safe_only_artifact("review_emails.xlsx") is False
+    assert is_safe_only_artifact("invalid_or_bounce_risk.xlsx") is False
+    assert is_safe_only_artifact("duplicate_emails.xlsx") is False
+    assert is_safe_only_artifact("hard_fail_emails.xlsx") is False
+    # Same for bare keys.
+    assert is_safe_only_artifact("review_emails") is False
+    assert is_safe_only_artifact("invalid_or_bounce_risk") is False
+
+
+def test_safe_only_excludes_operator_and_internal_artifacts() -> None:
+    operator_or_debug = (
+        "operator_review_summary.json",
+        "smtp_runtime_summary.json",
+        "v2_deliverability_summary.json",
+        "artifact_consistency.json",
+        "processing_report.json",
+        "domain_summary.csv",
+        "clean_high_confidence.csv",
+        "removed_invalid.csv",
+    )
+    for name in operator_or_debug:
+        assert is_safe_only_artifact(name) is False, name
+
+
+def test_safe_only_excludes_unknown_filenames() -> None:
+    unknown = (
+        "unknown.xlsx",
+        "totally_made_up_artifact",
+        "staging.sqlite3",
+        "",
+    )
+    for name in unknown:
+        assert is_safe_only_artifact(name) is False, name
+
+
+def test_safe_only_delivery_note_is_client_safe() -> None:
+    """The note itself must classify as client_safe — the V2.9.7 gate
+    re-validates every file in the package against the client_safe
+    contract, so a non-client-safe note would block the package."""
+    assert (
+        get_artifact_audience("SAFE_ONLY_DELIVERY_NOTE.txt")
+        == ARTIFACT_AUDIENCE_CLIENT_SAFE
+    )
+    assert is_client_safe_artifact("SAFE_ONLY_DELIVERY_NOTE.txt") is True
+    assert is_safe_only_artifact("SAFE_ONLY_DELIVERY_NOTE.txt") is True
+
+
+def test_safe_only_subset_is_strict_subset_of_client_safe() -> None:
+    """Every safe-only artifact must ALSO be client_safe — the two
+    contracts can never diverge."""
+    sample_safe_only_keys = (
+        "valid_emails",
+        "approved_original_format",
+        "summary_report",
+        "safe_only_delivery_note",
+    )
+    for key in sample_safe_only_keys:
+        assert is_safe_only_artifact(key) is True
+        assert is_client_safe_artifact(key) is True

@@ -440,6 +440,13 @@ def test_operator_review_summary_is_written(tmp_path: Path) -> None:
         "high_risk_domain_count",
         "cold_start_count",
         "approved_original_present",
+        # V2.10.8.1 — partial readiness contract.
+        "ready_for_client_partial",
+        "partial_delivery_mode",
+        "partial_delivery_requires_override",
+        "partial_delivery_allowed_count",
+        "partial_delivery_excluded_count",
+        "partial_delivery_reason",
     }
     missing = required - set(payload.keys())
     assert not missing, f"missing summary fields: {missing}"
@@ -611,3 +618,183 @@ def test_summary_write_failure_logs_warning_and_returns_result(
         and "operator review summary" in r.getMessage().lower()
     ]
     assert matching, f"expected a warning log; got: {[r.getMessage() for r in caplog.records]}"
+
+
+# --------------------------------------------------------------------------- #
+# V2.10.8.1 — Backend partial-readiness contract
+# --------------------------------------------------------------------------- #
+
+
+def _assert_partial_unavailable(result: OperatorReviewResult) -> None:
+    assert result.ready_for_client_partial is False
+    assert result.partial_delivery_mode is None
+    assert result.partial_delivery_requires_override is False
+    assert result.partial_delivery_allowed_count is None
+    assert result.partial_delivery_excluded_count is None
+    assert result.partial_delivery_reason is None
+
+
+def test_partial_safe_count_zero_is_unavailable(tmp_path: Path) -> None:
+    """safe_count=0 must keep partial unavailable even with warn-only issues."""
+    run_dir = tmp_path / "run"
+    _make_clean_run_dir(run_dir, valid_rows=0, review_rows=2)
+
+    result = run_operator_review_gate(run_dir)
+
+    assert result.ready_for_client is False
+    assert result.status == STATUS_WARN
+    assert result.safe_count == 0
+    _assert_partial_unavailable(result)
+
+
+def test_partial_warn_only_with_safe_rows_is_available(tmp_path: Path) -> None:
+    """WY-100 shape: warn-only + safe rows + approved original => partial."""
+    run_dir = tmp_path / "run"
+    _make_clean_run_dir(
+        run_dir,
+        valid_rows=7,
+        review_rows=59,
+        rejected_rows=34,
+        include_approved_original=True,
+    )
+
+    result = run_operator_review_gate(run_dir)
+
+    # Full gate stays strict.
+    assert result.ready_for_client is False
+    assert result.status == STATUS_WARN
+    assert _block_codes(result) == set()
+    assert result.safe_count == 7
+    assert result.review_count == 59
+    assert result.rejected_count == 34
+    assert result.approved_original_present is True
+
+    # Partial contract is exposed.
+    assert result.ready_for_client_partial is True
+    assert result.partial_delivery_mode == "safe_only"
+    assert result.partial_delivery_requires_override is True
+    assert result.partial_delivery_allowed_count == 7
+    assert result.partial_delivery_excluded_count == 93
+    assert result.partial_delivery_reason is not None
+    assert "7 safe rows" in result.partial_delivery_reason
+
+
+def test_partial_block_issue_is_unavailable(tmp_path: Path) -> None:
+    """A block issue must make partial unavailable, even with safe rows."""
+    run_dir = tmp_path / "run"
+    _make_clean_run_dir(
+        run_dir,
+        valid_rows=7,
+        review_rows=59,
+        rejected_rows=34,
+        include_approved_original=True,
+        consistency_overrides={
+            "materialized_outputs_mutated_after_reports": True,
+        },
+    )
+
+    result = run_operator_review_gate(run_dir)
+
+    assert result.ready_for_client is False
+    assert result.status == STATUS_BLOCK
+    assert "artifact_consistency_failed" in _block_codes(result)
+    assert result.safe_count == 7
+    _assert_partial_unavailable(result)
+
+
+def test_partial_approved_original_absent_is_unavailable(tmp_path: Path) -> None:
+    """Without the approved-original anchor, partial is not safe to expose."""
+    run_dir = tmp_path / "run"
+    _make_clean_run_dir(
+        run_dir,
+        valid_rows=7,
+        review_rows=59,
+        rejected_rows=34,
+        include_approved_original=False,
+    )
+
+    result = run_operator_review_gate(run_dir)
+
+    assert result.ready_for_client is False
+    assert result.status == STATUS_WARN
+    assert _block_codes(result) == set()
+    assert result.approved_original_present is False
+    _assert_partial_unavailable(result)
+
+
+def test_partial_full_ready_run_is_unavailable(tmp_path: Path) -> None:
+    """A fully-ready run does not expose partial — full delivery is the path."""
+    run_dir = tmp_path / "run"
+    _make_clean_run_dir(run_dir)
+
+    result = run_operator_review_gate(run_dir)
+
+    assert result.ready_for_client is True
+    assert result.status == STATUS_READY
+    _assert_partial_unavailable(result)
+
+
+def test_partial_warn_only_run_keeps_full_ready_false(tmp_path: Path) -> None:
+    """Regression guard: V2.10.8.1 must not weaken the strict full gate."""
+    run_dir = tmp_path / "run"
+    _make_clean_run_dir(
+        run_dir,
+        valid_rows=7,
+        review_rows=59,
+        rejected_rows=34,
+    )
+
+    result = run_operator_review_gate(run_dir)
+
+    # Strict full readiness remains false on warn.
+    assert result.ready_for_client is False
+    assert result.status == STATUS_WARN
+    # And the new partial channel doesn't bleed into the full flag.
+    assert result.ready_for_client_partial is True
+    assert result.ready_for_client is not result.ready_for_client_partial
+
+
+def test_partial_fields_present_in_to_dict_when_available(tmp_path: Path) -> None:
+    """to_dict must surface the partial-contract keys with populated values."""
+    run_dir = tmp_path / "run"
+    _make_clean_run_dir(
+        run_dir,
+        valid_rows=7,
+        review_rows=59,
+        rejected_rows=34,
+    )
+
+    result = run_operator_review_gate(run_dir)
+    payload = result.to_dict()
+
+    expected_keys = {
+        "ready_for_client_partial",
+        "partial_delivery_mode",
+        "partial_delivery_requires_override",
+        "partial_delivery_allowed_count",
+        "partial_delivery_excluded_count",
+        "partial_delivery_reason",
+    }
+    assert expected_keys <= set(payload.keys())
+    assert payload["ready_for_client_partial"] is True
+    assert payload["partial_delivery_mode"] == "safe_only"
+    assert payload["partial_delivery_requires_override"] is True
+    assert payload["partial_delivery_allowed_count"] == 7
+    assert payload["partial_delivery_excluded_count"] == 93
+    assert "7 safe rows" in payload["partial_delivery_reason"]
+
+
+def test_partial_fields_present_in_to_dict_when_unavailable(tmp_path: Path) -> None:
+    """to_dict surfaces the keys with null/false values when partial is off."""
+    run_dir = tmp_path / "run"
+    _make_clean_run_dir(run_dir)
+
+    result = run_operator_review_gate(run_dir)
+    payload = result.to_dict()
+
+    assert payload["ready_for_client_partial"] is False
+    assert payload["partial_delivery_mode"] is None
+    assert payload["partial_delivery_requires_override"] is False
+    assert payload["partial_delivery_allowed_count"] is None
+    assert payload["partial_delivery_excluded_count"] is None
+    assert payload["partial_delivery_reason"] is None
