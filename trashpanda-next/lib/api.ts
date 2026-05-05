@@ -456,6 +456,47 @@ export async function downloadClientPackage(
   );
 }
 
+// ── "Send to client" — one-click bundle ─────────────────────────────────
+//
+// Wire-shape returned by GET /api/operator/jobs/{id}/client-bundle/summary.
+// Used by the SendToClientButton to render counts + state before the
+// operator clicks the giant download button.
+export interface ClientBundleSummary {
+  available: boolean;
+  ready_for_client: boolean;
+  delivery_mode: "full" | "safe_only_partial";
+  primary_filename: string | null;
+  download_filename: string | null;
+  safe_count: number;
+  review_count: number;
+  rejected_count: number;
+  issues: Array<{ severity: string; code: string; message: string }>;
+}
+
+export async function getClientBundleSummary(
+  jobId: string,
+): Promise<ClientBundleSummary> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/client-bundle/summary`,
+    { cache: "no-store" },
+  );
+  return handleResponse<ClientBundleSummary>(res);
+}
+
+/** URL the giant "Send to client" download button targets. */
+export function clientBundleDownloadUrl(jobId: string): string {
+  return `/api/operator/jobs/${encodeURIComponent(jobId)}/client-bundle/download`;
+}
+
+/**
+ * URL for the Extra Strict Offline ZIP — the "re-clean stricter"
+ * action surfaced as a secondary button next to the primary
+ * SendToClientButton. Runs in-process on the finished run dir.
+ */
+export function extraStrictDownloadUrl(jobId: string): string {
+  return `/api/operator/jobs/${encodeURIComponent(jobId)}/extra-strict/download`;
+}
+
 /**
  * Fetches the *partial* safe-only client-delivery ZIP endpoint.
  *

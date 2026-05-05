@@ -1159,6 +1159,348 @@ def _feedback_preview_payload(
     return _operator_response(payload)
 
 
+# --------------------------------------------------------------------------- #
+# Client bundle — the "Send to client" endpoint                                #
+#                                                                              #
+# A pragmatic, opinionated endpoint built on top of the existing review-gate   #
+# / client-package machinery. The goal is to collapse the three-step operator  #
+# workflow (review-gate → build-package → download) into a single GET request  #
+# the UI can wire to one giant button.                                         #
+#                                                                              #
+# Behaviour:                                                                   #
+#   1. Auto-runs the review gate if needed (idempotent).                       #
+#   2. Auto-builds the client delivery package if missing.                     #
+#   3. Returns a *minimal* ZIP containing only what the customer should        #
+#      receive: the PRIMARY artifact, README_CLIENT.txt, summary_report.xlsx.  #
+#      No technical CSVs, no operator-only summaries, no manifest noise.       #
+#   4. When the gate is WARN/BLOCK but the package has at least one safe row   #
+#      we still return a ZIP — the README is updated to flag the partial       #
+#      delivery so the operator can defend the lower count to the client.     #
+#   5. When literally nothing safe exists, returns 409 with a human reason.    #
+#                                                                              #
+# This endpoint is *additive*: the legacy /client-package/download endpoint    #
+# stays untouched for the operator/auditor flow.                               #
+# --------------------------------------------------------------------------- #
+
+
+_CLIENT_BUNDLE_PRIMARY_KEYS: tuple[str, ...] = (
+    "approved_original_format",
+    "valid_emails",
+)
+_CLIENT_BUNDLE_SUPPORT_FILES: tuple[str, ...] = (
+    "README_CLIENT.txt",
+    "summary_report.xlsx",
+    "SAFE_ONLY_DELIVERY_NOTE.txt",
+)
+
+
+def _bundle_filename(run_dir: Path, job_id: str) -> str:
+    """Build a friendly ZIP filename: ``<input>_clean_<YYYY-MM-DD>.zip``."""
+
+    from datetime import datetime as _dt
+
+    stem = "trashpanda"
+    job_meta = run_dir.parent / "job_meta.json"
+    if job_meta.is_file():
+        try:
+            meta = json.loads(job_meta.read_text(encoding="utf-8"))
+            input_filename = meta.get("input_filename")
+            if isinstance(input_filename, str) and input_filename.strip():
+                base = input_filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+                if "." in base:
+                    base = base.rsplit(".", 1)[0]
+                stem = "".join(
+                    c if (c.isalnum() or c in "-_") else "_"
+                    for c in base
+                ).strip("_") or stem
+        except Exception:  # pragma: no cover - filename is cosmetic only
+            pass
+    today = _dt.utcnow().strftime("%Y-%m-%d")
+    return f"{stem}_clean_{today}.zip"
+
+
+def _read_manifest(package_dir: Path) -> dict[str, Any] | None:
+    manifest_path = package_dir / _CLIENT_PACKAGE_MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _ensure_review_summary(run_dir: Path) -> dict[str, Any] | None:
+    """Run the operator review gate if its summary file is missing."""
+
+    summary_path = run_dir / _OPERATOR_REVIEW_SUMMARY_FILENAME
+    if summary_path.is_file():
+        try:
+            data = json.loads(summary_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    try:
+        return run_operator_review_for_job(run_dir)
+    except Exception as exc:  # pragma: no cover - defensive
+        _LOGGER.warning(
+            "client-bundle: failed to run review gate for %s: %s", run_dir, exc
+        )
+        return None
+
+
+def _ensure_client_package(run_dir: Path) -> Path | None:
+    """Build the client delivery package if it's missing. Returns its path."""
+
+    package_dir = run_dir / _CLIENT_PACKAGE_DIR_NAME
+    if package_dir.is_dir() and (package_dir / _CLIENT_PACKAGE_MANIFEST_FILENAME).is_file():
+        return package_dir
+    try:
+        build_client_package_for_job(run_dir)
+    except Exception as exc:  # pragma: no cover - defensive
+        _LOGGER.warning(
+            "client-bundle: failed to build client package for %s: %s", run_dir, exc
+        )
+        return None
+    return package_dir if package_dir.is_dir() else None
+
+
+def _resolve_primary_filename(manifest: dict[str, Any]) -> str | None:
+    primary = manifest.get("primary_artifact")
+    if isinstance(primary, dict):
+        filename = primary.get("filename")
+        if isinstance(filename, str) and filename:
+            return filename
+    files = manifest.get("files_included") or []
+    for preferred in _CLIENT_BUNDLE_PRIMARY_KEYS:
+        for entry in files:
+            if isinstance(entry, dict) and entry.get("key") == preferred:
+                filename = entry.get("filename")
+                if isinstance(filename, str) and filename:
+                    return filename
+    return None
+
+
+def _bundle_blocked_response(error: str, message: str) -> Response:
+    return Response(
+        content=json.dumps(
+            {
+                "error": error,
+                "message": message,
+                "ready_for_client": False,
+            }
+        ),
+        media_type="application/json",
+        status_code=409,
+    )
+
+
+@router.get("/jobs/{job_id}/client-bundle/download")
+def operator_download_client_bundle(job_id: str) -> Any:
+    """One-click "Send to client" download.
+
+    Auto-runs the review gate and builds the client package if needed,
+    then ships a curated ZIP containing just the customer-facing files
+    (PRIMARY artifact + README + summary). Reduces the legacy three-
+    step operator flow to a single GET request.
+    """
+
+    run_dir = _resolve_run_dir(job_id)
+
+    review = _ensure_review_summary(run_dir)
+    if review is None:
+        return _bundle_blocked_response(
+            "review_gate_unavailable",
+            "Review gate could not be evaluated for this job. The pipeline "
+            "may still be running, or the artifact contract is incomplete.",
+        )
+
+    package_dir = _ensure_client_package(run_dir)
+    if package_dir is None:
+        return _bundle_blocked_response(
+            "client_package_missing",
+            "Client package could not be built for this job.",
+        )
+
+    manifest = _read_manifest(package_dir)
+    if manifest is None:
+        return _bundle_blocked_response(
+            "client_package_manifest_missing",
+            "Client package manifest is missing or unreadable.",
+        )
+
+    primary_filename = _resolve_primary_filename(manifest)
+    safe_count = int(manifest.get("safe_count") or 0)
+    if primary_filename is None or safe_count <= 0:
+        return _bundle_blocked_response(
+            "no_safe_rows",
+            "This job has no rows we are willing to recommend for sending. "
+            "Re-run with extra-strict filtering or fix the input list.",
+        )
+
+    ready = bool(review.get("ready_for_client"))
+    delivery_mode = "full" if ready else "safe_only_partial"
+
+    # Walk the package dir and pick only the PRIMARY + small support set.
+    selected: list[Path] = []
+    package_dir_resolved = package_dir.resolve()
+    for filename in [primary_filename, *_CLIENT_BUNDLE_SUPPORT_FILES]:
+        candidate = package_dir / filename
+        if not candidate.is_file():
+            continue
+        try:
+            candidate.resolve().relative_to(package_dir_resolved)
+        except (OSError, ValueError):
+            continue
+        selected.append(candidate)
+
+    # If somehow the primary went missing between the manifest read and
+    # the disk walk, fail loud rather than ship an empty ZIP.
+    if not any(p.name == primary_filename for p in selected):
+        return _bundle_blocked_response(
+            "primary_artifact_unavailable",
+            "Primary artifact disappeared between manifest build and "
+            "download.",
+        )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path in selected:
+            zf.write(path, arcname=path.name)
+    download_name = _bundle_filename(run_dir, job_id)
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{download_name}"',
+        "X-TrashPanda-Audience": _CLIENT_SAFE_AUDIENCE,
+        "X-TrashPanda-Delivery-Mode": delivery_mode,
+        "X-TrashPanda-Ready-For-Client": "true" if ready else "false",
+    }
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers=headers,
+    )
+
+
+@router.get("/jobs/{job_id}/client-bundle/summary")
+def operator_get_client_bundle_summary(job_id: str) -> Any:
+    """Summary used by the UI's "Send to client" panel.
+
+    Mirrors what the bundle download would contain *without* actually
+    streaming bytes. Lets the UI render the giant button + counts +
+    "Send is partial" disclaimer before the operator clicks download.
+    """
+
+    run_dir = _resolve_run_dir(job_id)
+
+    review = _ensure_review_summary(run_dir) or {}
+    package_dir = _ensure_client_package(run_dir)
+    manifest = _read_manifest(package_dir) if package_dir else None
+
+    safe_count = int((manifest or {}).get("safe_count") or 0)
+    review_count = int((manifest or {}).get("review_count") or 0)
+    rejected_count = int((manifest or {}).get("rejected_count") or 0)
+    primary_filename = (
+        _resolve_primary_filename(manifest) if manifest else None
+    )
+    ready = bool(review.get("ready_for_client"))
+    available = bool(primary_filename and safe_count > 0)
+    download_name = _bundle_filename(run_dir, job_id) if available else None
+
+    return _operator_response(
+        {
+            "available": available,
+            "ready_for_client": ready,
+            "delivery_mode": "full" if ready else "safe_only_partial",
+            "primary_filename": primary_filename,
+            "download_filename": download_name,
+            "safe_count": safe_count,
+            "review_count": review_count,
+            "rejected_count": rejected_count,
+            "issues": review.get("issues") or [],
+        }
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Extra Strict Offline — re-clean entry point                                  #
+#                                                                              #
+# Runs the offline extra-strict filter on a finished job's run dir and ships   #
+# the produced 6-file bundle (PRIMARY xlsx + review + removed + rejected +    #
+# summary.txt + README) as a single ZIP. Uses the same in-process function as #
+# scripts/extra_strict_clean.py — no shell-out, no extra dependency surface.   #
+# --------------------------------------------------------------------------- #
+
+
+@router.get("/jobs/{job_id}/extra-strict/download")
+def operator_download_extra_strict(job_id: str) -> Any:
+    """Run Extra Strict Offline on a finished job and stream the ZIP.
+
+    Idempotent: if ``run_dir/extra_strict/`` already has the artifacts
+    they're shipped as-is; otherwise the cleaner is run first. Useful
+    for the "customer reported bounces — re-clean stricter" flow.
+    """
+
+    from .extra_strict_clean import (
+        ExtraStrictConfig,
+        run_extra_strict_clean,
+    )
+
+    run_dir = _resolve_run_dir(job_id)
+
+    try:
+        result = run_extra_strict_clean(
+            run_dir, config=ExtraStrictConfig(),
+        )
+    except FileNotFoundError as exc:
+        return _bundle_blocked_response(
+            "run_dir_missing",
+            f"Job run directory is not available: {exc}",
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        _LOGGER.exception(
+            "extra-strict cleaner failed for %s: %s", job_id, exc
+        )
+        return _bundle_blocked_response(
+            "extra_strict_failed",
+            "Extra Strict Offline cleaner crashed mid-run.",
+        )
+
+    files: list[Path] = [
+        result.primary_xlsx,
+        result.review_xlsx,
+        result.removed_xlsx,
+        result.rejected_xlsx,
+        result.summary_txt,
+        result.readme_txt,
+    ]
+    files = [p for p in files if p.is_file()]
+    if not files:
+        return _bundle_blocked_response(
+            "extra_strict_empty",
+            "Extra Strict run produced no files.",
+        )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path in files:
+            zf.write(path, arcname=path.name)
+    download_name = _bundle_filename(run_dir, job_id).replace(
+        "_clean_", "_extrastrict_"
+    )
+    headers = {
+        "Content-Disposition": f'attachment; filename="{download_name}"',
+        "X-TrashPanda-Audience": _CLIENT_SAFE_AUDIENCE,
+        "X-TrashPanda-Bundle-Mode": "extra_strict",
+    }
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers=headers,
+    )
+
+
 __all__ = [
     "router",
 ]
