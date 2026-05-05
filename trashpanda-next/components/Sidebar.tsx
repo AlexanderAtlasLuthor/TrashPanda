@@ -237,7 +237,7 @@ function AdvancedSection({ isOperator }: AdvancedSectionProps) {
         <NavLink
           href="/operator"
           active={isOperator}
-          label="Operator Console"
+          label="Audit & internals"
           icon={
             <svg
               viewBox="0 0 24 24"
