@@ -35,6 +35,10 @@ export interface UploadResponse {
   job_id: string;
 }
 
+export interface UploadFileOptions {
+  config_path?: string;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -72,9 +76,16 @@ async function handleResponse<T>(res: Response): Promise<T> {
  * When the Python service is wired up, this route proxies to something like:
  *   POST {TRASHPANDA_BACKEND_URL}/jobs
  */
-export async function uploadFile(file: File): Promise<UploadResponse> {
+export async function uploadFile(
+  file: File,
+  options?: UploadFileOptions,
+): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
+  const configPath = options?.config_path?.trim();
+  if (configPath) {
+    form.append("config_path", configPath);
+  }
 
   const res = await fetch("/api/jobs", {
     method: "POST",

@@ -16,12 +16,7 @@ interface Branch {
   title: string;
   message: string;
   showWarnConfirm: boolean;
-  helper: string;
 }
-
-const HELPER_NOT_WIRED = "Cleaning job start is not wired in V2.10.4.";
-const HELPER_NOT_WIRED_DETAILED =
-  "Cleaning job start is not wired in V2.10.4 — operator-side cleaning launch is deferred.";
 
 function branchFor(result: PreflightResult | null): Branch {
   if (result === null) {
@@ -31,7 +26,6 @@ function branchFor(result: PreflightResult | null): Branch {
       message:
         "Preflight results will determine whether the next step is blocked, warned, or clear.",
       showWarnConfirm: false,
-      helper: HELPER_NOT_WIRED,
     };
   }
   const status = (result.status ?? "").toString().trim().toLowerCase();
@@ -42,7 +36,6 @@ function branchFor(result: PreflightResult | null): Branch {
       message:
         "Do not start cleaning until blocking issues are resolved.",
       showWarnConfirm: false,
-      helper: HELPER_NOT_WIRED,
     };
   }
   if (status === "warn") {
@@ -51,7 +44,6 @@ function branchFor(result: PreflightResult | null): Branch {
       title: "Preflight returned warnings.",
       message: "Operator confirmation is required before continuing.",
       showWarnConfirm: true,
-      helper: HELPER_NOT_WIRED,
     };
   }
   if (status === "pass") {
@@ -60,7 +52,6 @@ function branchFor(result: PreflightResult | null): Branch {
       title: "Preflight passed.",
       message: "This run can proceed to the cleaning job step.",
       showWarnConfirm: false,
-      helper: HELPER_NOT_WIRED_DETAILED,
     };
   }
   return {
@@ -69,23 +60,23 @@ function branchFor(result: PreflightResult | null): Branch {
     message:
       "The preflight returned an unrecognised status. Inspect issues above before continuing.",
     showWarnConfirm: false,
-    helper: HELPER_NOT_WIRED,
   };
 }
 
 /**
  * Visual gate that branches on the preflight result.
  *
- * V2.10.4 contract: the "Start cleaning job" button is ALWAYS a
- * disabled placeholder. There is no operator-side endpoint to start a
- * cleaning job from a server-side path today — operator-side cleaning
- * launch is deferred to V2.10.6 alongside multipart upload. This
- * component therefore never calls any API and never enables a real
- * action.
+ * V2.10.6 contract: this component is purely presentational. It
+ * surfaces the preflight outcome (pass/warn/block/null/unknown) and,
+ * on the warn branch, the operator-confirmation checkbox. The actual
+ * gated upload + cleaning-start UI lives in
+ * `OperatorStartJobPanel`, rendered as a sibling immediately below
+ * this notice on the preflight page. This component therefore never
+ * calls any API, never starts a job, and never enables a real action.
  *
- * The warn-branch confirmation checkbox is a UX preview of the future
- * gating (so the operator can practice the flow) — it does not unlock
- * any action in V2.10.4.
+ * The warn-branch checkbox controls `confirmedWarn`, which the
+ * sibling `OperatorStartJobPanel` reads to decide whether to mount
+ * the upload dropzone.
  */
 export function PreflightGateNotice({
   result,
@@ -116,18 +107,6 @@ export function PreflightGateNotice({
           <span>I understand the warnings and want to continue.</span>
         </label>
       )}
-
-      <div className={styles.actionRow}>
-        <button
-          type="button"
-          className={styles.placeholderBtn}
-          disabled
-          aria-disabled="true"
-        >
-          Start cleaning job
-        </button>
-        <div className={styles.helper}>{branch.helper}</div>
-      </div>
     </section>
   );
 }

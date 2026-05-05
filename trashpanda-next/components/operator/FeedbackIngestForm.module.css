@@ -1,0 +1,107 @@
+.form {
+  background: var(--bg-panel);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--stroke-steel);
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.6px;
+  color: var(--ink-low);
+  text-transform: uppercase;
+}
+
+.title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  letter-spacing: 0.4px;
+  color: var(--ink-high);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.6px;
+  color: var(--ink-mid);
+  text-transform: uppercase;
+}
+
+.optional {
+  color: var(--ink-low);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0.2px;
+}
+
+.input {
+  padding: 9px 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink-high);
+  background: var(--bg-panel-2);
+  border: 1px solid var(--stroke-steel);
+  border-radius: 2px;
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--steel-blue);
+}
+
+.helper {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-low);
+  margin-top: 2px;
+}
+
+.footer {
+  padding-top: 12px;
+  border-top: 1px solid var(--stroke-steel);
+}
+
+.submit {
+  padding: 11px 22px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--bg-void);
+  background: var(--neon);
+  border: 1px solid var(--neon);
+  border-radius: 2px;
+  cursor: pointer;
+  font-weight: 700;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.submit:hover:not(:disabled) {
+  background: var(--neon-bright);
+  box-shadow: 0 0 14px var(--neon-glow);
+}
+
+.submit:disabled {
+  cursor: not-allowed;
+  background: rgba(125, 168, 208, 0.08);
+  color: var(--ink-low);
+  border-color: var(--ink-ghost);
+}

@@ -1,10 +1,9 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { OperatorConsoleShell } from "@/components/operator/OperatorConsoleShell";
-import { UploadDropzone } from "@/components/UploadDropzone";
 import s from "./page.module.css";
 
 interface OperatorCard {
@@ -36,7 +35,8 @@ const OPERATOR_CARDS: ReadonlyArray<OperatorCard> = [
     key: "feedback",
     title: "Feedback",
     desc: "Ingest bounce feedback and preview domain intelligence impact.",
-    badge: "COMING NEXT",
+    badge: "READY",
+    href: "/operator/feedback",
   },
 ];
 
@@ -47,7 +47,6 @@ function operatorJobRedirect(jobId: string): string {
 export default function OperatorConsolePage() {
   const router = useRouter();
   const [jobIdInput, setJobIdInput] = useState("");
-  const uploadRef = useRef<HTMLDivElement>(null);
 
   const trimmed = jobIdInput.trim();
   const canSubmit = trimmed.length > 0;
@@ -56,10 +55,6 @@ export default function OperatorConsolePage() {
     event.preventDefault();
     if (!canSubmit) return;
     router.push(operatorJobRedirect(trimmed));
-  };
-
-  const scrollToUpload = () => {
-    uploadRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   return (
@@ -71,22 +66,15 @@ export default function OperatorConsolePage() {
             Cleared for <span className={s.accent}>operator review</span>
           </h2>
           <p className={s.heroSubtitle}>
-            Client delivery flows exclusively through the safe download
-            endpoint. Operator review must surface{" "}
-            <strong>ready_for_client === true</strong> before any package
-            leaves this console.
+            Operator launches are gated. Run preflight before uploading the
+            cleaning input. Client delivery still flows exclusively through
+            the safe download endpoint when{" "}
+            <strong>ready_for_client === true</strong>.
           </p>
         </div>
         <div className={s.heroActions}>
-          <button
-            type="button"
-            className={s.heroPrimary}
-            onClick={scrollToUpload}
-          >
-            Upload &amp; review
-          </button>
-          <Link href="/operator/preflight" className={s.heroGhost}>
-            Run preflight →
+          <Link href="/operator/preflight" className={s.heroPrimary}>
+            Start with preflight
           </Link>
         </div>
       </section>
@@ -140,23 +128,6 @@ export default function OperatorConsolePage() {
             );
           })}
         </div>
-      </section>
-
-      <section className="fade-up" ref={uploadRef}>
-        <div className={s.sectionHead}>
-          <span className={s.sectionTitle}>Upload &amp; start operator review</span>
-        </div>
-        <p className={s.sectionLead}>
-          Drop a CSV or XLSX. The pipeline runs the same as on Home, then
-          drops you straight into the operator Package + Gate page so you
-          can build the client package, run the review gate, and use the
-          safe download endpoint when{" "}
-          <strong>ready_for_client === true</strong>.
-        </p>
-        <UploadDropzone
-          redirectTo={operatorJobRedirect}
-          ctaLabel="START OPERATOR REVIEW"
-        />
       </section>
 
       <section className="fade-up">

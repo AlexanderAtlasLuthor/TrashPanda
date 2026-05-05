@@ -7,6 +7,7 @@ import { OperatorConsoleShell } from "@/components/operator/OperatorConsoleShell
 import { PreflightForm } from "@/components/operator/PreflightForm";
 import { PreflightResultPanel } from "@/components/operator/PreflightResultPanel";
 import { PreflightGateNotice } from "@/components/operator/PreflightGateNotice";
+import { OperatorStartJobPanel } from "@/components/operator/OperatorStartJobPanel";
 import styles from "./page.module.css";
 
 function formatOperatorError(error: unknown): string {
@@ -24,6 +25,12 @@ export default function OperatorPreflightPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmedWarn, setConfirmedWarn] = useState(false);
+  // Snapshot of the input that produced `result`. Captured AFTER a
+  // successful preflight so the start panel always reads the
+  // input_path / config_path that the result actually attests to —
+  // not whatever the operator subsequently typed into the form.
+  const [lastPreflightInput, setLastPreflightInput] =
+    useState<RunPreflightInput | null>(null);
 
   const handleRun = async (input: RunPreflightInput) => {
     setLoading(true);
@@ -32,6 +39,7 @@ export default function OperatorPreflightPage() {
     try {
       const next = await runPreflight(input);
       setResult(next);
+      setLastPreflightInput(input);
     } catch (err) {
       setError(formatOperatorError(err));
     } finally {
@@ -63,6 +71,13 @@ export default function OperatorPreflightPage() {
         result={result}
         confirmedWarn={confirmedWarn}
         onConfirmedWarnChange={setConfirmedWarn}
+      />
+
+      <OperatorStartJobPanel
+        result={result}
+        confirmedWarn={confirmedWarn}
+        lastInputPath={lastPreflightInput?.input_path ?? null}
+        configPath={lastPreflightInput?.config_path ?? null}
       />
     </OperatorConsoleShell>
   );

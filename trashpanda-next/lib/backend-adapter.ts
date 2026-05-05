@@ -69,13 +69,22 @@ function normalizeArtifactPaths(result: JobResult): JobResult {
   };
 }
 
-/** POST file, return job id. */
+export interface AdapterStartJobOptions {
+  config_path?: string;
+}
+
+/** POST file (and optional config_path), return job id. */
 export async function adapterStartJob(
   file: File,
+  options?: AdapterStartJobOptions,
 ): Promise<{ job_id: string }> {
   if (useProxy) {
     const form = new FormData();
     form.append("file", file);
+    const configPath = options?.config_path?.trim();
+    if (configPath) {
+      form.append("config_path", configPath);
+    }
     const res = await fetch(`${backendUrl}/jobs`, {
       method: "POST",
       body: form,

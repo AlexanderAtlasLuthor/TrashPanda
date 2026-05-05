@@ -40,11 +40,20 @@ interface UploadDropzoneProps {
   redirectTo?: (jobId: string) => string;
   /** Optional override for the call-to-action label on the file card. */
   ctaLabel?: string;
+  /**
+   * Optional config_path forwarded to the backend's `POST /jobs`
+   * (multipart Form field). Only attached when non-empty after trim,
+   * so HomeDashboard's prop-less `<UploadDropzone />` keeps its
+   * pre-V2.10.7 behavior identical. Operator launches set this to the
+   * config_path of the preflight that gated the launch.
+   */
+  configPath?: string | null;
 }
 
 export function UploadDropzone({
   redirectTo,
   ctaLabel,
+  configPath,
 }: UploadDropzoneProps = {}) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -95,7 +104,10 @@ export function UploadDropzone({
     setSubmitting(true);
     setError(null);
     try {
-      const { job_id } = await uploadFile(file);
+      const trimmedConfig = configPath?.trim();
+      const { job_id } = await (trimmedConfig
+        ? uploadFile(file, { config_path: trimmedConfig })
+        : uploadFile(file));
       const target = redirectTo
         ? redirectTo(job_id)
         : `/results/${encodeURIComponent(job_id)}`;

@@ -43,7 +43,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const result = await adapterStartJob(file);
+    // Optional config_path Form field. Only accept strings; silently
+    // ignore other types (e.g. File posted under the wrong field). Empty
+    // / whitespace strings are treated as absent so HomeDashboard's
+    // `<UploadDropzone />` (which never sets config_path) keeps its
+    // exact pre-V2.10.7 behavior.
+    const rawConfigPath = form.get("config_path");
+    const configPath =
+      typeof rawConfigPath === "string" && rawConfigPath.trim().length > 0
+        ? rawConfigPath.trim()
+        : undefined;
+
+    const result = await adapterStartJob(
+      file,
+      configPath ? { config_path: configPath } : undefined,
+    );
     return NextResponse.json(result, { status: 201 });
   } catch (err) {
     const message =
