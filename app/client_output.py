@@ -25,6 +25,17 @@ from typing import Any
 
 import pandas as pd
 
+from .review_classifier import (
+    REVIEW_ACTION_CATCH_ALL_CONSUMER,
+    REVIEW_ACTION_DO_NOT_SEND,
+    REVIEW_ACTION_HIGH_RISK,
+    REVIEW_ACTION_LOW_RISK,
+    REVIEW_ACTION_TIMEOUT_RETRY,
+    REVIEW_ACTIONS,
+    SECOND_PASS_CANDIDATE_ACTIONS,
+    classify_review_row,
+)
+
 
 # ---------------------------------------------------------------------------
 # Bucket / label configuration
@@ -165,6 +176,52 @@ REVIEW_SUBDIVISIONS: dict[str, dict[str, Any]] = {
         ),
     },
 }
+
+
+# V2.10.10.b — action-oriented review classification.
+#
+# Every row in the review bucket is also classified by
+# :func:`app.review_classifier.classify_review_row` into one of five
+# action buckets. The decision_reason subdivision (above) answers
+# "WHY was this row in review"; the action subdivision answers
+# "WHAT should I do with it". Both surfaces share the same row data
+# — the action is appended as a ``review_action`` column on every
+# review XLSX we emit, and the per-action files below are filtered
+# views of ``review_emails.xlsx``.
+#
+# The order of the keys here is the order the manifest surfaces the
+# counts in, which the UI mirrors when rendering the breakdown card.
+# It is intentionally *rescatability descending*: the cohorts where
+# operator action is most productive come first.
+REVIEW_ACTION_FILES: dict[str, dict[str, str]] = {
+    REVIEW_ACTION_LOW_RISK: {
+        "xlsx_name": "review_low_risk.xlsx",
+        "sheet_name": "review_low_risk",
+    },
+    REVIEW_ACTION_TIMEOUT_RETRY: {
+        "xlsx_name": "review_timeout_retry.xlsx",
+        "sheet_name": "review_timeout_retry",
+    },
+    REVIEW_ACTION_CATCH_ALL_CONSUMER: {
+        "xlsx_name": "review_catch_all_consumer.xlsx",
+        "sheet_name": "review_catch_all_consumer",
+    },
+    REVIEW_ACTION_HIGH_RISK: {
+        "xlsx_name": "review_high_risk.xlsx",
+        "sheet_name": "review_high_risk",
+    },
+    REVIEW_ACTION_DO_NOT_SEND: {
+        "xlsx_name": "do_not_send.xlsx",
+        "sheet_name": "do_not_send",
+    },
+}
+
+
+# Filename for the rolled-up "second pass candidates" deliverable —
+# the union of low_risk + timeout_retry, the cohorts where another
+# verification pass is realistically expected to flip a meaningful
+# share to confirmed-safe.
+SECOND_PASS_CANDIDATES_XLSX: str = "second_pass_candidates.xlsx"
 
 
 # Client column profile: ordered list of (client_column_name, candidate
@@ -438,6 +495,80 @@ def generate_client_outputs(
                 )
             except Exception as exc:  # pragma: no cover - defensive I/O guard
                 log.warning("Failed to write %s: %s", xlsx_path, exc)
+
+    # V2.10.10.b — action-oriented classification of the review bucket.
+    # Tags every review row with a ``review_action`` column derived
+    # from :func:`classify_review_row`, mutates ``review_emails.xlsx``
+    # to carry the new column, and emits one filtered XLSX per action
+    # category plus a rolled-up ``second_pass_candidates.xlsx`` (the
+    # union of ``low_risk`` + ``timeout_retry``).
+    if not review_frame.empty:
+        review_actions = review_frame.apply(
+            lambda r: classify_review_row(r.to_dict()),
+            axis=1,
+        )
+        # Persist the action column back onto the parent review frame
+        # so the per-action filters and the manifest counts both read
+        # from the same source of truth.
+        review_frame = review_frame.copy()
+        review_frame["review_action"] = review_actions.values
+        client_frames["review_medium_confidence"] = review_frame
+
+        # Rewrite ``review_emails.xlsx`` with the new column appended.
+        # Best-effort: a write failure leaves the original file (without
+        # the column) in place so downstream consumers still get the
+        # legacy contract.
+        review_xlsx = run_dir / BUCKET_CONFIG["review_medium_confidence"]["xlsx_name"]
+        try:
+            _write_xlsx(
+                review_frame,
+                review_xlsx,
+                sheet_name=BUCKET_CONFIG["review_medium_confidence"]["client_status"],
+            )
+        except Exception as exc:  # pragma: no cover - defensive I/O guard
+            log.warning(
+                "Failed to re-write review_emails.xlsx with review_action: %s",
+                exc,
+            )
+
+        # Per-action filtered XLSX files. Empty filters are skipped so
+        # the package stays uncluttered for runs where (e.g.) no
+        # catch-all consumer rows landed in review.
+        for action_key, action_cfg in REVIEW_ACTION_FILES.items():
+            mask = review_frame["review_action"].astype(str) == action_key
+            action_df = review_frame.loc[mask].copy()
+            if action_df.empty:
+                continue
+            xlsx_path = run_dir / action_cfg["xlsx_name"]
+            try:
+                _write_xlsx(
+                    action_df, xlsx_path, sheet_name=action_cfg["sheet_name"],
+                )
+                written[action_key] = xlsx_path
+                log.info(
+                    "Review action file written | action=%s rows=%s file=%s",
+                    action_key, len(action_df), xlsx_path.name,
+                )
+            except Exception as exc:  # pragma: no cover - defensive I/O guard
+                log.warning("Failed to write %s: %s", xlsx_path, exc)
+
+        # Rolled-up "second pass candidates" file — strict subset of
+        # the union of low_risk + timeout_retry. Skipped when empty.
+        sp_mask = review_frame["review_action"].astype(str).isin(
+            SECOND_PASS_CANDIDATE_ACTIONS
+        )
+        sp_df = review_frame.loc[sp_mask].copy()
+        if not sp_df.empty:
+            sp_path = run_dir / SECOND_PASS_CANDIDATES_XLSX
+            try:
+                _write_xlsx(sp_df, sp_path, sheet_name="second_pass_candidates")
+                written["second_pass_candidates"] = sp_path
+                log.info(
+                    "Second-pass candidates written | rows=%s file=%s",
+                    len(sp_df), sp_path.name,
+                )
+            except Exception as exc:  # pragma: no cover - defensive I/O guard
+                log.warning("Failed to write %s: %s", sp_path, exc)
 
     # V2.5 — supplementary workbooks split the legacy ``invalid_or_bounce_risk``
     # cohort into duplicates and hard fails so customers can address each

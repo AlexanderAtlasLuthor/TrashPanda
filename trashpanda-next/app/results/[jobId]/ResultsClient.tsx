@@ -296,6 +296,9 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
             <ClassificationBreakdown
               summary={job.summary}
               reviewBreakdown={bundleSummary?.review_breakdown ?? null}
+              reviewActionBreakdown={
+                bundleSummary?.review_action_breakdown ?? null
+              }
             />
           </div>
           {(job.summary?.total_review ?? 0) > 0 && (

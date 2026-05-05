@@ -78,6 +78,59 @@ export const RESULTS_COPY = {
     },
   } as const,
 
+  /**
+   * V2.10.10.b — action-oriented breakdown copy. Each entry maps to a
+   * filtered XLSX in the package; ``second_pass_candidates`` is a
+   * rolled-up file (low_risk + timeout_retry).
+   */
+  reviewActions: {
+    review_low_risk: {
+      title: "Low-risk · second-pass candidate",
+      hint:
+        "Good signals (probability ≥ 0.55, valid syntax / MX, not " +
+        "disposable). SMTP didn't confirm but a retry from a warmer " +
+        "egress should rescue most.",
+      tone: "ok" as const,
+    },
+    review_timeout_retry: {
+      title: "Timeout / blocked · operational retry",
+      hint:
+        "MX is alive but the probe was blocked, timed out, or " +
+        "soft-failed. Retry with a different egress or after a backoff.",
+      tone: "ok" as const,
+    },
+    review_catch_all_consumer: {
+      title: "Catch-all consumer (Yahoo / AOL / Verizon-class)",
+      hint:
+        "Domain accepts any address — no automated probe can confirm " +
+        "deliverability without sending. Do NOT auto-send to cold " +
+        "campaigns.",
+      tone: "warn" as const,
+    },
+    review_high_risk: {
+      title: "High-risk · low confidence",
+      hint:
+        "Low probability or multiple negative signals. Not enough " +
+        "evidence to send. Inspect manually before including.",
+      tone: "warn" as const,
+    },
+    do_not_send: {
+      title: "Do not send",
+      hint:
+        "Disposable / suspicious-shape domain. The probability scoring " +
+        "would have approved them but the domain itself is poison.",
+      tone: "bad" as const,
+    },
+    second_pass_candidates: {
+      title: "Second-pass candidates (rolled-up)",
+      hint:
+        "Union of low_risk + timeout_retry. Send these to a live SMTP " +
+        "verifier or a paid third-party probe to recover the rescatable " +
+        "share before campaign launch.",
+      tone: "ok" as const,
+    },
+  } as const,
+
   /** Extra-strict CTA copy. */
   extraStrict: {
     title: "Generate Extra-Strict bundle",
@@ -118,3 +171,6 @@ export const RESULTS_COPY = {
 
 export type ReviewSubdivisionKey =
   keyof typeof RESULTS_COPY.reviewSubdivisions;
+
+export type ReviewActionKey =
+  keyof typeof RESULTS_COPY.reviewActions;

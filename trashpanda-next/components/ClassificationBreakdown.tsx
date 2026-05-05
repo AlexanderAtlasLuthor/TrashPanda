@@ -1,11 +1,22 @@
-import type { ReviewBreakdown } from "@/lib/api";
-import { RESULTS_COPY, type ReviewSubdivisionKey } from "@/lib/copy";
+import type { ReviewActionBreakdown, ReviewBreakdown } from "@/lib/api";
+import {
+  RESULTS_COPY,
+  type ReviewActionKey,
+  type ReviewSubdivisionKey,
+} from "@/lib/copy";
 import type { JobSummary } from "@/lib/types";
 import styles from "./ClassificationBreakdown.module.css";
 
 interface Props {
   summary: JobSummary | null | undefined;
   reviewBreakdown?: ReviewBreakdown | null;
+  /**
+   * V2.10.10.b — action-oriented review breakdown ("what should I do
+   * with this row"). When present, takes precedence over the
+   * decision-reason ``reviewBreakdown`` because it tells the operator
+   * *what to do*, not *why the engine routed the row*.
+   */
+  reviewActionBreakdown?: ReviewActionBreakdown | null;
 }
 
 // V2.10.10 — render the review subdivisions in a stable order so a
@@ -19,6 +30,17 @@ const REVIEW_SUBDIVISION_ORDER: readonly ReviewSubdivisionKey[] = [
   "review_medium_probability",
   "review_catch_all",
   "review_domain_high_risk",
+];
+
+// V2.10.10.b — action-oriented order. ``second_pass_candidates`` is
+// surfaced separately below the per-action rows because it overlaps
+// with low_risk + timeout_retry — listing it inline would double-count.
+const REVIEW_ACTION_ORDER: readonly ReviewActionKey[] = [
+  "review_low_risk",
+  "review_timeout_retry",
+  "review_catch_all_consumer",
+  "review_high_risk",
+  "do_not_send",
 ];
 
 type Tone = "ok" | "warn" | "bad";
@@ -109,14 +131,29 @@ function CategoryCard({ tone, title, count, sectionLabel, reasons }: CardProps) 
 export function ClassificationBreakdown({
   summary,
   reviewBreakdown,
+  reviewActionBreakdown,
 }: Props) {
   if (!summary) return null;
 
-  // V2.10.10 — when the bundle summary supplies per-decision_reason
-  // counts, render the real subdivision instead of the legacy
-  // "common reasons" placeholder list. Subdivisions with zero rows
-  // are dropped entirely so the card mirrors the file the operator
-  // would actually find in the package.
+  // V2.10.10.b — prefer the action-oriented breakdown when available.
+  // It tells the operator *what to do* with each cohort, which is the
+  // headline question after a run with a low ready_count. Fall back
+  // to the decision-reason breakdown, then to the legacy placeholder
+  // list, depending on what the API returned.
+  const actionReasons: ReasonItem[] = [];
+  if (reviewActionBreakdown) {
+    for (const key of REVIEW_ACTION_ORDER) {
+      const count = reviewActionBreakdown[key];
+      if (typeof count !== "number" || count <= 0) continue;
+      const copy = RESULTS_COPY.reviewActions[key];
+      actionReasons.push({
+        label: copy.title,
+        detail: copy.hint,
+        count,
+      });
+    }
+  }
+
   const breakdownReasons: ReasonItem[] = [];
   if (reviewBreakdown) {
     for (const key of REVIEW_SUBDIVISION_ORDER) {
@@ -131,26 +168,36 @@ export function ClassificationBreakdown({
     }
   }
 
-  // Fallback to the legacy reason list when no breakdown is available
-  // (older runs, bundle summary not yet built).
-  const reviewReasons =
-    breakdownReasons.length > 0
-      ? breakdownReasons
-      : [
-          {
-            label: "Catch-all domain",
-            detail: "Server accepts any address — can't confirm delivery",
-          },
-          {
-            label: "No SMTP confirmation",
-            detail: "Mailbox couldn't be verified at send time",
-          },
-          {
-            label: "Role-based address",
-            detail: "Shared inboxes like info@, admin@, support@",
-            count: summary.role_based_emails,
-          },
-        ];
+  // Selection precedence: action > decision_reason > legacy placeholder.
+  let reviewReasons: ReasonItem[];
+  let reviewSectionLabel: string;
+  if (actionReasons.length > 0) {
+    reviewReasons = actionReasons;
+    reviewSectionLabel = "What to do with each cohort";
+  } else if (breakdownReasons.length > 0) {
+    reviewReasons = breakdownReasons;
+    reviewSectionLabel = "Subdivision (per decision_reason)";
+  } else {
+    reviewSectionLabel = "Common reasons";
+    reviewReasons = [
+      {
+        label: "Catch-all domain",
+        detail: "Server accepts any address — can't confirm delivery",
+      },
+      {
+        label: "No SMTP confirmation",
+        detail: "Mailbox couldn't be verified at send time",
+      },
+      {
+        label: "Role-based address",
+        detail: "Shared inboxes like info@, admin@, support@",
+        count: summary.role_based_emails,
+      },
+    ];
+  }
+
+  const secondPassCount =
+    reviewActionBreakdown?.second_pass_candidates ?? null;
 
   return (
     <div className={styles.wrapper}>
@@ -172,11 +219,7 @@ export function ClassificationBreakdown({
           tone="warn"
           title="Require review"
           count={summary.total_review}
-          sectionLabel={
-            breakdownReasons.length > 0
-              ? "Subdivision (per decision_reason)"
-              : "Common reasons"
-          }
+          sectionLabel={reviewSectionLabel}
           reasons={reviewReasons}
         />
         <CategoryCard
@@ -206,6 +249,18 @@ export function ClassificationBreakdown({
           ]}
         />
       </div>
+
+      {typeof secondPassCount === "number" && secondPassCount > 0 && (
+        <div className={styles.secondPassNote}>
+          <strong>{fmt(secondPassCount)}</strong> review rows are
+          flagged as <em>second-pass candidates</em> — see{" "}
+          <code>second_pass_candidates.xlsx</code> in the package.
+          These are the rescatable cohort (low-risk + timeout / blocked
+          / temp-fail). A live SMTP retry from a warmer egress, or a
+          paid third-party probe, typically recovers a meaningful
+          share of them.
+        </div>
+      )}
     </div>
   );
 }

@@ -480,6 +480,19 @@ export interface ReviewBreakdown {
   review_domain_high_risk?: number | null;
 }
 
+// V2.10.10.b — action-oriented breakdown (the operator-facing
+// "what should I do with this row" view). ``second_pass_candidates``
+// is a rolled-up union of ``review_low_risk`` + ``review_timeout_retry``
+// — not a sixth disjoint cohort.
+export interface ReviewActionBreakdown {
+  review_low_risk?: number | null;
+  review_timeout_retry?: number | null;
+  review_catch_all_consumer?: number | null;
+  review_high_risk?: number | null;
+  do_not_send?: number | null;
+  second_pass_candidates?: number | null;
+}
+
 export interface SmtpRuntimePublic {
   smtp_enabled?: boolean;
   smtp_dry_run?: boolean;
@@ -499,6 +512,7 @@ export interface ClientBundleSummary {
   review_count: number;
   rejected_count: number;
   review_breakdown?: ReviewBreakdown;
+  review_action_breakdown?: ReviewActionBreakdown;
   smtp_runtime?: SmtpRuntimePublic | null;
   issues: Array<{ severity: string; code: string; message: string }>;
 }

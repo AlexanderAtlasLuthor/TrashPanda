@@ -146,6 +146,22 @@ _REVIEW_BREAKDOWN_FILES: dict[str, str] = {
 }
 
 
+# V2.10.10.b — action-oriented review classification (the rescue
+# view: "what should I do with this row"). Counts feed the manifest's
+# ``review_action_breakdown`` block. ``second_pass_candidates`` is the
+# rolled-up union of ``low_risk`` + ``timeout_retry`` and is surfaced
+# alongside the per-action counts. Order mirrors the UI's render
+# order — rescatability descending.
+_REVIEW_ACTION_BREAKDOWN_FILES: dict[str, str] = {
+    "review_low_risk": "review_low_risk.xlsx",
+    "review_timeout_retry": "review_timeout_retry.xlsx",
+    "review_catch_all_consumer": "review_catch_all_consumer.xlsx",
+    "review_high_risk": "review_high_risk.xlsx",
+    "do_not_send": "do_not_send.xlsx",
+    "second_pass_candidates": "second_pass_candidates.xlsx",
+}
+
+
 # --------------------------------------------------------------------------- #
 # Result model
 # --------------------------------------------------------------------------- #
@@ -183,6 +199,7 @@ class ClientPackageResult:
     review_count: int | None
     rejected_count: int | None
     review_breakdown: dict[str, int | None] = field(default_factory=dict)
+    review_action_breakdown: dict[str, int | None] = field(default_factory=dict)
     source_run_dir: Path = field(default_factory=lambda: Path("."))
     generated_at: str = ""
 
@@ -213,6 +230,7 @@ class ClientPackageResult:
             "review_count": self.review_count,
             "rejected_count": self.rejected_count,
             "review_breakdown": dict(self.review_breakdown),
+            "review_action_breakdown": dict(self.review_action_breakdown),
         }
 
 
@@ -381,6 +399,14 @@ def build_client_delivery_package(
         if sub_warn is not None:
             warnings.append(sub_warn)
 
+    # V2.10.10.b — action-oriented review classification counts.
+    review_action_counts: dict[str, int | None] = {}
+    for action_key, filename in _REVIEW_ACTION_BREAKDOWN_FILES.items():
+        action_count, action_warn = _try_count_rows(package_dir / filename)
+        review_action_counts[action_key] = action_count
+        if action_warn is not None:
+            warnings.append(action_warn)
+
     # ---- V2.10.8.2: safe-only partial delivery note --------------------- #
     # Only synthesize the note when partial delivery actually applies:
     # at least one safe row, and at least one row that the full client
@@ -520,6 +546,7 @@ def build_client_delivery_package(
         "review_count": counts["review_count"],
         "rejected_count": counts["rejected_count"],
         "review_breakdown": review_breakdown_counts,
+        "review_action_breakdown": review_action_counts,
         "safe_only_delivery": safe_only_block,
     }
     manifest_path = package_dir / _MANIFEST_FILENAME
@@ -535,6 +562,7 @@ def build_client_delivery_package(
         review_count=counts["review_count"],
         rejected_count=counts["rejected_count"],
         review_breakdown=dict(review_breakdown_counts),
+        review_action_breakdown=dict(review_action_counts),
         source_run_dir=run_dir_path,
         generated_at=generated_at,
     )

@@ -79,6 +79,16 @@ _AUDIENCE_BY_KEY: dict[str, str] = {
     "review_catch_all": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     "review_medium_probability": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     "review_domain_high_risk": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    # V2.10.10.b — action-oriented review classification (the operator
+    # view: "what should I do with this row"). Same source rows as the
+    # decision_reason subdivisions above — a different lens, not new
+    # data. ``second_pass_candidates`` is the rolled-up rescue list.
+    "review_low_risk": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "review_timeout_retry": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "review_catch_all_consumer": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "review_high_risk": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "do_not_send": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "second_pass_candidates": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     # V2.10.8.2 — safe-only partial delivery anchor file.
     "safe_only_delivery_note": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     # Always-on README that names the PRIMARY artifact for the customer.

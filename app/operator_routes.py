@@ -1418,6 +1418,9 @@ def operator_get_client_bundle_summary(job_id: str) -> Any:
     review_breakdown = (
         dict((manifest or {}).get("review_breakdown") or {})
     )
+    review_action_breakdown = (
+        dict((manifest or {}).get("review_action_breakdown") or {})
+    )
     smtp_runtime_public = _smtp_runtime_public_subset(run_dir)
 
     return _operator_response(
@@ -1431,6 +1434,7 @@ def operator_get_client_bundle_summary(job_id: str) -> Any:
             "review_count": review_count,
             "rejected_count": rejected_count,
             "review_breakdown": review_breakdown,
+            "review_action_breakdown": review_action_breakdown,
             "smtp_runtime": smtp_runtime_public,
             "issues": review.get("issues") or [],
         }
