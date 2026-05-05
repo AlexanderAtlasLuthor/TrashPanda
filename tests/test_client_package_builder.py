@@ -444,3 +444,117 @@ def test_package_idempotent_on_rerun(tmp_path: Path) -> None:
     # Re-running does not duplicate or break files.
     for f in second.files_included:
         assert f.package_path.is_file()
+
+
+# --------------------------------------------------------------------------- #
+# V2.9.9 — atomic manifest write + legacy-key rejection
+# --------------------------------------------------------------------------- #
+
+
+def test_manifest_atomic_write_leaves_no_temp_file(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir)
+
+    result = build_client_delivery_package(run_dir)
+
+    assert result.manifest_path.is_file()
+    # No leftover temp file from atomic write helper.
+    leftover = result.package_dir / f".{result.manifest_path.name}.tmp"
+    assert not leftover.exists(), f"temp file leaked: {leftover}"
+    # Manifest is valid JSON, not a partial write.
+    payload = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert payload["report_version"] == "v2.9.6"
+
+
+def test_manifest_write_failure_leaves_no_corrupt_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir)
+
+    # Force os.replace inside atomic_write_json to fail. The helper's
+    # finally block must clean up the temp file even on failure, and the
+    # final manifest path must not exist as a corrupt half-written file.
+    from app import atomic_io
+
+    real_replace = atomic_io.os.replace
+
+    def _failing_replace(src, dst):  # type: ignore[no-untyped-def]
+        raise OSError("simulated rename failure")
+
+    monkeypatch.setattr(atomic_io.os, "replace", _failing_replace)
+
+    with pytest.raises(OSError):
+        build_client_delivery_package(run_dir)
+
+    # Restore for sanity (test cleanup) — pytest will undo monkeypatch
+    # automatically, but assertions below run before that.
+    pkg_dir = run_dir / "client_delivery_package"
+    if pkg_dir.is_dir():
+        manifest = pkg_dir / "client_package_manifest.json"
+        # Either no manifest at all, or a stale one from a prior run —
+        # what we must NOT see is a temp file dangling.
+        leftover = pkg_dir / ".client_package_manifest.json.tmp"
+        assert not leftover.exists(), (
+            f"atomic write left temp file behind: {leftover}"
+        )
+
+    # Sanity: rolling back the monkeypatch restores normal behavior.
+    monkeypatch.setattr(atomic_io.os, "replace", real_replace)
+    result = build_client_delivery_package(run_dir)
+    assert result.manifest_path.is_file()
+
+
+def test_legacy_public_keys_rejected_by_package_builder(
+    tmp_path: Path,
+) -> None:
+    """V2.9.9: documents that legacy ``_PUBLIC_REPORT_KEYS`` items
+    classified operator_only / technical_debug are NEVER copied into
+    the client package, even though they are exposed by the operator
+    UI's results endpoint."""
+    from app.server import _PUBLIC_REPORT_KEYS
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    # Minimal client-safe set so the package can still be built.
+    pd.DataFrame({"email": ["a@b.com"]}).to_excel(
+        run_dir / "valid_emails.xlsx", sheet_name="emails", index=False
+    )
+    pd.DataFrame({"email": []}).to_excel(
+        run_dir / "review_emails.xlsx", sheet_name="emails", index=False
+    )
+    pd.DataFrame({"email": []}).to_excel(
+        run_dir / "invalid_or_bounce_risk.xlsx", sheet_name="emails", index=False
+    )
+    # Drop every legacy public report into the run dir alongside.
+    legacy_files = {
+        "processing_report_json": "processing_report.json",
+        "processing_report_csv": "processing_report.csv",
+        "domain_summary": "domain_summary.csv",
+        "typo_corrections": "typo_corrections.csv",
+        "duplicate_summary": "duplicate_summary.csv",
+    }
+    for filename in legacy_files.values():
+        (run_dir / filename).write_text("placeholder", encoding="utf-8")
+
+    result = build_client_delivery_package(run_dir)
+
+    excluded_filenames = {x["filename"] for x in result.files_excluded}
+    for key, filename in legacy_files.items():
+        assert filename in excluded_filenames, (
+            f"legacy public key {key!r} ({filename}) was not excluded"
+        )
+        entry = next(
+            x for x in result.files_excluded if x["filename"] == filename
+        )
+        assert entry["reason"] == "not_client_safe"
+        assert entry["audience"] in {"operator_only", "technical_debug"}
+        assert not (result.package_dir / filename).exists()
+
+    # And the public-keys list itself remains the operator UI list,
+    # not the client delivery contract — we are not changing it here.
+    assert "processing_report_json" in _PUBLIC_REPORT_KEYS
+    assert "domain_summary" in _PUBLIC_REPORT_KEYS

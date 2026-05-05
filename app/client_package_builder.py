@@ -37,6 +37,7 @@ from .artifact_contract import (
     get_artifact_audience,
     is_client_safe_artifact,
 )
+from .atomic_io import atomic_write_json
 
 
 _REPORT_VERSION = "v2.9.6"
@@ -299,10 +300,7 @@ def build_client_delivery_package(
         "rejected_count": counts["rejected_count"],
     }
     manifest_path = package_dir / _MANIFEST_FILENAME
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    atomic_write_json(manifest_path, manifest)
 
     return ClientPackageResult(
         package_dir=package_dir,

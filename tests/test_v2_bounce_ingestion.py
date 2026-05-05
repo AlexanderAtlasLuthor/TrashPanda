@@ -661,3 +661,61 @@ class TestNoLiveNetwork:
             assert store.path.is_file()  # SQLite created the file locally.
         finally:
             store.close()
+
+
+# =========================================================================== #
+# V2.9.9 — handle leak fix on corrupt-DB init failure                          #
+# =========================================================================== #
+
+
+class TestBounceStoreInitFailureClosesHandle:
+    """V2.9.9: BounceOutcomeStore.__init__ must close the underlying
+    sqlite connection if PRAGMA / schema init fails. Otherwise the OS
+    file handle leaks and (on Windows) the corrupt file cannot be
+    deleted/rewritten until the GC eventually runs."""
+
+    def test_corrupt_db_init_raises_and_releases_handle(
+        self, tmp_path: Path
+    ) -> None:
+        corrupt = tmp_path / "corrupt.sqlite"
+        corrupt.write_bytes(b"this is definitely not a sqlite file")
+
+        with pytest.raises(sqlite3.DatabaseError):
+            BounceOutcomeStore(corrupt)
+
+        # If the handle was leaked, this unlink would fail on Windows
+        # with PermissionError [WinError 32]. The fix in V2.9.9 closes
+        # the connection inside __init__ before re-raising, so the
+        # delete must succeed immediately.
+        corrupt.unlink()
+        assert not corrupt.exists()
+
+    def test_corrupt_db_init_allows_immediate_rewrite(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "rewrite.sqlite"
+        path.write_bytes(b"not sqlite either")
+
+        with pytest.raises(sqlite3.DatabaseError):
+            BounceOutcomeStore(path)
+
+        # After the failed init, the path must be writable again.
+        # If the handle leaked, this would raise PermissionError on
+        # Windows.
+        path.write_bytes(b"")
+        assert path.is_file()
+        # And path can now be deleted cleanly.
+        path.unlink()
+
+    def test_normal_init_unaffected(self, tmp_path: Path) -> None:
+        """Sanity: the V2.9.9 close-on-fail wrapper must not regress
+        the happy path."""
+        store = BounceOutcomeStore(tmp_path / "ok.sqlite")
+        try:
+            agg = DomainBounceAggregate(
+                domain="x.com", total_observations=1, delivered_count=1
+            )
+            store.upsert_aggregate(agg)
+            assert store.get("x.com").total_observations == 1
+        finally:
+            store.close()

@@ -26,12 +26,17 @@ artifact contract, so the V2.9.6 client package builder excludes it.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .artifact_contract import is_client_safe_artifact
+from .atomic_io import atomic_write_json
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -555,15 +560,16 @@ def run_operator_review_gate(
         approved_original_present=approved_original_present,
     )
 
-    # Best-effort summary write — does not change the in-memory result on
-    # failure. The decision in ``result`` is the source of truth.
+    # Best-effort atomic summary write — does not change the in-memory
+    # result on failure. The decision in ``result`` is the source of truth.
     try:
-        summary_path.write_text(
-            json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+        atomic_write_json(summary_path, result.to_dict())
+    except Exception as exc:
+        _LOGGER.warning(
+            "Failed to write operator review summary to %s: %s",
+            summary_path,
+            exc,
         )
-    except Exception:  # pragma: no cover - defensive
-        pass
 
     return result
 

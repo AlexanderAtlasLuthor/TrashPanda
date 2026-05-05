@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from app import operator_review_gate
 from app.api_boundary import (
@@ -560,3 +562,52 @@ def test_result_dataclass_shape(tmp_path: Path) -> None:
     assert isinstance(result, OperatorReviewResult)
     assert all(isinstance(i, OperatorReviewIssue) for i in result.issues)
     assert isinstance(result.issues, tuple)
+
+
+# --------------------------------------------------------------------------- #
+# V2.9.9 — atomic summary write + logger on write failure
+# --------------------------------------------------------------------------- #
+
+
+def test_summary_atomic_write_leaves_no_temp_file(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _make_clean_run_dir(run_dir)
+
+    result = run_operator_review_gate(run_dir)
+
+    assert result.summary_path.is_file()
+    # Atomic write helper writes to .<name>.tmp then os.replace; nothing
+    # must be left behind on success.
+    leftover = run_dir / f".{result.summary_path.name}.tmp"
+    assert not leftover.exists(), f"temp file leaked: {leftover}"
+    # JSON is valid.
+    json.loads(result.summary_path.read_text(encoding="utf-8"))
+
+
+def test_summary_write_failure_logs_warning_and_returns_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    run_dir = tmp_path / "run"
+    _make_clean_run_dir(run_dir)
+
+    def _boom(*_args, **_kwargs) -> None:
+        raise OSError("disk full")
+
+    # Monkey-patch the helper used by the gate so the write fails.
+    monkeypatch.setattr(operator_review_gate, "atomic_write_json", _boom)
+
+    with caplog.at_level(logging.WARNING, logger="app.operator_review_gate"):
+        result = run_operator_review_gate(run_dir)
+
+    # Gate still returns a valid result — write is best-effort.
+    assert isinstance(result, OperatorReviewResult)
+    assert result.status in {STATUS_READY, STATUS_WARN, STATUS_BLOCK}
+    # Warning was logged with the failure context.
+    matching = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "operator review summary" in r.getMessage().lower()
+    ]
+    assert matching, f"expected a warning log; got: {[r.getMessage() for r in caplog.records]}"

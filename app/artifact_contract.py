@@ -73,6 +73,11 @@ _AUDIENCE_BY_KEY: dict[str, str] = {
     # ---- operator_only: operator/founder/admin reports ------------------- #
     "processing_report_json": ARTIFACT_AUDIENCE_OPERATOR_ONLY,
     "processing_report_csv": ARTIFACT_AUDIENCE_OPERATOR_ONLY,
+    # V2.9.9 — both processing_report.{json,csv} share stem
+    # ``processing_report``; the alias keeps stem-based filename
+    # lookup correct (otherwise the bare filename falls through to
+    # the conservative ``internal_only`` default).
+    "processing_report": ARTIFACT_AUDIENCE_OPERATOR_ONLY,
     "domain_summary": ARTIFACT_AUDIENCE_OPERATOR_ONLY,
     "v2_deliverability_summary": ARTIFACT_AUDIENCE_OPERATOR_ONLY,
     "v2_reason_breakdown": ARTIFACT_AUDIENCE_OPERATOR_ONLY,

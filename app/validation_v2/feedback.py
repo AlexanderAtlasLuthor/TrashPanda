@@ -475,10 +475,23 @@ class BounceOutcomeStore:
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self._path))
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute(_SCHEMA)
-        self._conn.commit()
+        # V2.9.9 — open into a local first so we can close the connection
+        # before re-raising if PRAGMA / schema init fails (e.g. the file
+        # exists but is not a valid SQLite database). Without this, a
+        # failed init leaks the OS file handle until GC, which on Windows
+        # blocks the corrupt file from being deleted/rewritten.
+        conn = sqlite3.connect(str(self._path))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(_SCHEMA)
+            conn.commit()
+        except Exception:
+            try:
+                conn.close()
+            except sqlite3.Error:  # pragma: no cover - defensive
+                pass
+            raise
+        self._conn = conn
 
     # -- read ----------------------------------------------------------- #
 

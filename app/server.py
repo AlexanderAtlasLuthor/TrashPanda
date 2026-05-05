@@ -801,6 +801,20 @@ def _summary_to_dict(result: JobResult) -> dict[str, Any] | None:
     }
 
 
+# NOTE (V2.9.9):
+# _PUBLIC_REPORT_KEYS powers the operator-facing results endpoint. It is
+# NOT the client delivery contract. Some legacy keys here are classified
+# operator_only or technical_debug by app.artifact_contract:
+#
+#   processing_report_json, processing_report_csv, domain_summary  → operator_only
+#   typo_corrections,        duplicate_summary                     → technical_debug
+#
+# Do not send the contents of /results/{job_id} directly to clients.
+# Client delivery must be built with
+#   from app.client_package_builder import build_client_delivery_package
+# which filters strictly through is_client_safe_artifact(...). Operators
+# consuming this endpoint are expected to know they are seeing the full
+# operator surface, not the client-safe subset.
 _PUBLIC_REPORT_KEYS: tuple[str, ...] = (
     "summary_report",
     "processing_report_json",
