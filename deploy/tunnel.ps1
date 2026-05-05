@@ -56,7 +56,7 @@ function Write-Log {
 }
 
 Write-Log "INFO" "starting tunnel supervisor"
-Write-Log "INFO" "  local:$LocalPort -> $VpsHost:127.0.0.1:$VpsPort"
+Write-Log "INFO" "  local:${LocalPort} -> ${VpsHost}:127.0.0.1:${VpsPort}"
 Write-Log "INFO" "  log file: $LogPath"
 Write-Log "INFO" "press Ctrl+C to stop"
 
@@ -66,7 +66,7 @@ $maxBackoff = 60
 
 while ($true) {
     $attempt++
-    Write-Log "INFO" "attempt #$attempt: opening tunnel"
+    Write-Log "INFO" "attempt #${attempt}: opening tunnel"
 
     # ServerAliveInterval/CountMax: detect dead peers within ~30s.
     # ExitOnForwardFailure: bail out if the local port can't bind so
