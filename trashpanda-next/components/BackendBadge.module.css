@@ -1,0 +1,70 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke-soft);
+  background: var(--surface-low);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-mid);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-low);
+}
+
+.lock {
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* ── VPS via tunnel: green/neon ────────────────────────────────────── */
+.vps {
+  border-color: rgba(57, 255, 20, 0.5);
+  color: var(--neon, #39ff14);
+  background: rgba(57, 255, 20, 0.05);
+}
+.vps .dot {
+  background: var(--neon, #39ff14);
+  box-shadow: 0 0 6px rgba(57, 255, 20, 0.6);
+}
+
+/* ── Local backend: blue ───────────────────────────────────────────── */
+.local {
+  border-color: rgba(120, 180, 255, 0.5);
+  color: #99c8ff;
+  background: rgba(120, 180, 255, 0.05);
+}
+.local .dot {
+  background: #99c8ff;
+}
+
+/* ── Mock (no backend): grey ───────────────────────────────────────── */
+.mock {
+  border-color: var(--stroke-soft);
+  color: var(--ink-low);
+}
+
+/* ── Stale / unreachable: red ──────────────────────────────────────── */
+.stale {
+  border-color: rgba(255, 80, 80, 0.5);
+  color: #ff8080;
+  background: rgba(255, 80, 80, 0.05);
+  animation: blink 1.5s infinite ease-in-out;
+}
+.stale .dot {
+  background: #ff5050;
+  box-shadow: 0 0 6px rgba(255, 80, 80, 0.7);
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}

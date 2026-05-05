@@ -37,8 +37,9 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
+from .auth import require_operator_token
 from .api_boundary import (
     JobStatus,
     build_client_package_for_job,
@@ -110,7 +111,17 @@ _OPERATOR_AUDIENCE_HEADERS: dict[str, str] = {
 }
 
 
-router = APIRouter(prefix="/api/operator", tags=["operator"])
+router = APIRouter(
+    prefix="/api/operator",
+    tags=["operator"],
+    # Apply bearer-token auth to every operator endpoint. Production
+    # deployments configure ``TRASHPANDA_OPERATOR_TOKEN`` (or its
+    # plural ``TRASHPANDA_OPERATOR_TOKENS`` for rotation) and the
+    # dependency rejects requests without a matching value. When the
+    # env var is unset (local dev, the existing test suite) the
+    # dependency is a no-op so behaviour is unchanged.
+    dependencies=[Depends(require_operator_token)],
+)
 
 
 # --------------------------------------------------------------------------- #

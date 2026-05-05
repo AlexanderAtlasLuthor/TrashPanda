@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { BackendBadge } from "./BackendBadge";
 import styles from "./Topbar.module.css";
 import { useShell } from "./AppShell";
 
@@ -87,23 +88,26 @@ export function Topbar({
         </div>
       </div>
 
-      {meta && meta.length > 0 && (
-        <div className={styles.meta}>
-          {meta.map((m, i) => (
-            <div key={i}>
-              <span className={styles.metaLabel}>{m.label}</span>{" "}
-              <span
-                className={[
-                  m.accent && styles.metaVal,
-                  m.danger && styles.metaDanger,
-                ].filter(Boolean).join(" ") || undefined}
-              >
-                {m.value}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
+      <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+        {meta && meta.length > 0 && (
+          <div className={styles.meta}>
+            {meta.map((m, i) => (
+              <div key={i}>
+                <span className={styles.metaLabel}>{m.label}</span>{" "}
+                <span
+                  className={[
+                    m.accent && styles.metaVal,
+                    m.danger && styles.metaDanger,
+                  ].filter(Boolean).join(" ") || undefined}
+                >
+                  {m.value}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        <BackendBadge />
+      </div>
     </header>
   );
 }

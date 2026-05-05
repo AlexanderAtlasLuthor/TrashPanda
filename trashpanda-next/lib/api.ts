@@ -37,6 +37,27 @@ export interface UploadResponse {
   job_id: string;
 }
 
+/** Wire-shape of GET /api/system/info. */
+export interface SystemInfo {
+  backend_label: string;
+  deployment: string;
+  auth_enabled: boolean;
+  wall_clock_seconds: number;
+  smtp_default_dry_run: boolean;
+  adapter_mode: "proxy" | "mock";
+  backend_url: string | null;
+  operator_token_configured: boolean;
+}
+
+/**
+ * Fetch deployment metadata about the backend the BFF is talking to.
+ * Used by the Topbar badge to surface "VPS via tunnel" vs "local mock".
+ */
+export async function getSystemInfo(): Promise<SystemInfo> {
+  const res = await fetch("/api/system/info", { cache: "no-store" });
+  return handleResponse<SystemInfo>(res);
+}
+
 export interface UploadFileOptions {
   config_path?: string;
 }

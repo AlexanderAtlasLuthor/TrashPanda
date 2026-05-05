@@ -1,0 +1,49 @@
+[Unit]
+Description=TrashPanda backend (FastAPI / uvicorn)
+Documentation=https://github.com/AlexanderAtlasLuthor/TrashPanda
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/trashpanda
+
+# Bind only to loopback — the SSH tunnel is the only intended path
+# from the operator's laptop. Set TRASHPANDA_OPERATOR_TOKEN in the
+# environment file below to require bearer auth on /api/operator/*.
+EnvironmentFile=-/etc/trashpanda/backend.env
+Environment=PYTHONUNBUFFERED=1
+Environment=TRASHPANDA_DEPLOYMENT=vps
+Environment=TRASHPANDA_BACKEND_LABEL=racknerd
+
+ExecStart=/root/trashpanda/.venv/bin/uvicorn app.server:app \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --log-level info \
+  --no-access-log
+
+# Restart on crash or transient failure. Limit to 5 restarts in 60s
+# so a hard config error fails loudly instead of looping forever.
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Filesystem hardening — keep the engine writable on its runtime
+# directory only, mount everything else read-only.
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/root/trashpanda/runtime /root/trashpanda/.cache
+
+# Resource ceilings — large lists need memory headroom but a runaway
+# process should not OOM the host.
+LimitNOFILE=65536
+MemoryHigh=2G
+MemoryMax=3G
+
+[Install]
+WantedBy=multi-user.target

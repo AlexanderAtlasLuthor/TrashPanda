@@ -42,6 +42,19 @@ import {
 const backendUrl = process.env.TRASHPANDA_BACKEND_URL?.replace(/\/$/, "");
 const useProxy = Boolean(backendUrl);
 
+// Operator bearer token. When set, every /api/operator/* proxy request
+// carries it as ``Authorization: Bearer <token>``. The backend's
+// ``app.auth.require_operator_token`` dependency rejects requests
+// without a matching token. Leave unset for local dev where the
+// backend has no auth configured.
+const operatorToken = (process.env.TRASHPANDA_OPERATOR_TOKEN || "").trim();
+
+function operatorAuthHeaders(): Record<string, string> {
+  return operatorToken
+    ? { Authorization: `Bearer ${operatorToken}` }
+    : {};
+}
+
 /**
  * The Python backend serialises Path objects to absolute strings.
  * Extract the basename so the UI shows "valid_emails.xlsx" not "/runs/.../valid_emails.xlsx".
@@ -434,6 +447,58 @@ function _emptyInsights(jobId: string): InsightsResponse {
 
 export const adapterMode = useProxy ? "proxy" : "mock";
 
+// ── System info ──────────────────────────────────────────────────────────
+// Wire-shape mirrored from app/server.py::system_info().
+export interface BackendSystemInfo {
+  backend_label: string;
+  deployment: string;
+  auth_enabled: boolean;
+  wall_clock_seconds: number;
+  smtp_default_dry_run: boolean;
+}
+
+export interface FrontendSystemInfo extends BackendSystemInfo {
+  /** "proxy" when TRASHPANDA_BACKEND_URL is set; "mock" otherwise. */
+  adapter_mode: "proxy" | "mock";
+  /** Effective backend URL the BFF talks to (basename only, no token). */
+  backend_url: string | null;
+  /** True when the operator passes a token to /api/operator/*. */
+  operator_token_configured: boolean;
+}
+
+const _MOCK_SYSTEM_INFO: BackendSystemInfo = {
+  backend_label: "mock",
+  deployment: "mock",
+  auth_enabled: false,
+  wall_clock_seconds: 0,
+  smtp_default_dry_run: true,
+};
+
+export async function adapterGetSystemInfo(): Promise<FrontendSystemInfo> {
+  let backend: BackendSystemInfo = _MOCK_SYSTEM_INFO;
+  if (useProxy && backendUrl) {
+    try {
+      const res = await fetch(`${backendUrl}/system/info`, {
+        cache: "no-store",
+      });
+      if (res.ok) {
+        backend = (await res.json()) as BackendSystemInfo;
+      }
+    } catch {
+      // Tunnel down or backend unreachable — leave the mock defaults
+      // in place so the UI can still render.
+      backend = { ..._MOCK_SYSTEM_INFO, backend_label: "unreachable" };
+    }
+  }
+
+  return {
+    ...backend,
+    adapter_mode: useProxy ? "proxy" : "mock",
+    backend_url: backendUrl ?? null,
+    operator_token_configured: Boolean(operatorToken),
+  };
+}
+
 // ── V2.10 Operator adapter functions ───────────────────────────────────────
 //
 // Server-side proxy functions for the /api/operator/* BFF routes.
@@ -470,6 +535,7 @@ async function operatorJson<T>(
     ...init,
     headers: {
       ...(init?.body ? { "content-type": "application/json" } : {}),
+      ...operatorAuthHeaders(),
       ...(init?.headers ?? {}),
     },
   });
@@ -557,7 +623,10 @@ export async function adapterDownloadOperatorClientPackage(
   if (backendUrl) {
     return fetch(
       `${backendUrl}/api/operator/jobs/${encodeURIComponent(jobId)}/client-package/download`,
-      { cache: "no-store" },
+      {
+        cache: "no-store",
+        headers: { ...operatorAuthHeaders() },
+      },
     );
   }
   return new Response(
@@ -613,7 +682,7 @@ export async function adapterDownloadOperatorClientPackageSafeOnly(
     );
   }
 
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...operatorAuthHeaders() };
   if (overrideHeader) {
     headers["X-TrashPanda-Operator-Override"] = overrideHeader;
   }

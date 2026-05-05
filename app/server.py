@@ -692,6 +692,53 @@ def _run_job(
     )
 
 
+_BACKEND_PROCESS_STARTED_AT = datetime.now(timezone.utc)
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, Any]:
+    """Lightweight liveness check for tunnels, monitors and load balancers.
+
+    Returns immediately without touching the database or filesystem so
+    a degraded persistence layer does not flap the health check. The
+    UI uses this to distinguish "tunnel is down" from "backend is up
+    but slow".
+    """
+
+    from .auth import auth_enabled
+
+    now = datetime.now(timezone.utc)
+    uptime_seconds = max(0.0, (now - _BACKEND_PROCESS_STARTED_AT).total_seconds())
+    return {
+        "status": "ok",
+        "started_at": _BACKEND_PROCESS_STARTED_AT.isoformat(),
+        "uptime_seconds": round(uptime_seconds, 1),
+        "auth_enabled": auth_enabled(),
+        "wall_clock_seconds": MAX_JOB_WALL_CLOCK_SECONDS,
+    }
+
+
+@app.get("/system/info")
+def system_info() -> dict[str, Any]:
+    """Static facts about how this backend was deployed.
+
+    The UI uses this to render the "running on VPS via tunnel" badge
+    and to surface whether operator auth is enforced. Values come
+    from environment variables so the same image can be redeployed
+    without code changes.
+    """
+
+    from .auth import auth_enabled
+
+    return {
+        "backend_label": os.environ.get("TRASHPANDA_BACKEND_LABEL", "trashpanda"),
+        "deployment": os.environ.get("TRASHPANDA_DEPLOYMENT", "local"),
+        "auth_enabled": auth_enabled(),
+        "wall_clock_seconds": MAX_JOB_WALL_CLOCK_SECONDS,
+        "smtp_default_dry_run": True,
+    }
+
+
 @app.get("/jobs")
 def list_jobs(limit: int = 20) -> dict[str, Any]:
     safe_limit = max(1, min(limit, 100))
