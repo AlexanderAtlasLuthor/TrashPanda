@@ -84,6 +84,13 @@ REASON_SMTP_UNCONFIRMED_FOR_CANDIDATE = "smtp_unconfirmed_for_candidate"
 REASON_DOMAIN_HIGH_RISK = "domain_high_risk"
 REASON_COLD_START_NO_SMTP_VALID = "cold_start_no_smtp_valid"
 
+# V2.10.11 — external validator consensus rejection. Only fires when
+# every registered validator (or a confident-enough subset, per the
+# aggregator) signals ``invalid``. The policy never *upgrades* a row
+# based on external consensus — they're a second opinion, not the
+# source of truth.
+REASON_EXTERNAL_VALIDATORS_INVALID = "external_validators_invalid"
+
 
 # --------------------------------------------------------------------------- #
 # SMTP / catch-all status sets                                                #
@@ -232,6 +239,10 @@ def apply_v2_decision_policy(
     # permissive) tune the cold-start cap without forking the policy.
     high_risk_blocks_auto_approve: bool = True,
     cold_start_requires_smtp_valid: bool = True,
+    # V2.10.11 — consensus from registered external validators. Empty
+    # / ``not_run`` is the safe default for jobs without external
+    # validation. Rule 5f rejects only on ``invalid``; never escalates.
+    external_consensus: str = "not_run",
 ) -> DecisionResult:
     """The single source of truth for V2.4 + V2.6 final action.
 
@@ -277,6 +288,21 @@ def apply_v2_decision_policy(
         return DecisionResult(
             final_action=FinalAction.AUTO_REJECT,
             decision_reason=REASON_SMTP_INVALID,
+            decision_confidence=p,
+            overridden_bucket=overridden_bucket_for(
+                FinalAction.AUTO_REJECT, v2_final_bucket, policy
+            ),
+        )
+
+    # ── 3b. V2.10.11 — external validator consensus invalid. ────────── #
+    # A unanimous (or aggregator-confident) "this address bounces"
+    # from registered third-party validators is treated like an
+    # SMTP-invalid. Lives between rules 3 and 4 so probability /
+    # catch-all caps do NOT veto a vendor-confirmed rejection.
+    if external_consensus == "invalid":
+        return DecisionResult(
+            final_action=FinalAction.AUTO_REJECT,
+            decision_reason=REASON_EXTERNAL_VALIDATORS_INVALID,
             decision_confidence=p,
             overridden_bucket=overridden_bucket_for(
                 FinalAction.AUTO_REJECT, v2_final_bucket, policy

@@ -1383,6 +1383,134 @@ def operator_download_client_bundle(job_id: str) -> Any:
     )
 
 
+@router.get("/jobs/{job_id}/retry-queue/status")
+def operator_get_retry_queue_status(job_id: str) -> Any:
+    """Counts + auto-retry flag for the per-job SMTP retry queue.
+
+    V2.10.11. Surfaces both:
+    * `counts` — pending / running / succeeded / exhausted / expired.
+    * `auto_retry_enabled` — operator-controlled flag from
+      ``smtp_retry_queue_config.json``.
+    """
+    from contextlib import closing
+
+    from .db.smtp_retry_queue import (
+        SMTP_RETRY_QUEUE_FILENAME,
+        open_for_run,
+    )
+    from .smtp_retry_worker import read_retry_config
+
+    run_dir = _resolve_run_dir(job_id)
+    queue_path = run_dir / SMTP_RETRY_QUEUE_FILENAME
+    auto_retry = bool(read_retry_config(run_dir).get("auto_retry_enabled"))
+    if not queue_path.is_file():
+        return _operator_response(
+            {
+                "available": False,
+                "auto_retry_enabled": auto_retry,
+                "counts": {
+                    "pending": 0,
+                    "running": 0,
+                    "succeeded": 0,
+                    "exhausted": 0,
+                    "expired": 0,
+                    "total": 0,
+                },
+            }
+        )
+
+    with closing(open_for_run(run_dir)) as queue:
+        counts = queue.counts()
+
+    return _operator_response(
+        {
+            "available": True,
+            "auto_retry_enabled": auto_retry,
+            "counts": counts.to_dict(),
+        }
+    )
+
+
+@router.post("/jobs/{job_id}/retry-queue/run")
+def operator_run_retry_queue(job_id: str) -> Any:
+    """Drain the retry queue on demand (operator-triggered).
+
+    V2.10.11. Bypasses the ``auto_retry_enabled`` gate so the
+    operator can drain even queues that opted out of auto-retry.
+    Idempotent: rows that aren't yet due remain pending.
+    """
+    from .smtp_retry_worker import drain_run_queue
+
+    run_dir = _resolve_run_dir(job_id)
+    result = drain_run_queue(run_dir, require_auto_retry=False)
+    return _operator_response(
+        {
+            "queue_path": str(result.queue_path),
+            "auto_retry_enabled": result.auto_retry_enabled,
+            "expired": result.expired,
+            "probed": result.probed,
+            "succeeded": result.succeeded,
+            "rescheduled": result.rescheduled,
+            "exhausted": result.exhausted,
+        }
+    )
+
+
+@router.patch("/jobs/{job_id}/retry-queue/auto-retry")
+def operator_set_auto_retry(job_id: str, enabled: bool = False) -> Any:
+    """Toggle the per-job ``auto_retry_enabled`` flag.
+
+    V2.10.11. The flag is persisted as
+    ``<run_dir>/smtp_retry_queue_config.json`` and consulted by the
+    background worker; the on-demand ``/retry-queue/run`` endpoint
+    ignores the flag.
+    """
+    from .smtp_retry_worker import write_retry_config
+
+    run_dir = _resolve_run_dir(job_id)
+    write_retry_config(run_dir, auto_retry_enabled=bool(enabled))
+    return _operator_response(
+        {"auto_retry_enabled": bool(enabled)}
+    )
+
+
+@router.post("/jobs/{job_id}/retry-queue/finalize")
+def operator_finalize_retry_queue(job_id: str) -> Any:
+    """Re-run the client output pipeline using the retry queue's results.
+
+    V2.10.11. Always operator-triggered — never automatic — so a
+    bundle a customer has already downloaded never silently changes
+    contents. Uses the same generators
+    (:func:`app.client_output.generate_client_outputs`,
+    :func:`app.client_package_builder.build_client_delivery_package`)
+    as the original run, so the action-oriented breakdown and
+    second_pass_candidates.xlsx are regenerated with the new
+    verdicts baked in.
+    """
+    from .client_output import generate_client_outputs
+    from .client_package_builder import build_client_delivery_package
+
+    run_dir = _resolve_run_dir(job_id)
+    written = generate_client_outputs(run_dir)
+    package = build_client_delivery_package(run_dir)
+
+    return _operator_response(
+        {
+            "package_dir": str(package.package_dir),
+            "manifest_path": str(package.manifest_path),
+            "safe_count": package.safe_count,
+            "review_count": package.review_count,
+            "rejected_count": package.rejected_count,
+            "review_action_breakdown": dict(
+                package.review_action_breakdown
+            ),
+            "files_regenerated": [
+                str(p) for p in written.values()
+            ],
+        }
+    )
+
+
 @router.get("/jobs/{job_id}/client-bundle/summary")
 def operator_get_client_bundle_summary(job_id: str) -> Any:
     """Summary used by the UI's "Send to client" panel.

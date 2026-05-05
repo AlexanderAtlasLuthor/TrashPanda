@@ -22,6 +22,7 @@ import { SendToClientButton } from "@/components/SendToClientButton";
 import { JobHelperBanner } from "@/components/JobHelperBanner";
 import { ExecutiveSummary } from "@/components/ExecutiveSummary";
 import { ClassificationBreakdown } from "@/components/ClassificationBreakdown";
+import { RetryQueueCard } from "@/components/RetryQueueCard";
 import { TypoCorrectionsPanel } from "@/components/TypoCorrectionsPanel";
 import { ErrorState } from "@/components/ErrorState";
 import { AINarrativePanel } from "@/components/AINarrativePanel";
@@ -299,6 +300,20 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
               reviewActionBreakdown={
                 bundleSummary?.review_action_breakdown ?? null
               }
+            />
+          </div>
+          <div className="fade-up">
+            <RetryQueueCard
+              jobId={jobId}
+              visible
+              onFinalize={() => {
+                // Refetch the bundle summary so the breakdown card
+                // immediately reflects the re-classification done by
+                // the finalize endpoint.
+                getClientBundleSummary(jobId)
+                  .then(setBundleSummary)
+                  .catch(() => {});
+              }}
             />
           </div>
           {(job.summary?.total_review ?? 0) > 0 && (

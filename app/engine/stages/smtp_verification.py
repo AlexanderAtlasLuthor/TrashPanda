@@ -52,10 +52,16 @@ from typing import Any
 
 import pandas as pd
 
+from ...db.smtp_retry_queue import (
+    DEFAULT_RETRY_SCHEDULE_MINUTES,
+    SMTPRetryQueue,
+    open_for_run,
+)
 from ...smtp_runtime import (
     compute_retry_backoff_seconds,
     get_or_create_smtp_runtime_summary,
 )
+from ...validation_v2.services.domain_intelligence import provider_family_for
 from ...validation_v2.smtp_probe import (
     SMTPResult,
     probe_email_dry_run,
@@ -473,6 +479,28 @@ _IN_PROCESS_RETRY_STATUSES: frozenset[str] = frozenset({
 })
 
 
+# Statuses persisted to the deferred retry queue (P2) when the
+# in-process retry budget (P1) is exhausted. Mirrors
+# ``_IN_PROCESS_RETRY_STATUSES`` because the same outcomes that are
+# worth retrying within seconds are worth retrying within minutes /
+# hours from a different egress.
+_DEFERRED_RETRY_STATUSES: frozenset[str] = frozenset({
+    SMTP_STATUS_TEMP_FAIL,
+    SMTP_STATUS_TIMEOUT,
+    SMTP_STATUS_BLOCKED,
+})
+
+
+def _resolve_run_dir(context: PipelineContext):
+    """Return the per-run output directory or ``None`` if absent.
+
+    Tests run with a bare ``PipelineContext()`` and no ``run_context``;
+    the SMTP stage must continue to work in that mode (no enqueue).
+    """
+    rc = getattr(context, "run_context", None)
+    return getattr(rc, "run_dir", None) if rc is not None else None
+
+
 # --------------------------------------------------------------------------- #
 # Stage                                                                       #
 # --------------------------------------------------------------------------- #
@@ -540,6 +568,19 @@ class SMTPVerificationStage(Stage):
         min_interval = 1.0 / rate_limit if rate_limit > 0 else 0.0
         retry_enabled = _retry_temp_failures(context)
         max_retries = _max_retries_in_process(context) if retry_enabled else 0
+
+        # V2.10.11 — lazily open the per-run retry queue. Only created
+        # if at least one row needs enqueueing. The queue is opened on
+        # first use, kept open for the chunk's lifetime, and closed in
+        # the ``finally`` block so a probe exception cannot leak the
+        # SQLite handle.
+        retry_queue: SMTPRetryQueue | None = None
+        run_dir = _resolve_run_dir(context)
+        run_id = (
+            getattr(context.run_context, "run_id", "")
+            if getattr(context, "run_context", None) is not None
+            else ""
+        )
 
         frame = payload.frame
         rows = frame.to_dict(orient="records")
@@ -628,8 +669,63 @@ class SMTPVerificationStage(Stage):
                     last_probe_at = self._clock_fn()
 
             cache.set(email_normalized, result)
-            runtime_summary.record_probe_attempt(normalize_smtp_status(result))
+            final_status = normalize_smtp_status(result)
+            runtime_summary.record_probe_attempt(final_status)
             _emit_from_result(out, result, was_candidate=True)
+
+            # V2.10.11 — persistent retry queue enqueue. Only triggers
+            # for outcomes still operationally transient AFTER the
+            # in-process retry budget. ``run_dir`` is None in unit
+            # tests that drive the stage with a bare PipelineContext,
+            # so enqueue is silently skipped there.
+            if (
+                run_dir is not None
+                and final_status in _DEFERRED_RETRY_STATUSES
+            ):
+                if retry_queue is None:
+                    try:
+                        retry_queue = open_for_run(run_dir)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        _LOGGER.warning(
+                            "smtp retry queue unavailable for %s: %s",
+                            run_dir, exc,
+                        )
+                        retry_queue = None
+                if retry_queue is not None:
+                    try:
+                        domain = _coerce_str(
+                            row.get("corrected_domain") or row.get("domain")
+                        ).lower()
+                        try:
+                            source_row = int(row.get("source_row_number") or 0)
+                        except (TypeError, ValueError):
+                            source_row = 0
+                        retry_queue.enqueue(
+                            job_id=run_id,
+                            source_row=source_row,
+                            email=email,
+                            domain=domain,
+                            provider_family=provider_family_for(domain),
+                            last_status=final_status,
+                            last_response_code=(
+                                int(result.response_code)
+                                if result.response_code is not None
+                                else None
+                            ),
+                            last_response_message=result.response_message or "",
+                            schedule_minutes=DEFAULT_RETRY_SCHEDULE_MINUTES,
+                        )
+                    except Exception as exc:  # pragma: no cover - defensive
+                        _LOGGER.debug(
+                            "smtp retry queue enqueue failed for %s: %s",
+                            email, exc,
+                        )
+
+        if retry_queue is not None:
+            try:
+                retry_queue.close()
+            except Exception:  # pragma: no cover - defensive
+                pass
 
         new_frame = frame.copy()
         for col, values in out.items():

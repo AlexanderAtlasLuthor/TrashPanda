@@ -533,6 +533,93 @@ export function clientBundleDownloadUrl(jobId: string): string {
   return `/api/operator/jobs/${encodeURIComponent(jobId)}/client-bundle/download`;
 }
 
+// V2.10.11 — SMTP retry queue surface. The deferred retry worker
+// drains operationally-transient SMTP outcomes (4xx temp_fail /
+// timeout / blocked) on a 15-min cadence (systemd timer), but only
+// for jobs whose operator opted in via ``auto_retry_enabled``. The
+// UI surfaces both the per-job flag and an on-demand drain button.
+
+export interface RetryQueueCounts {
+  pending: number;
+  running: number;
+  succeeded: number;
+  exhausted: number;
+  expired: number;
+  total: number;
+}
+
+export interface RetryQueueStatus {
+  available: boolean;
+  auto_retry_enabled: boolean;
+  counts: RetryQueueCounts;
+}
+
+export interface RetryQueueDrainResult {
+  queue_path: string;
+  auto_retry_enabled: boolean;
+  expired: number;
+  probed: number;
+  succeeded: number;
+  rescheduled: number;
+  exhausted: number;
+}
+
+export interface RetryQueueFinalizeResult {
+  package_dir: string;
+  manifest_path: string;
+  safe_count: number | null;
+  review_count: number | null;
+  rejected_count: number | null;
+  review_action_breakdown: Record<string, number | null>;
+  files_regenerated: string[];
+}
+
+export async function getRetryQueueStatus(
+  jobId: string,
+): Promise<RetryQueueStatus> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/retry-queue/status`,
+    { cache: "no-store" },
+  );
+  return handleResponse<RetryQueueStatus>(res);
+}
+
+export async function runRetryQueueDrain(
+  jobId: string,
+): Promise<RetryQueueDrainResult> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/retry-queue/run`,
+    { method: "POST", cache: "no-store" },
+  );
+  return handleResponse<RetryQueueDrainResult>(res);
+}
+
+export async function setRetryQueueAutoRetry(
+  jobId: string,
+  enabled: boolean,
+): Promise<{ auto_retry_enabled: boolean }> {
+  const url = new URL(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/retry-queue/auto-retry`,
+    window.location.origin,
+  );
+  url.searchParams.set("enabled", String(enabled));
+  const res = await fetch(url.toString().replace(window.location.origin, ""), {
+    method: "PATCH",
+    cache: "no-store",
+  });
+  return handleResponse<{ auto_retry_enabled: boolean }>(res);
+}
+
+export async function finalizeRetryQueue(
+  jobId: string,
+): Promise<RetryQueueFinalizeResult> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/retry-queue/finalize`,
+    { method: "POST", cache: "no-store" },
+  );
+  return handleResponse<RetryQueueFinalizeResult>(res);
+}
+
 /**
  * URL for the Extra Strict Offline ZIP — the "re-clean stricter"
  * action surfaced as a secondary button next to the primary
