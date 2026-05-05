@@ -235,13 +235,18 @@ def test_result_statuses_are_counted_with_inconclusive_rollup() -> None:
     assert summary.smtp_inconclusive_count == 5
 
 
-def test_retry_config_is_reported_without_claiming_execution() -> None:
+def test_retry_config_is_reported_with_execution_enabled() -> None:
+    # Post per-command-timeout hardening, retry execution is enabled
+    # globally (see ``app.smtp_runtime.SMTP_RETRY_EXECUTION_ENABLED``).
+    # The summary should mirror the live flag rather than hard-coding
+    # the historical "not yet wired" assertion.
     cfg = _config(retry_temp_failures=True, max_retries=1)
     _out, _ctx, summary = _run_smtp_stage(_candidate_frame(1), config=cfg)
 
     assert summary.smtp_retry_temp_failures_configured is True
     assert summary.smtp_max_retries_configured == 1
-    assert summary.smtp_retry_execution_enabled is False
+    assert summary.smtp_retry_execution_enabled is SMTP_RETRY_EXECUTION_ENABLED
+    # No live retries executed in the offline stub path.
     assert summary.smtp_retries_executed == 0
 
 

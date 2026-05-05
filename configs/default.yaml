@@ -70,27 +70,25 @@ history:
 
 # V2 Phase 4 + V2.2: SMTP probing.
 #
-# V2.2 promotes SMTP from a sample-driven post-pass to an in-chunk
-# verification stage that runs before the V2 DecisionStage. Production
-# defaults are now ``enabled: true`` and ``dry_run: false`` so live
-# deliverability evidence reaches the decision layer.
+# Default policy: SMTP live probing is OFF. The pipeline's decisions
+# (probability model + domain intel + offline catch-all heuristics)
+# work without a network round-trip, and the previous live default
+# stalled badly on opaque providers (Yahoo/AOL/Verizon-class) that
+# accept the SMTP handshake and then go silent. Re-enable live
+# probing only after confirming you have:
+#   - per-command timeouts (now applied automatically by smtp_probe.py)
+#   - operator cancellation wired in the UI
+#   - a reasonable rate limit for your egress IP
+#   - a ``max_candidates_per_run`` cap appropriate for the deadline
 #
 # Test safety: ``conftest.py`` installs an autouse fixture that monkey-
-# patches the live ``probe_email_smtplib`` to a deterministic stub so
-# the test suite never opens a real socket, regardless of the values
-# below. To enable live probing in production, leave these defaults
-# unchanged; deployments that want to run dry can flip ``dry_run`` to
-# ``true``.
-#
-# ``sample_size`` and ``max_per_domain`` remain the contract for the
-# legacy post-pass orchestrator (``app.validation_v2.smtp_integration``)
-# which still reads them. The chunk-time stage uses
-# ``max_candidates_per_run`` (omit / null = no cap).
+# patches the live probe regardless of these values, so tests never
+# open a real socket.
 smtp_probe:
-  enabled: true
-  dry_run: false
+  enabled: false
+  dry_run: true
   max_candidates_per_run: null
-  timeout_seconds: 10
+  timeout_seconds: 6
   rate_limit_per_second: 2.0
   retries: 0
   retry_temp_failures: true

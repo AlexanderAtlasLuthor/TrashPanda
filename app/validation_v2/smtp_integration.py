@@ -246,8 +246,14 @@ def run_probing(
     probe_fn: ProbeFn | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
     clock_fn: Callable[[], float] = time.perf_counter,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, SMTPResult]:
-    """Execute the probes with rate-limiting. Returns {email → result}."""
+    """Execute the probes with rate-limiting. Returns {email → result}.
+
+    ``cancel_check`` is consulted between probes (and threaded into the
+    probe itself when supported) so an operator hitting cancel from the
+    UI unwinds within seconds rather than at the end of the queue.
+    """
     if not candidates:
         return {}
 
@@ -262,18 +268,36 @@ def run_probing(
     results: dict[str, SMTPResult] = {}
     last_t: float | None = None
 
+    def _cancelled() -> bool:
+        return bool(cancel_check is not None and cancel_check())
+
     for cand in candidates:
+        if _cancelled():
+            break
+
         if last_t is not None and min_interval > 0:
             elapsed = clock_fn() - last_t
             if elapsed < min_interval:
                 sleep_fn(min_interval - elapsed)
+                if _cancelled():
+                    break
 
         try:
-            result = probe_fn(
-                cand.email,
-                sender=config.sender_address,
-                timeout=config.timeout_seconds,
-            )
+            # The default smtplib-backed probe accepts the cancel hook;
+            # injected stubs may not — fall back gracefully.
+            try:
+                result = probe_fn(
+                    cand.email,
+                    sender=config.sender_address,
+                    timeout=config.timeout_seconds,
+                    cancel_check=cancel_check,
+                )
+            except TypeError:
+                result = probe_fn(
+                    cand.email,
+                    sender=config.sender_address,
+                    timeout=config.timeout_seconds,
+                )
         except Exception as exc:  # pragma: no cover - defensive guard
             result = SMTPResult(False, None, f"probe exception: {exc}"[:200], False, True)
 
@@ -407,6 +431,7 @@ def run_smtp_probing_pass(
     sleep_fn: Callable[[float], None] = time.sleep,
     clock_fn: Callable[[], float] = time.perf_counter,
     logger: logging.Logger | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> SMTPProbeResult | None:
     """Selection + probing + CSV enrichment + summary. Returns None when disabled."""
     log = logger or _LOGGER
@@ -431,6 +456,7 @@ def run_smtp_probing_pass(
     probe_results = run_probing(
         candidates, config,
         probe_fn=probe_fn, sleep_fn=sleep_fn, clock_fn=clock_fn,
+        cancel_check=cancel_check,
     )
 
     for csv_name in (

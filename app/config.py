@@ -75,14 +75,19 @@ DEFAULT_PROBABILITY_VALUES: dict[str, Any] = {
 
 
 DEFAULT_SMTP_PROBE_VALUES: dict[str, Any] = {
-    # V2.2 — SMTP is now production-on and feeds the in-chunk decision
-    # stage. Tests are protected from real network calls by an autouse
-    # fixture in ``conftest.py``; deployments that want a no-network
-    # run can flip ``dry_run`` back to ``True``.
-    "enabled": True,
-    "dry_run": False,
+    # SMTP live probing is *opt-in*. The pipeline's deliverability
+    # decisions (probability + domain intel + catch-all heuristics)
+    # work without a network round-trip; live probes only add value
+    # when timeouts, cancellation and rate limits are properly
+    # configured for the destination MXs. The previous default
+    # (``enabled=True, dry_run=False``) caused stalls on opaque
+    # providers (Yahoo/AOL/Verizon-class) that accept the handshake
+    # and then go silent. Operators that want live probing flip these
+    # explicitly per run.
+    "enabled": False,
+    "dry_run": True,
     "max_candidates_per_run": None,
-    "timeout_seconds": 10.0,
+    "timeout_seconds": 6.0,
     "rate_limit_per_second": 2.0,
     "retries": 0,
     "retry_temp_failures": True,

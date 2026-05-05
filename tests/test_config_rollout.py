@@ -103,7 +103,11 @@ def test_existing_v2_config_sections_still_load() -> None:
     cfg = load_config(base_dir=_project_root())
 
     assert cfg.decision.enabled is True
-    assert cfg.smtp_probe.enabled is True
+    # smtp_probe defaults to OFF after the per-command-timeout
+    # hardening: live probing is opt-in. The structural section must
+    # still load and expose ``enabled`` / ``dry_run``.
+    assert cfg.smtp_probe.enabled is False
+    assert cfg.smtp_probe.dry_run is True
     assert cfg.catch_all.enabled is True
     assert cfg.domain_intelligence.enabled is True
     assert cfg.bounce_ingestion.enabled is True

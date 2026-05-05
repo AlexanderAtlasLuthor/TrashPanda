@@ -16,7 +16,31 @@ from typing import Any
 SMTP_RUNTIME_SUMMARY_REPORT_VERSION = "v2.9.3"
 SMTP_RUNTIME_SUMMARY_FILENAME = "smtp_runtime_summary.json"
 SMTP_RUNTIME_SUMMARY_EXTRAS_KEY = "smtp_runtime_summary"
-SMTP_RETRY_EXECUTION_ENABLED = False
+
+# Live retry execution. Retries are only meaningful once per-command
+# timeouts and cancellation are honoured by ``smtp_probe.py`` (see the
+# hardening comment there). With those in place we re-enable retries
+# behind exponential backoff so transient 4xx responses get a second
+# chance without stampeding a failing MX.
+SMTP_RETRY_EXECUTION_ENABLED = True
+
+# Backoff envelope for retry attempts. Capped at 8s so a single retry
+# never dwarfs the per-probe budget.
+SMTP_RETRY_BASE_BACKOFF_SECONDS: float = 0.5
+SMTP_RETRY_MAX_BACKOFF_SECONDS: float = 8.0
+
+
+def compute_retry_backoff_seconds(attempt: int) -> float:
+    """Exponential backoff: 0.5s, 1s, 2s, 4s, 8s (cap).
+
+    ``attempt`` is 1-indexed. ``compute_retry_backoff_seconds(1)``
+    returns the wait *before* the first retry (after the initial try).
+    """
+
+    if attempt < 1:
+        return 0.0
+    delay = SMTP_RETRY_BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
+    return min(SMTP_RETRY_MAX_BACKOFF_SECONDS, delay)
 
 
 SMTP_RUNTIME_STATUS_VALID = "valid"
@@ -183,11 +207,14 @@ def _coerce_float(value: Any, *, default: float) -> float:
 
 
 __all__ = [
+    "SMTP_RETRY_BASE_BACKOFF_SECONDS",
+    "SMTP_RETRY_EXECUTION_ENABLED",
+    "SMTP_RETRY_MAX_BACKOFF_SECONDS",
     "SMTP_RUNTIME_SUMMARY_EXTRAS_KEY",
     "SMTP_RUNTIME_SUMMARY_FILENAME",
     "SMTP_RUNTIME_SUMMARY_REPORT_VERSION",
-    "SMTP_RETRY_EXECUTION_ENABLED",
     "SMTPRuntimeSummary",
+    "compute_retry_backoff_seconds",
     "get_or_create_smtp_runtime_summary",
     "write_smtp_runtime_summary",
 ]

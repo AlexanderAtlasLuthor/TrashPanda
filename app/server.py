@@ -49,6 +49,7 @@ from .api_boundary import (
     load_job_summary,
     run_cleaning_job,
 )
+from . import cancellation as _cancellation
 from .artifact_contract import (
     ARTIFACT_AUDIENCE_CLIENT_SAFE,
     ARTIFACT_AUDIENCE_INTERNAL_ONLY,
@@ -780,6 +781,114 @@ def get_status(job_id: str) -> dict[str, Any]:
     if result is None:
         _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
     return _status_payload(result)
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict[str, Any]:
+    """Mark a running job as cancelled.
+
+    Cancellation is cooperative: long-running loops (chiefly the SMTP
+    probe loop) consult the cancellation registry between probes and
+    unwind cleanly. Already-completed or already-failed jobs are
+    returned untouched.
+    """
+
+    result = _load_job_result(job_id)
+    if result is None:
+        _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
+
+    status_value = (
+        result.status.value if hasattr(result.status, "value") else str(result.status)
+    )
+    terminal_values = {
+        JobStatus.COMPLETED.value
+        if hasattr(JobStatus.COMPLETED, "value")
+        else str(JobStatus.COMPLETED),
+        JobStatus.FAILED.value
+        if hasattr(JobStatus.FAILED, "value")
+        else str(JobStatus.FAILED),
+    }
+    if status_value in terminal_values:
+        return {
+            "job_id": job_id,
+            "status": status_value,
+            "cancelled": False,
+            "reason": "job already terminal",
+        }
+
+    newly_cancelled = _cancellation.cancel(job_id)
+    return {
+        "job_id": job_id,
+        "status": status_value,
+        "cancelled": newly_cancelled,
+        "reason": "cancellation flag set" if newly_cancelled else "already cancelled",
+    }
+
+
+def _read_smtp_runtime_summary(job_id: str) -> dict[str, Any] | None:
+    """Best-effort read of the SMTP runtime summary for live progress."""
+
+    job_output_dir = RUNTIME_ROOT / "jobs" / job_id
+    run_dir = _latest_run_dir(job_output_dir)
+    if run_dir is None:
+        return None
+    summary_path = run_dir / "smtp_runtime_summary.json"
+    if not summary_path.is_file():
+        return None
+    try:
+        return json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+@app.get("/jobs/{job_id}/progress")
+def get_job_progress(job_id: str) -> dict[str, Any]:
+    """Live progress for a running job.
+
+    Returns the high-level status plus, when available, SMTP probe
+    counters parsed from ``smtp_runtime_summary.json``. The counters
+    let the UI render a real "X of Y probed" instead of the previous
+    elapsed-time-based estimate.
+    """
+
+    result = _load_job_result(job_id)
+    if result is None:
+        _raise_http_error(404, "job_not_found", "Job not found.", {"job_id": job_id})
+
+    status_value = (
+        result.status.value if hasattr(result.status, "value") else str(result.status)
+    )
+
+    smtp_summary = _read_smtp_runtime_summary(job_id)
+    smtp_progress: dict[str, Any] | None = None
+    if smtp_summary is not None:
+        attempted = int(smtp_summary.get("smtp_candidates_attempted") or 0)
+        seen = int(smtp_summary.get("smtp_candidates_seen") or 0)
+        total = max(seen, attempted)
+        smtp_progress = {
+            "attempted": attempted,
+            "seen": seen,
+            "total": total,
+            "valid": int(smtp_summary.get("smtp_valid_count") or 0),
+            "invalid": int(smtp_summary.get("smtp_invalid_count") or 0),
+            "inconclusive": int(smtp_summary.get("smtp_inconclusive_count") or 0),
+            "timeout": int(smtp_summary.get("smtp_timeout_count") or 0),
+            "blocked": int(smtp_summary.get("smtp_blocked_count") or 0),
+            "ratio": (attempted / total) if total > 0 else None,
+            "live": bool(
+                smtp_summary.get("smtp_enabled")
+                and not smtp_summary.get("smtp_dry_run", True)
+            ),
+        }
+
+    return {
+        "job_id": job_id,
+        "status": status_value,
+        "cancelled": _cancellation.is_cancelled(job_id),
+        "started_at": result.started_at.isoformat() if result.started_at else None,
+        "finished_at": result.finished_at.isoformat() if result.finished_at else None,
+        "smtp": smtp_progress,
+    }
 
 
 def _bucket_entry(
