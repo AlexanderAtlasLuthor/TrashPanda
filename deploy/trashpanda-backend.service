@@ -3,6 +3,11 @@ Description=TrashPanda backend (FastAPI / uvicorn)
 Documentation=https://github.com/AlexanderAtlasLuthor/TrashPanda
 After=network-online.target
 Wants=network-online.target
+# In modern systemd StartLimit* directives belong to [Unit], not
+# [Service]. Keep the burst tight so a hard config error fails loudly
+# instead of looping forever.
+StartLimitBurst=5
+StartLimitIntervalSec=60
 
 [Service]
 Type=simple
@@ -28,8 +33,6 @@ ExecStart=/root/trashpanda/.venv/bin/uvicorn app.server:app \
 # so a hard config error fails loudly instead of looping forever.
 Restart=on-failure
 RestartSec=5s
-StartLimitBurst=5
-StartLimitIntervalSec=60
 
 # Filesystem hardening — keep the engine writable on its runtime
 # directory only, mount everything else read-only.

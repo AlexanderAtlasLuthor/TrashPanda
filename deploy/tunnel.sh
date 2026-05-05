@@ -36,12 +36,26 @@ attempt=0
 backoff=2
 max_backoff=60
 
+# Prefer autossh when available — it does heartbeat monitoring on top
+# of OpenSSH keepalives, so dead-peer detection is more aggressive
+# than what ssh alone provides. Bare ssh is the fallback and is fine.
+if command -v autossh >/dev/null 2>&1; then
+    SSH_BIN="autossh"
+    SSH_PRELUDE_ARGS=(-M 0)
+    log INFO "using autossh (preferred)"
+else
+    SSH_BIN="ssh"
+    SSH_PRELUDE_ARGS=()
+    log INFO "autossh not found — falling back to plain ssh"
+fi
+export AUTOSSH_GATETIME=0  # ignored by ssh, used by autossh
+
 while true; do
     attempt=$((attempt + 1))
     log INFO "attempt #${attempt}: opening tunnel"
     started_at=$(date +%s)
 
-    ssh -N \
+    "${SSH_BIN}" "${SSH_PRELUDE_ARGS[@]}" -N \
         -o ServerAliveInterval=10 \
         -o ServerAliveCountMax=3 \
         -o ExitOnForwardFailure=yes \

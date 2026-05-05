@@ -1,0 +1,57 @@
+[Unit]
+# Operator-laptop systemd-user unit for the TrashPanda SSH tunnel.
+# Install with:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/trashpanda-tunnel.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now trashpanda-tunnel
+#
+# Override the VPS host with a drop-in:
+#   systemctl --user edit trashpanda-tunnel
+#   # then add:
+#   #   [Service]
+#   #   Environment=TRASHPANDA_VPS_HOST=root@your.vps.ip
+#
+# Linux/macOS counterpart to deploy/tunnel.ps1 (Windows). Either gives
+# you the same guarantee: the tunnel reconnects on its own and the
+# operator never has to babysit a manual ssh window.
+Description=TrashPanda SSH tunnel (laptop -> VPS backend)
+After=network-online.target
+Wants=network-online.target
+StartLimitBurst=10
+StartLimitIntervalSec=120
+
+[Service]
+Type=simple
+Environment=TRASHPANDA_VPS_HOST=root@192.3.105.145
+Environment=TRASHPANDA_LOCAL_PORT=8001
+Environment=TRASHPANDA_VPS_PORT=8000
+
+# Use autossh if installed (recommended) — it ships with built-in
+# heartbeat monitoring on top of the ssh keepalives. Falls back to
+# bare ssh otherwise; the systemd Restart= directive still keeps it
+# alive if the connection drops.
+ExecStart=/bin/sh -c '\
+  if command -v autossh >/dev/null 2>&1; then \
+    AUTOSSH_GATETIME=0 exec autossh -M 0 -N \
+      -o ServerAliveInterval=10 \
+      -o ServerAliveCountMax=3 \
+      -o ExitOnForwardFailure=yes \
+      -o StrictHostKeyChecking=accept-new \
+      -L $${TRASHPANDA_LOCAL_PORT}:127.0.0.1:$${TRASHPANDA_VPS_PORT} \
+      $${TRASHPANDA_VPS_HOST}; \
+  else \
+    exec ssh -N \
+      -o ServerAliveInterval=10 \
+      -o ServerAliveCountMax=3 \
+      -o ExitOnForwardFailure=yes \
+      -o StrictHostKeyChecking=accept-new \
+      -L $${TRASHPANDA_LOCAL_PORT}:127.0.0.1:$${TRASHPANDA_VPS_PORT} \
+      $${TRASHPANDA_VPS_HOST}; \
+  fi'
+
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

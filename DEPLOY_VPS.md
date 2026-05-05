@@ -82,27 +82,56 @@ sudo systemctl restart trashpanda-backend
 
 ## Auto-restarting SSH tunnel (on your laptop)
 
-Replaces the manual `ssh -N -L ...` window with a supervised loop that
-reconnects automatically with exponential backoff.
+Three options; pick the one that fits your OS.
 
-**Windows (PowerShell):**
+### Option A — Windows (PowerShell supervisor)
 
 ```powershell
 cd C:\path\to\TrashPanda
 .\deploy\tunnel.ps1 -VpsHost root@192.3.105.145
 ```
 
-**macOS / Linux:**
+Leave the window open. Logs to `%TEMP%\trashpanda-tunnel.log`.
+
+### Option B — macOS / Linux (foreground supervisor)
 
 ```bash
 cd ~/code/TrashPanda
 VPS_HOST=root@192.3.105.145 bash deploy/tunnel.sh
 ```
 
-The supervisor uses `ServerAliveInterval=10`/`ServerAliveCountMax=3`
-so a dead peer is detected within ~30s, then reconnects with backoff.
-Logs to `%TEMP%\trashpanda-tunnel.log` (Windows) or
-`$TMPDIR/trashpanda-tunnel.log` (Unix).
+Auto-detects `autossh` and uses it when present. Falls back to plain
+`ssh` otherwise. Logs to `$TMPDIR/trashpanda-tunnel.log`.
+
+### Option C — macOS / Linux (systemd-user unit, RECOMMENDED for headless)
+
+For a tunnel that survives logout and reconnects on its own without
+keeping a terminal open:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/trashpanda-tunnel.service ~/.config/systemd/user/
+# (Optional) override the VPS host with a drop-in:
+systemctl --user edit trashpanda-tunnel
+# Add:
+#   [Service]
+#   Environment=TRASHPANDA_VPS_HOST=root@your.vps.ip
+
+systemctl --user daemon-reload
+systemctl --user enable --now trashpanda-tunnel
+
+# Check status / logs:
+systemctl --user status trashpanda-tunnel
+journalctl --user -u trashpanda-tunnel -f
+```
+
+The unit prefers `autossh` when installed. Install it with
+`apt install autossh` (Debian/Ubuntu) or `brew install autossh`
+(macOS) for the most aggressive dead-peer detection.
+
+All three options use `ServerAliveInterval=10` /
+`ServerAliveCountMax=3` so a dead peer is detected within ~30s, then
+reconnects automatically.
 
 ## Frontend `.env.local`
 
