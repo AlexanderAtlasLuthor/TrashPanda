@@ -1,41 +1,59 @@
 .jobHeader {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  padding: 16px 20px;
-  background: var(--bg-panel);
-  border: 1px solid var(--stroke-steel);
+  align-items: center;
+  gap: 24px;
+  padding: 22px 26px;
+  background:
+    linear-gradient(135deg, rgba(142, 255, 58, 0.04), transparent 55%),
+    var(--bg-panel);
+  border: 1px solid var(--stroke);
   border-radius: 4px;
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.jobHeader::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--neon);
+  box-shadow: 0 0 14px var(--neon-glow);
 }
 
 .jobMeta {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
 }
 
 .eyebrow {
   font-family: var(--font-mono);
   font-size: 10px;
-  letter-spacing: 1.6px;
+  letter-spacing: 2px;
   color: var(--ink-low);
   text-transform: uppercase;
 }
 
 .jobId {
-  font-family: var(--font-mono);
-  font-size: 14px;
+  font-family: var(--font-display);
+  font-size: 20px;
   color: var(--ink-high);
   letter-spacing: 0.4px;
   word-break: break-all;
+  line-height: 1.1;
 }
 
 .inputFilename {
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--ink-mid);
+  letter-spacing: 0.2px;
 }
 
 .jobControls {

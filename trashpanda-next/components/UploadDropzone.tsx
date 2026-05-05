@@ -29,7 +29,23 @@ function validateFile(file: File): string | null {
   return null;
 }
 
-export function UploadDropzone() {
+interface UploadDropzoneProps {
+  /**
+   * Optional override for the post-upload redirect path. When omitted,
+   * the dropzone routes to `/results/{jobId}` (the client-facing
+   * default). Operator surfaces pass a function that returns
+   * `/operator/jobs/{jobId}` so the same upload UX can drop the
+   * operator straight into the Package + Gate page.
+   */
+  redirectTo?: (jobId: string) => string;
+  /** Optional override for the call-to-action label on the file card. */
+  ctaLabel?: string;
+}
+
+export function UploadDropzone({
+  redirectTo,
+  ctaLabel,
+}: UploadDropzoneProps = {}) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -80,7 +96,10 @@ export function UploadDropzone() {
     setError(null);
     try {
       const { job_id } = await uploadFile(file);
-      router.push(`/results/${encodeURIComponent(job_id)}`);
+      const target = redirectTo
+        ? redirectTo(job_id)
+        : `/results/${encodeURIComponent(job_id)}`;
+      router.push(target);
     } catch (err) {
       if (err instanceof ApiError) {
         setError(err.message);
@@ -170,7 +189,7 @@ export function UploadDropzone() {
             disabled={submitting}
             type="button"
           >
-            {submitting ? "STARTING..." : "START CLEANING"}
+            {submitting ? "STARTING..." : (ctaLabel ?? "START CLEANING")}
           </button>
         </div>
       )}
