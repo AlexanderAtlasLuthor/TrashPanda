@@ -76,6 +76,79 @@ export function OperatorReviewPanel({
             </span>
           </div>
 
+          {/* V2.10.8.5 — split delivery channel display. The technical
+              ready_for_client row above stays so operators reading
+              JSON wire shapes still see the canonical flag; these two
+              rows surface the same state in human-readable form and
+              also expose the partial-delivery channel introduced by
+              V2.10.8.1. */}
+          <div
+            className={[
+              styles.readyRow,
+              review.ready_for_client === true
+                ? styles.readyTrue
+                : styles.readyFalse,
+            ].join(" ")}
+            data-channel="full"
+          >
+            <span className={styles.readyLabel}>Full delivery:</span>
+            <span className={styles.readyValue}>
+              {review.ready_for_client === true ? "READY" : "NOT READY"}
+            </span>
+          </div>
+          <div
+            className={[
+              styles.readyRow,
+              review.ready_for_client_partial === true
+                ? styles.readyTrue
+                : styles.readyFalse,
+            ].join(" ")}
+            data-channel="safe-only"
+          >
+            <span className={styles.readyLabel}>Safe-only delivery:</span>
+            <span className={styles.readyValue}>
+              {review.ready_for_client_partial === true
+                ? "AVAILABLE"
+                : "NOT AVAILABLE"}
+            </span>
+          </div>
+
+          {review.ready_for_client_partial === true && (
+            <div className={styles.statsRow}>
+              <div className={styles.stat}>
+                <div className={styles.statValue}>
+                  {review.partial_delivery_allowed_count ?? 0}
+                </div>
+                <div className={styles.statLabel}>Included rows</div>
+              </div>
+              <div className={styles.stat}>
+                <div className={[styles.statValue, styles.warn].join(" ")}>
+                  {review.partial_delivery_excluded_count ?? 0}
+                </div>
+                <div className={styles.statLabel}>Excluded rows</div>
+              </div>
+            </div>
+          )}
+
+          {review.ready_for_client_partial === true &&
+            review.partial_delivery_reason && (
+              <div className={styles.warnNote}>
+                {review.partial_delivery_reason}
+              </div>
+            )}
+
+          {review.ready_for_client_partial === true && (
+            <div className={styles.warnNote}>
+              Full run is not ready_for_client.
+              <br />
+              Safe-only delivery includes only SMTP-confirmed safe rows.
+              <br />
+              Review and catch-all rows are excluded.
+              <br />
+              Do not describe this as a fully cleaned list.
+            </div>
+          )}
+
           {isWarn && (
             <div className={styles.warnNote}>{OPERATOR_SAFETY_COPY[0]}</div>
           )}

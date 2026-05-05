@@ -18,6 +18,7 @@ import { OperatorConsoleShell } from "@/components/operator/OperatorConsoleShell
 import { ClientPackageCard } from "@/components/operator/ClientPackageCard";
 import { OperatorReviewPanel } from "@/components/operator/OperatorReviewPanel";
 import { DeliveryDownloadButton } from "@/components/operator/DeliveryDownloadButton";
+import { SafeOnlyDownloadButton } from "@/components/operator/SafeOnlyDownloadButton";
 import { StatusBadge } from "@/components/operator/StatusBadge";
 import styles from "./OperatorJobClient.module.css";
 
@@ -191,6 +192,7 @@ export function OperatorJobClient({
       </div>
 
       <DeliveryDownloadButton jobId={jobId} review={review} />
+      <SafeOnlyDownloadButton jobId={jobId} review={review} />
     </OperatorConsoleShell>
   );
 }
