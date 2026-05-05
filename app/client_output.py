@@ -30,6 +30,7 @@ from .review_classifier import (
     REVIEW_ACTION_DO_NOT_SEND,
     REVIEW_ACTION_HIGH_RISK,
     REVIEW_ACTION_LOW_RISK,
+    REVIEW_ACTION_READY_PROBABLE,
     REVIEW_ACTION_TIMEOUT_RETRY,
     REVIEW_ACTIONS,
     SECOND_PASS_CANDIDATE_ACTIONS,
@@ -194,6 +195,10 @@ REVIEW_SUBDIVISIONS: dict[str, dict[str, Any]] = {
 # It is intentionally *rescatability descending*: the cohorts where
 # operator action is most productive come first.
 REVIEW_ACTION_FILES: dict[str, dict[str, str]] = {
+    REVIEW_ACTION_READY_PROBABLE: {
+        "xlsx_name": "review_ready_probable.xlsx",
+        "sheet_name": "review_ready_probable",
+    },
     REVIEW_ACTION_LOW_RISK: {
         "xlsx_name": "review_low_risk.xlsx",
         "sheet_name": "review_low_risk",
@@ -252,8 +257,21 @@ V2_VERIFICATION_COLUMNS: list[tuple[str, tuple[str, ...]]] = [
     ("deliverability_probability", ("deliverability_probability",)),
     ("smtp_status", ("smtp_status",)),
     ("smtp_confirmed_valid", ("smtp_confirmed_valid",)),
+    # V2.10.11 — preserve the SMTP server's exact response code +
+    # message + class so 4xx greylisting is auditable downstream.
+    # ``smtp_response_code`` is already populated by the SMTP stage;
+    # ``smtp_response_message`` and ``smtp_response_type`` (class) are
+    # added in P0.2 / P0.4 of the V2.10.11 plan.
+    ("smtp_response_code", ("smtp_response_code",)),
+    ("smtp_response_message", ("smtp_response_message",)),
+    ("smtp_response_type", ("smtp_response_type",)),
     ("catch_all_status", ("catch_all_status",)),
     ("catch_all_flag", ("catch_all_flag",)),
+    # V2.10.11 — coarse provider family lets the review classifier
+    # route AOL / Verizon / AT&T-Yahoo backbone consistently without
+    # re-deriving the relationship from the email domain at every
+    # site. Populated by ``DomainIntelligenceStage``.
+    ("provider_family", ("provider_family",)),
     ("final_output_reason", ("final_output_reason",)),
 ]
 

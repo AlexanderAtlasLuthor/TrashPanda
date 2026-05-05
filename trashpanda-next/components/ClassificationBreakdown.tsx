@@ -34,8 +34,15 @@ const REVIEW_SUBDIVISION_ORDER: readonly ReviewSubdivisionKey[] = [
 
 // V2.10.10.b — action-oriented order. ``second_pass_candidates`` is
 // surfaced separately below the per-action rows because it overlaps
-// with low_risk + timeout_retry — listing it inline would double-count.
+// with ready_probable + low_risk + timeout_retry — listing it inline
+// would double-count.
+//
+// V2.10.11 — ``review_ready_probable`` (Tier 2) leads the list
+// because it is the most-rescatable cohort (probability ≥ 0.70,
+// almost-confirmed) and a customer scanning the breakdown should
+// see "good news" first.
 const REVIEW_ACTION_ORDER: readonly ReviewActionKey[] = [
+  "review_ready_probable",
   "review_low_risk",
   "review_timeout_retry",
   "review_catch_all_consumer",

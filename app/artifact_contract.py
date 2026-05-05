@@ -83,6 +83,7 @@ _AUDIENCE_BY_KEY: dict[str, str] = {
     # view: "what should I do with this row"). Same source rows as the
     # decision_reason subdivisions above — a different lens, not new
     # data. ``second_pass_candidates`` is the rolled-up rescue list.
+    "review_ready_probable": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     "review_low_risk": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     "review_timeout_retry": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     "review_catch_all_consumer": ARTIFACT_AUDIENCE_CLIENT_SAFE,

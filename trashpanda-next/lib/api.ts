@@ -485,6 +485,7 @@ export interface ReviewBreakdown {
 // is a rolled-up union of ``review_low_risk`` + ``review_timeout_retry``
 // — not a sixth disjoint cohort.
 export interface ReviewActionBreakdown {
+  review_ready_probable?: number | null;
   review_low_risk?: number | null;
   review_timeout_retry?: number | null;
   review_catch_all_consumer?: number | null;

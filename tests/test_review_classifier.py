@@ -12,10 +12,12 @@ import pytest
 from app.review_classifier import (
     CONSUMER_CATCH_ALL_PROVIDERS,
     LOW_RISK_PROBABILITY_THRESHOLD,
+    READY_PROBABLE_PROBABILITY_THRESHOLD,
     REVIEW_ACTION_CATCH_ALL_CONSUMER,
     REVIEW_ACTION_DO_NOT_SEND,
     REVIEW_ACTION_HIGH_RISK,
     REVIEW_ACTION_LOW_RISK,
+    REVIEW_ACTION_READY_PROBABLE,
     REVIEW_ACTION_TIMEOUT_RETRY,
     SECOND_PASS_CANDIDATE_ACTIONS,
     classify_review_row,
@@ -186,8 +188,9 @@ class TestTimeoutRetry:
 
 class TestLowRisk:
     def test_high_probability_with_clean_signals(self):
-        """The headline rescue case: cold-start B2B with high
-        probability, no catch-all, no operational issue → low_risk."""
+        """V2.10.11 — probability 0.85 lands in ready_probable (Tier 2),
+        not low_risk. The headline rescue case: cold-start B2B with
+        high probability, no catch-all, no operational issue."""
         result = classify_review_row(
             _row(
                 email="alice@some-b2b.com",
@@ -195,7 +198,7 @@ class TestLowRisk:
                 deliverability_probability=0.85,
             ),
         )
-        assert result == REVIEW_ACTION_LOW_RISK
+        assert result == REVIEW_ACTION_READY_PROBABLE
 
     def test_threshold_boundary_inclusive(self):
         result = classify_review_row(
@@ -211,6 +214,42 @@ class TestLowRisk:
             ),
         )
         assert result == REVIEW_ACTION_HIGH_RISK
+
+
+class TestReadyProbable:
+    """V2.10.11 — Tier 2 split between low_risk and ready_probable."""
+
+    def test_ready_probable_threshold_inclusive(self):
+        result = classify_review_row(
+            _row(
+                deliverability_probability=READY_PROBABLE_PROBABILITY_THRESHOLD,
+            ),
+        )
+        assert result == REVIEW_ACTION_READY_PROBABLE
+
+    def test_just_below_ready_probable_is_low_risk(self):
+        result = classify_review_row(
+            _row(
+                deliverability_probability=
+                    READY_PROBABLE_PROBABILITY_THRESHOLD - 0.01,
+            ),
+        )
+        assert result == REVIEW_ACTION_LOW_RISK
+
+    def test_ready_probable_is_second_pass_candidate(self):
+        assert is_second_pass_candidate(REVIEW_ACTION_READY_PROBABLE)
+
+    def test_catch_all_consumer_beats_ready_probable(self):
+        """A Yahoo row with probability 0.95 still routes to
+        catch_all_consumer — provider opaqueness wins over
+        probability."""
+        result = classify_review_row(
+            _row(
+                email="user@yahoo.com",
+                deliverability_probability=0.95,
+            ),
+        )
+        assert result == REVIEW_ACTION_CATCH_ALL_CONSUMER
 
 
 # ------------------------------------------------------------------ #
@@ -254,16 +293,18 @@ class TestCsvStringInputs:
         assert result == REVIEW_ACTION_CATCH_ALL_CONSUMER
 
     def test_string_false_catch_all_flag(self):
+        # V2.10.11 — 0.9 lands in ready_probable.
         result = classify_review_row(
             _row(catch_all_flag="False", deliverability_probability="0.9"),
         )
-        assert result == REVIEW_ACTION_LOW_RISK
+        assert result == REVIEW_ACTION_READY_PROBABLE
 
     def test_string_probability(self):
+        # V2.10.11 — 0.85 lands in ready_probable now.
         result = classify_review_row(
             _row(deliverability_probability="0.85"),
         )
-        assert result == REVIEW_ACTION_LOW_RISK
+        assert result == REVIEW_ACTION_READY_PROBABLE
 
 
 # ------------------------------------------------------------------ #
@@ -289,7 +330,8 @@ class TestSecondPassCandidate:
         assert not is_second_pass_candidate(REVIEW_ACTION_DO_NOT_SEND)
 
     def test_set_size(self):
-        assert len(SECOND_PASS_CANDIDATE_ACTIONS) == 2
+        # V2.10.11 added review_ready_probable to the second-pass set.
+        assert len(SECOND_PASS_CANDIDATE_ACTIONS) == 3
 
 
 # ------------------------------------------------------------------ #
@@ -311,3 +353,45 @@ class TestProviderTable:
         """Gmail is not a catch-all provider — must not be in the
         fallback table or every Gmail review row would route here."""
         assert "gmail.com" not in CONSUMER_CATCH_ALL_PROVIDERS
+
+
+class TestProviderFamilyColumn:
+    """V2.10.11 — the canonical ``provider_family`` column from
+    DomainIntelligenceStage takes precedence over the local fallback
+    table. AOL / Verizon / AT&T-Yahoo backbone all map to
+    ``yahoo_family``."""
+
+    def test_yahoo_family_routes_to_catch_all_consumer(self):
+        result = classify_review_row(
+            _row(
+                email="user@some-corporate.com",
+                provider_family="yahoo_family",
+                deliverability_probability=0.95,
+            ),
+        )
+        assert result == REVIEW_ACTION_CATCH_ALL_CONSUMER
+
+    def test_corporate_unknown_does_not_force_catch_all(self):
+        """``corporate_unknown`` is the default for B2B / regional /
+        govt domains — they should NOT be treated as catch-all
+        consumer just because the family classifier gave up."""
+        result = classify_review_row(
+            _row(
+                email="alice@some-corp.com",
+                provider_family="corporate_unknown",
+                deliverability_probability=0.85,
+            ),
+        )
+        assert result == REVIEW_ACTION_READY_PROBABLE
+
+    def test_provider_family_overrides_email_domain_when_set(self):
+        """If the column says yahoo_family, the row routes there
+        even if the email domain looks corporate (post-typo
+        correction, MX-derived family inference, etc.)."""
+        result = classify_review_row(
+            _row(
+                email="user@looks-corporate.example",
+                provider_family="yahoo_family",
+            ),
+        )
+        assert result == REVIEW_ACTION_CATCH_ALL_CONSUMER

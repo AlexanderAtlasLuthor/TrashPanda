@@ -59,6 +59,7 @@ from typing import Any, Mapping
 # --------------------------------------------------------------------------- #
 
 
+REVIEW_ACTION_READY_PROBABLE: str = "ready_probable"
 REVIEW_ACTION_LOW_RISK: str = "low_risk"
 REVIEW_ACTION_CATCH_ALL_CONSUMER: str = "catch_all_consumer"
 REVIEW_ACTION_TIMEOUT_RETRY: str = "timeout_retry"
@@ -66,6 +67,7 @@ REVIEW_ACTION_HIGH_RISK: str = "high_risk"
 REVIEW_ACTION_DO_NOT_SEND: str = "do_not_send"
 
 REVIEW_ACTIONS: tuple[str, ...] = (
+    REVIEW_ACTION_READY_PROBABLE,
     REVIEW_ACTION_LOW_RISK,
     REVIEW_ACTION_CATCH_ALL_CONSUMER,
     REVIEW_ACTION_TIMEOUT_RETRY,
@@ -78,7 +80,11 @@ REVIEW_ACTIONS: tuple[str, ...] = (
 # where re-verification is expected to flip a meaningful share to
 # confirmed-safe. Catch-all-consumer is excluded on purpose: even a
 # perfect retry cannot disambiguate a Yahoo silent-accept.
+# ``ready_probable`` is included because the rolled-up rescue file
+# semantically means "rows where another pass should confirm"; an
+# ``ready_probable`` row is one that's *almost* confirmed already.
 SECOND_PASS_CANDIDATE_ACTIONS: frozenset[str] = frozenset({
+    REVIEW_ACTION_READY_PROBABLE,
     REVIEW_ACTION_LOW_RISK,
     REVIEW_ACTION_TIMEOUT_RETRY,
 })
@@ -196,6 +202,16 @@ _DO_NOT_SEND_REASON_KEYWORDS: tuple[str, ...] = (
 LOW_RISK_PROBABILITY_THRESHOLD: float = 0.55
 
 
+# Probability threshold for the V2.10.11 Tier-2 ``ready_probable``
+# split. A row that lands on the low_risk branch of the classifier
+# AND has ``probability >= READY_PROBABLE_PROBABILITY_THRESHOLD`` is
+# upgraded to ``ready_probable``. The cut is deliberately above the
+# engine's auto_approve threshold's natural neighborhood so we don't
+# over-promise: a row with probability=0.71 is a strong second-pass
+# candidate, but not yet "confirmed safe-only".
+READY_PROBABLE_PROBABILITY_THRESHOLD: float = 0.70
+
+
 # --------------------------------------------------------------------------- #
 # Coercion helpers                                                            #
 # --------------------------------------------------------------------------- #
@@ -259,6 +275,9 @@ def classify_review_row(
     row: Mapping[str, Any],
     *,
     low_risk_probability_threshold: float = LOW_RISK_PROBABILITY_THRESHOLD,
+    ready_probable_probability_threshold: float = (
+        READY_PROBABLE_PROBABILITY_THRESHOLD
+    ),
     consumer_catch_all_providers: frozenset[str] = CONSUMER_CATCH_ALL_PROVIDERS,
 ) -> str:
     """Map a single review row onto a review-action category.
@@ -293,6 +312,11 @@ def classify_review_row(
     probability = _coerce_float(row.get("deliverability_probability"))
     email = _coerce_str(row.get("email"))
     domain = _domain_for(email)
+    # V2.10.11 — prefer the canonical ``provider_family`` column when
+    # the DomainIntelligenceStage populated it. Falls back to the
+    # local ``CONSUMER_CATCH_ALL_PROVIDERS`` table for runs where the
+    # stage didn't fire.
+    provider_family = _coerce_str(row.get("provider_family")).lower()
 
     # 1. Strong negative evidence — the row carries a domain-level or
     #    structural signal that no retry will fix.
@@ -303,8 +327,11 @@ def classify_review_row(
             return REVIEW_ACTION_DO_NOT_SEND
 
     # 2. Catch-all consumer. The catch_all_flag from the SMTP probe is
-    #    authoritative when present; the provider table is a fallback
-    #    for rows where catch-all detection didn't run.
+    #    authoritative when present; the provider_family column from
+    #    DomainIntelligenceStage is the next-most-reliable signal for
+    #    Yahoo-backbone domains (AOL / Verizon / AT&T / SBCGlobal /
+    #    Bellsouth / Pacbell). The local CONSUMER_CATCH_ALL_PROVIDERS
+    #    table stays as the last-resort fallback.
     if catch_all_flag:
         return REVIEW_ACTION_CATCH_ALL_CONSUMER
     if catch_all_status in {"confirmed_catch_all", "possible_catch_all"}:
@@ -312,6 +339,8 @@ def classify_review_row(
     if decision_reason in _CATCH_ALL_DECISION_REASONS:
         return REVIEW_ACTION_CATCH_ALL_CONSUMER
     if smtp_status == "catch_all_possible":
+        return REVIEW_ACTION_CATCH_ALL_CONSUMER
+    if provider_family == "yahoo_family":
         return REVIEW_ACTION_CATCH_ALL_CONSUMER
     if domain and domain in consumer_catch_all_providers:
         return REVIEW_ACTION_CATCH_ALL_CONSUMER
@@ -324,8 +353,18 @@ def classify_review_row(
 
     # 4. Probability rescue — high-confidence rows that SMTP simply
     #    didn't confirm (cold-start B2B is the dominant case here).
-    if probability is not None and probability >= low_risk_probability_threshold:
-        return REVIEW_ACTION_LOW_RISK
+    #    V2.10.11 splits this branch into two tiers based on
+    #    probability so the UI can render "almost-ready" separately
+    #    from "rescatable":
+    #
+    #      * probability >= 0.70 → ``ready_probable`` (Tier 2)
+    #      * 0.55 <= probability < 0.70 → ``low_risk`` (Tier-2
+    #        secondary, still rescatable)
+    if probability is not None:
+        if probability >= ready_probable_probability_threshold:
+            return REVIEW_ACTION_READY_PROBABLE
+        if probability >= low_risk_probability_threshold:
+            return REVIEW_ACTION_LOW_RISK
 
     # 5. Fallback — low probability or unparseable.
     return REVIEW_ACTION_HIGH_RISK
@@ -339,11 +378,13 @@ def is_second_pass_candidate(action: str) -> bool:
 __all__ = [
     "CONSUMER_CATCH_ALL_PROVIDERS",
     "LOW_RISK_PROBABILITY_THRESHOLD",
+    "READY_PROBABLE_PROBABILITY_THRESHOLD",
     "REVIEW_ACTIONS",
     "REVIEW_ACTION_CATCH_ALL_CONSUMER",
     "REVIEW_ACTION_DO_NOT_SEND",
     "REVIEW_ACTION_HIGH_RISK",
     "REVIEW_ACTION_LOW_RISK",
+    "REVIEW_ACTION_READY_PROBABLE",
     "REVIEW_ACTION_TIMEOUT_RETRY",
     "SECOND_PASS_CANDIDATE_ACTIONS",
     "classify_review_row",

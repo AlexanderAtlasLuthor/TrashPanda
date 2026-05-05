@@ -52,7 +52,10 @@ from typing import Any
 
 import pandas as pd
 
-from ...smtp_runtime import get_or_create_smtp_runtime_summary
+from ...smtp_runtime import (
+    compute_retry_backoff_seconds,
+    get_or_create_smtp_runtime_summary,
+)
 from ...validation_v2.smtp_probe import (
     SMTPResult,
     probe_email_dry_run,
@@ -111,6 +114,12 @@ SMTP_VERIFICATION_OUTPUT_COLUMNS: tuple[str, ...] = (
     "smtp_confirmed_valid",
     "smtp_suspicious",
     "smtp_error",
+    # V2.10.11 — preserve the SMTP server's exact response text on
+    # every probed row, not just on errors. ``smtp_error`` only
+    # populates for {blocked, timeout, error, temp_fail}; auditing
+    # 4xx greylisting / 5xx policy rejections needs the full message
+    # regardless of status. Empty string for non-probed rows.
+    "smtp_response_message",
 )
 
 
@@ -417,6 +426,53 @@ def _rate_limit_per_second(context: PipelineContext) -> float:
         return 0.0
 
 
+# V2.10.11 — in-process retry knobs. ``retry_temp_failures`` and
+# ``max_retries`` already live on ``SMTPProbeConfig`` but were never
+# consumed by the stage; reading them here finally activates the
+# `compute_retry_backoff_seconds` plumbing that ``app.smtp_runtime``
+# documents but didn't drive.
+def _retry_temp_failures(context: PipelineContext) -> bool:
+    cfg = getattr(context, "config", None)
+    smtp_cfg = getattr(cfg, "smtp_probe", None) if cfg is not None else None
+    if smtp_cfg is None:
+        return False
+    return bool(getattr(smtp_cfg, "retry_temp_failures", False))
+
+
+# Hard upper bound on in-process retries — keeps the chunk worker
+# from stalling on a flaky MX. ``max_retries`` from config is
+# clamped to this value silently. P2's persistent retry queue
+# handles the long-tail (15-30min greylisting) that exceeds this
+# in-process budget.
+_MAX_IN_PROCESS_RETRIES: int = 3
+
+
+def _max_retries_in_process(context: PipelineContext) -> int:
+    cfg = getattr(context, "config", None)
+    smtp_cfg = getattr(cfg, "smtp_probe", None) if cfg is not None else None
+    if smtp_cfg is None:
+        return 0
+    try:
+        n = int(getattr(smtp_cfg, "max_retries", 0))
+    except (TypeError, ValueError):
+        return 0
+    if n <= 0:
+        return 0
+    return min(n, _MAX_IN_PROCESS_RETRIES)
+
+
+# Statuses that signal an operationally-transient failure where a
+# short backoff + retry on the same connection sequence is worth
+# trying. ``error`` is intentionally excluded because it covers
+# the dry-run probe and probe exceptions where retry would just
+# re-trigger the same condition.
+_IN_PROCESS_RETRY_STATUSES: frozenset[str] = frozenset({
+    SMTP_STATUS_TEMP_FAIL,
+    SMTP_STATUS_TIMEOUT,
+    SMTP_STATUS_BLOCKED,
+})
+
+
 # --------------------------------------------------------------------------- #
 # Stage                                                                       #
 # --------------------------------------------------------------------------- #
@@ -482,6 +538,8 @@ class SMTPVerificationStage(Stage):
         max_candidates = _max_candidates_per_run(context)
         rate_limit = _rate_limit_per_second(context)
         min_interval = 1.0 / rate_limit if rate_limit > 0 else 0.0
+        retry_enabled = _retry_temp_failures(context)
+        max_retries = _max_retries_in_process(context) if retry_enabled else 0
 
         frame = payload.frame
         rows = frame.to_dict(orient="records")
@@ -530,19 +588,45 @@ class SMTPVerificationStage(Stage):
                 if elapsed < min_interval:
                     self._sleep_fn(min_interval - elapsed)
 
-            try:
-                result = probe_fn(email, **probe_kwargs)
-            except Exception as exc:  # pragma: no cover - defensive guard
-                _LOGGER.debug("smtp probe exception for %s: %s", email, exc)
-                result = SMTPResult(
-                    success=False,
-                    response_code=None,
-                    response_message=f"probe_exception: {exc}"[:200],
-                    is_catch_all_like=False,
-                    inconclusive=True,
-                )
+            def _do_probe() -> "SMTPResult":
+                try:
+                    return probe_fn(email, **probe_kwargs)
+                except Exception as exc:  # pragma: no cover - defensive
+                    _LOGGER.debug("smtp probe exception for %s: %s", email, exc)
+                    return SMTPResult(
+                        success=False,
+                        response_code=None,
+                        response_message=f"probe_exception: {exc}"[:200],
+                        is_catch_all_like=False,
+                        inconclusive=True,
+                    )
 
+            result = _do_probe()
             last_probe_at = self._clock_fn()
+
+            # V2.10.11 — in-process retry of operationally transient
+            # outcomes (4xx temp_fail / timeout / blocked). 5xx hard
+            # rejections and the dry-run "error" status are NOT
+            # retried — they're either terminal or wouldn't change
+            # behaviour. Each retry respects the per-run rate limit
+            # and the configured backoff so a stampede of 4xx
+            # responses can't drown the destination MX.
+            if retry_enabled and max_retries > 0:
+                attempt = 0
+                while attempt < max_retries:
+                    status = normalize_smtp_status(result)
+                    if status not in _IN_PROCESS_RETRY_STATUSES:
+                        break
+                    attempt += 1
+                    backoff = compute_retry_backoff_seconds(attempt)
+                    if min_interval > 0:
+                        backoff = max(backoff, min_interval)
+                    if backoff > 0:
+                        self._sleep_fn(backoff)
+                    runtime_summary.smtp_retries_executed += 1
+                    result = _do_probe()
+                    last_probe_at = self._clock_fn()
+
             cache.set(email_normalized, result)
             runtime_summary.record_probe_attempt(normalize_smtp_status(result))
             _emit_from_result(out, result, was_candidate=True)
@@ -574,6 +658,7 @@ def _emit_not_tested(
     out["smtp_confirmed_valid"].append(False)
     out["smtp_suspicious"].append(False)
     out["smtp_error"].append(None)
+    out["smtp_response_message"].append("")
 
 
 def _emit_from_result(
@@ -590,7 +675,9 @@ def _emit_from_result(
     out["smtp_response_code"].append(
         int(result.response_code) if result.response_code is not None else None
     )
-    out["smtp_response_type"].append(_response_type_for(result.response_code))
+    out["smtp_response_type"].append(
+        _response_type_for(result.response_code, result.response_message)
+    )
     out["smtp_confidence"].append(round(_confidence_from_status(status), 3))
     out["smtp_confirmed_valid"].append(status == SMTP_STATUS_VALID)
     out["smtp_suspicious"].append(
@@ -604,16 +691,56 @@ def _emit_from_result(
             SMTP_STATUS_TEMP_FAIL,
         ) else None
     )
+    # V2.10.11 — preserve the response message on every probed row so
+    # 4xx greylisting / 5xx policy rejections / blocked-keyword
+    # detection are auditable downstream without re-walking
+    # ``smtp_error`` (which is None for valid / catch_all_possible).
+    out["smtp_response_message"].append(result.response_message or "")
 
 
-def _response_type_for(code: int | None) -> str | None:
+def _response_type_for(
+    code: int | None,
+    message: str | None = None,
+) -> str | None:
+    """Return a coarse class for an SMTP response.
+
+    V2.10.11 expanded the vocabulary so the retry queue / classifier
+    can filter without re-parsing:
+
+    * ``success``   — 2xx (probably 250 OK).
+    * ``transient`` — 4xx — retry-eligible (greylist, rate limit).
+    * ``policy``    — 5xx where the message names a known
+                      policy/refusal keyword. NOT a mailbox failure;
+                      retry from a different egress may help.
+    * ``permanent`` — 5xx mailbox rejection (no policy keyword).
+                      Hard fail; no retry.
+    * ``timeout``   — no code + timeout-shaped message.
+    * ``network``   — no code + no message of any kind.
+
+    Older callers passing only ``code`` see the same values for 2xx /
+    4xx as before (``success`` / ``transient``), so the existing
+    contract — including the V2.2 test that pins ``smtp_response_type
+    == "success"`` for 2xx — remains intact.
+    """
+
+    msg_lower = (message or "").lower()
+
     if code is None:
-        return None
+        if not msg_lower:
+            return None
+        if any(k in msg_lower for k in _TIMEOUT_KEYWORDS):
+            return "timeout"
+        if any(k in msg_lower for k in _BLOCKED_KEYWORDS):
+            return "policy"
+        return "network"
+
     if 200 <= code < 300:
         return "success"
     if 400 <= code < 500:
         return "transient"
     if 500 <= code < 600:
+        if any(k in msg_lower for k in _BLOCKED_KEYWORDS):
+            return "policy"
         return "permanent"
     return "other"
 
@@ -636,6 +763,7 @@ def _write_not_tested(frame: pd.DataFrame) -> pd.DataFrame:
     out["smtp_confirmed_valid"] = [False] * n
     out["smtp_suspicious"] = [False] * n
     out["smtp_error"] = [None] * n
+    out["smtp_response_message"] = [""] * n
     return out
 
 

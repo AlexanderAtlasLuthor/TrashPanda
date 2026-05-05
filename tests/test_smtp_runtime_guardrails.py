@@ -220,9 +220,16 @@ def test_result_statuses_are_counted_with_inconclusive_rollup() -> None:
         SMTP_STATUS_CATCH_ALL_POSSIBLE,
         SMTP_STATUS_ERROR,
     ]
+    # V2.10.11 — retry_temp_failures=True is the default but it would
+    # consume the sequence probe twice for each transient outcome,
+    # breaking the 1:1 row→status mapping this test relies on. Retry
+    # behaviour is exercised by ``TestSMTPVerificationRetry`` in
+    # ``test_v2_smtp_verification.py``; here we want the raw counter
+    # contract.
     _out, _ctx, summary = _run_smtp_stage(
         _candidate_frame(len(statuses)),
         probe=_sequence_probe(statuses),
+        config=_config(retry_temp_failures=False, max_retries=0),
     )
 
     assert summary.smtp_valid_count == 1

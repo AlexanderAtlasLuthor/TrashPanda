@@ -153,6 +153,7 @@ _REVIEW_BREAKDOWN_FILES: dict[str, str] = {
 # alongside the per-action counts. Order mirrors the UI's render
 # order — rescatability descending.
 _REVIEW_ACTION_BREAKDOWN_FILES: dict[str, str] = {
+    "review_ready_probable": "review_ready_probable.xlsx",
     "review_low_risk": "review_low_risk.xlsx",
     "review_timeout_retry": "review_timeout_retry.xlsx",
     "review_catch_all_consumer": "review_catch_all_consumer.xlsx",

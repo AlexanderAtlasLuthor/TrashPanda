@@ -84,6 +84,15 @@ export const RESULTS_COPY = {
    * rolled-up file (low_risk + timeout_retry).
    */
   reviewActions: {
+    review_ready_probable: {
+      title: "Tier 2 · Almost ready (probability ≥ 0.70)",
+      hint:
+        "Strong signals across the board — high probability, " +
+        "valid syntax / MX, clean catch-all status. Just below the " +
+        "engine’s auto_approve threshold. Top second-pass " +
+        "candidate.",
+      tone: "ok" as const,
+    },
     review_low_risk: {
       title: "Low-risk · second-pass candidate",
       hint:
