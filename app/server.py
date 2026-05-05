@@ -234,6 +234,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# V2.10.0.1 — Operator-only HTTP routes under /api/operator. These wrap
+# V2.9 boundary helpers (preflight, client package, review gate, feedback)
+# and are NOT part of the client delivery contract. See
+# app/operator_routes.py for the audience policy.
+from .operator_routes import router as _operator_router  # noqa: E402
+
+app.include_router(_operator_router)
+
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:
