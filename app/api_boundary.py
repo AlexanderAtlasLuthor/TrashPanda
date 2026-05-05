@@ -162,6 +162,10 @@ class ReportFiles:
     smtp_runtime_summary: Path | None = None
     # V2.9.4 - operator-only artifact consistency metadata.
     artifact_consistency: Path | None = None
+    # V2.9.7 - operator review gate decision summary.
+    operator_review_summary: Path | None = None
+    # V2.9.8 - operator-only feedback bridge readiness preview.
+    feedback_domain_intel_preview: Path | None = None
 
 
 @dataclass(slots=True)
@@ -258,6 +262,10 @@ _REPORT_NAMES: dict[str, str] = {
     "smtp_runtime_summary": "smtp_runtime_summary.json",
     # V2.9.4 - operator-only artifact consistency metadata.
     "artifact_consistency": "artifact_consistency.json",
+    # V2.9.7 - operator review gate decision summary.
+    "operator_review_summary": "operator_review_summary.json",
+    # V2.9.8 - operator-only feedback bridge readiness preview.
+    "feedback_domain_intel_preview": "feedback_domain_intel_preview.json",
 }
 
 
@@ -944,6 +952,68 @@ def job_result_to_dict(result: JobResult) -> dict[str, Any]:
     return json.loads(json.dumps(raw, default=_json_default))
 
 
+def build_client_package_for_job(
+    run_dir: str | Path,
+    output_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """V2.9.6 — boundary entry point for the client delivery package.
+
+    Wraps :func:`app.client_package_builder.build_client_delivery_package`
+    and returns a JSON-friendly dict (paths as strings, no dataclasses).
+
+    Filtering is performed strictly through the V2.9.5 artifact
+    classification contract; no operator-only, technical-debug, or
+    internal artifact is included even if exposed by legacy routes.
+    """
+    from .client_package_builder import build_client_delivery_package
+
+    result = build_client_delivery_package(run_dir, output_dir=output_dir)
+    return result.to_dict()
+
+
+def run_operator_review_for_job(
+    run_dir: str | Path,
+    package_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """V2.9.7 — boundary entry point for the operator review gate.
+
+    Wraps :func:`app.operator_review_gate.run_operator_review_gate` and
+    returns a JSON-friendly dict (paths as strings, no dataclasses).
+
+    The gate evaluates the V2.9.6 client package plus surrounding
+    consistency / SMTP / V2 metadata and writes
+    ``operator_review_summary.json`` into ``run_dir``.
+    """
+    from .operator_review_gate import run_operator_review_gate
+
+    result = run_operator_review_gate(run_dir, package_dir=package_dir)
+    return result.to_dict()
+
+
+def build_feedback_domain_intel_preview_for_job(
+    feedback_store_path: str | Path,
+    output_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """V2.9.8 — boundary entry point for the feedback bridge preview.
+
+    Wraps :func:`app.feedback_domain_intel_preview.build_feedback_domain_intel_preview`
+    and returns a JSON-friendly dict (paths as strings, no dataclasses).
+
+    The preview reads V2.7 ``BounceOutcomeStore`` aggregates and runs
+    each through :func:`bounce_aggregate_to_domain_intel`. It does not
+    mutate the store, the pipeline, or any V2 runtime state.
+    """
+    from .feedback_domain_intel_preview import (
+        build_feedback_domain_intel_preview,
+    )
+
+    result = build_feedback_domain_intel_preview(
+        feedback_store_path,
+        output_dir=output_dir,
+    )
+    return result.to_dict()
+
+
 def run_rollout_preflight(
     input_path: str | Path,
     *,
@@ -1083,10 +1153,13 @@ __all__ = [
     "JobSummary",
     "ReportFiles",
     "TechnicalCsvs",
+    "build_client_package_for_job",
+    "build_feedback_domain_intel_preview_for_job",
     "collect_job_artifacts",
     "ingest_bounce_feedback",
     "job_result_to_dict",
     "load_job_summary",
+    "run_operator_review_for_job",
     "run_rollout_preflight",
     "run_cleaning_job",
 ]

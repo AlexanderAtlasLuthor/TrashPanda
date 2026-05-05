@@ -1,0 +1,446 @@
+"""V2.9.6 — client delivery package builder tests."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+from app import client_package_builder
+from app.api_boundary import (
+    _CLIENT_OUTPUT_NAMES,
+    _REPORT_NAMES,
+    _TECHNICAL_CSV_NAMES,
+    build_client_package_for_job,
+    collect_job_artifacts,
+)
+from app.client_package_builder import (
+    ClientPackageFile,
+    ClientPackageResult,
+    build_client_delivery_package,
+)
+
+
+# --------------------------------------------------------------------------- #
+# Fixtures / helpers
+# --------------------------------------------------------------------------- #
+
+
+def _write_xlsx(path: Path, rows: int) -> None:
+    df = pd.DataFrame({"email": [f"user{i}@example.com" for i in range(rows)]})
+    df.to_excel(path, sheet_name="emails", index=False)
+
+
+def _write_summary_xlsx(path: Path) -> None:
+    totals = pd.DataFrame({"metric": ["total_input_rows"], "value": [10]})
+    with pd.ExcelWriter(path) as writer:
+        totals.to_excel(writer, sheet_name="totals", index=False)
+
+
+def _populate_run_dir(
+    run_dir: Path,
+    *,
+    include_approved_original: bool = True,
+    include_random: bool = False,
+) -> None:
+    """Create a realistic mix of artifacts in ``run_dir``."""
+    # client_safe XLSX
+    _write_xlsx(run_dir / "valid_emails.xlsx", rows=5)
+    _write_xlsx(run_dir / "review_emails.xlsx", rows=3)
+    _write_xlsx(run_dir / "invalid_or_bounce_risk.xlsx", rows=2)
+    _write_xlsx(run_dir / "duplicate_emails.xlsx", rows=1)
+    _write_xlsx(run_dir / "hard_fail_emails.xlsx", rows=1)
+    _write_summary_xlsx(run_dir / "summary_report.xlsx")
+    if include_approved_original:
+        _write_xlsx(run_dir / "approved_original_format.xlsx", rows=8)
+
+    # operator_only / technical_debug / internal_only — must be excluded
+    (run_dir / "v2_deliverability_summary.json").write_text("{}", encoding="utf-8")
+    (run_dir / "v2_reason_breakdown.csv").write_text("a,b\n", encoding="utf-8")
+    (run_dir / "v2_domain_risk_summary.csv").write_text("a,b\n", encoding="utf-8")
+    (run_dir / "v2_probability_distribution.csv").write_text("a,b\n", encoding="utf-8")
+    (run_dir / "smtp_runtime_summary.json").write_text("{}", encoding="utf-8")
+    (run_dir / "artifact_consistency.json").write_text("{}", encoding="utf-8")
+    (run_dir / "processing_report.json").write_text("{}", encoding="utf-8")
+    (run_dir / "processing_report.csv").write_text("a,b\n", encoding="utf-8")
+    (run_dir / "domain_summary.csv").write_text("a,b\n", encoding="utf-8")
+    (run_dir / "clean_high_confidence.csv").write_text("a,b\n", encoding="utf-8")
+    (run_dir / "review_medium_confidence.csv").write_text("a,b\n", encoding="utf-8")
+    (run_dir / "removed_invalid.csv").write_text("a,b\n", encoding="utf-8")
+    (run_dir / "removed_duplicates.csv").write_text("a,b\n", encoding="utf-8")
+    (run_dir / "removed_hard_fail.csv").write_text("a,b\n", encoding="utf-8")
+    (run_dir / "typo_corrections.csv").write_text("a,b\n", encoding="utf-8")
+    (run_dir / "duplicate_summary.csv").write_text("a,b\n", encoding="utf-8")
+    (run_dir / "staging.sqlite3").write_bytes(b"\x00\x01")
+    (run_dir / "pipeline.log").write_text("log\n", encoding="utf-8")
+    (run_dir / "logs").mkdir(exist_ok=True)
+    (run_dir / "logs" / "deep.log").write_text("deep\n", encoding="utf-8")
+
+    if include_random:
+        (run_dir / "random_debug_dump.csv").write_text("x,y\n", encoding="utf-8")
+
+
+_CLIENT_SAFE_FILENAMES: tuple[str, ...] = (
+    "valid_emails.xlsx",
+    "review_emails.xlsx",
+    "invalid_or_bounce_risk.xlsx",
+    "duplicate_emails.xlsx",
+    "hard_fail_emails.xlsx",
+    "summary_report.xlsx",
+    "approved_original_format.xlsx",
+)
+
+_NEVER_INCLUDED_FILENAMES: tuple[str, ...] = (
+    "v2_deliverability_summary.json",
+    "v2_reason_breakdown.csv",
+    "v2_domain_risk_summary.csv",
+    "v2_probability_distribution.csv",
+    "smtp_runtime_summary.json",
+    "artifact_consistency.json",
+    "processing_report.json",
+    "processing_report.csv",
+    "domain_summary.csv",
+    "clean_high_confidence.csv",
+    "review_medium_confidence.csv",
+    "removed_invalid.csv",
+    "removed_duplicates.csv",
+    "removed_hard_fail.csv",
+    "typo_corrections.csv",
+    "duplicate_summary.csv",
+    "staging.sqlite3",
+    "pipeline.log",
+)
+
+
+# --------------------------------------------------------------------------- #
+# Test 1 — Package includes only client-safe artifacts
+# --------------------------------------------------------------------------- #
+
+
+def test_package_includes_only_client_safe_artifacts(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir)
+
+    result = build_client_delivery_package(run_dir)
+
+    package_dir = result.package_dir
+    assert package_dir.is_dir()
+
+    # All client-safe files present (when source existed).
+    for name in _CLIENT_SAFE_FILENAMES:
+        assert (package_dir / name).is_file(), f"missing client-safe file: {name}"
+
+    # No non-client-safe files leaked.
+    for name in _NEVER_INCLUDED_FILENAMES:
+        assert not (package_dir / name).exists(), (
+            f"non-client-safe file leaked into package: {name}"
+        )
+
+    # Subdirectories from run_dir not copied.
+    assert not (package_dir / "logs").exists()
+
+
+# --------------------------------------------------------------------------- #
+# Test 2 — Approved original absent warning
+# --------------------------------------------------------------------------- #
+
+
+def test_approved_original_absent_warns_but_succeeds(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir, include_approved_original=False)
+
+    result = build_client_delivery_package(run_dir)
+
+    assert result.package_dir.is_dir()
+    assert not (result.package_dir / "approved_original_format.xlsx").exists()
+    codes = {w.code for w in result.warnings}
+    assert "approved_original_format_absent" in codes
+    # Other client-safe files still made it into the package.
+    assert (result.package_dir / "valid_emails.xlsx").is_file()
+
+
+# --------------------------------------------------------------------------- #
+# Test 3 — Manifest is written
+# --------------------------------------------------------------------------- #
+
+
+def test_manifest_is_written_with_required_fields(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir)
+
+    result = build_client_delivery_package(run_dir)
+
+    manifest_path = result.manifest_path
+    assert manifest_path.is_file()
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    required = {
+        "report_version",
+        "generated_at",
+        "source_run_dir",
+        "package_dir",
+        "files_included",
+        "files_excluded",
+        "warnings",
+        "safe_count",
+        "review_count",
+        "rejected_count",
+    }
+    missing = required - set(payload.keys())
+    assert not missing, f"manifest missing fields: {missing}"
+    assert payload["report_version"] == "v2.9.6"
+    assert isinstance(payload["files_included"], list)
+    assert isinstance(payload["files_excluded"], list)
+    assert isinstance(payload["warnings"], list)
+
+
+# --------------------------------------------------------------------------- #
+# Test 4 — Manifest excludes non-client-safe artifacts
+# --------------------------------------------------------------------------- #
+
+
+def test_manifest_excludes_non_client_safe(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir)
+
+    result = build_client_delivery_package(run_dir)
+    excluded_filenames = {item["filename"] for item in result.files_excluded}
+
+    # Sample of expected exclusions across audiences.
+    expected_subset = {
+        "v2_deliverability_summary.json",
+        "smtp_runtime_summary.json",
+        "artifact_consistency.json",
+        "processing_report.json",
+        "domain_summary.csv",
+        "clean_high_confidence.csv",
+        "removed_invalid.csv",
+        "typo_corrections.csv",
+        "staging.sqlite3",
+    }
+    assert expected_subset.issubset(excluded_filenames), (
+        f"missing exclusions: {expected_subset - excluded_filenames}"
+    )
+
+    # Every excluded entry has reason=not_client_safe.
+    for item in result.files_excluded:
+        assert item["reason"] == "not_client_safe", item
+
+
+# --------------------------------------------------------------------------- #
+# Test 5 — Counts extracted
+# --------------------------------------------------------------------------- #
+
+
+def test_counts_extracted_from_xlsx(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir)
+
+    result = build_client_delivery_package(run_dir)
+
+    # Matches the rows we wrote in _populate_run_dir.
+    assert result.safe_count == 5
+    assert result.review_count == 3
+    assert result.rejected_count == 2
+
+
+# --------------------------------------------------------------------------- #
+# Test 6 — Count extraction failure does not crash
+# --------------------------------------------------------------------------- #
+
+
+def test_corrupt_xlsx_count_unavailable_warning(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir)
+    # Corrupt valid_emails.xlsx so pandas cannot read it.
+    (run_dir / "valid_emails.xlsx").write_bytes(b"this is not an xlsx file")
+
+    result = build_client_delivery_package(run_dir)
+
+    assert result.safe_count is None
+    assert result.review_count == 3  # other counts still work
+    assert result.rejected_count == 2
+    codes = [w.code for w in result.warnings]
+    assert "count_unavailable" in codes
+
+
+# --------------------------------------------------------------------------- #
+# Test 7 — Unknown artifact not included
+# --------------------------------------------------------------------------- #
+
+
+def test_unknown_artifact_not_included_and_marked_internal(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir, include_random=True)
+
+    result = build_client_delivery_package(run_dir)
+
+    package_dir = result.package_dir
+    assert not (package_dir / "random_debug_dump.csv").exists()
+
+    excluded_for_random = [
+        item for item in result.files_excluded
+        if item["filename"] == "random_debug_dump.csv"
+    ]
+    assert len(excluded_for_random) == 1
+    assert excluded_for_random[0]["audience"] == "internal_only"
+    assert excluded_for_random[0]["reason"] == "not_client_safe"
+
+
+# --------------------------------------------------------------------------- #
+# Test 8 — Builder uses artifact contract, not _PUBLIC_REPORT_KEYS
+# --------------------------------------------------------------------------- #
+
+
+def test_builder_uses_artifact_contract(monkeypatch, tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir)
+
+    # Patch is_client_safe_artifact in the builder to refuse everything.
+    # If the builder uses the contract, nothing gets copied into the package.
+    monkeypatch.setattr(
+        client_package_builder,
+        "is_client_safe_artifact",
+        lambda key_or_filename: False,
+    )
+
+    result = build_client_delivery_package(run_dir)
+
+    assert result.files_included == ()
+    # Only the manifest itself should sit in the package directory.
+    actual_files = [p.name for p in result.package_dir.iterdir() if p.is_file()]
+    assert actual_files == ["client_package_manifest.json"]
+
+
+def test_builder_does_not_import_public_report_keys() -> None:
+    """Source-level guard: the builder must not depend on the legacy
+    ``_PUBLIC_REPORT_KEYS`` list as a delivery filter."""
+    src = Path(client_package_builder.__file__).read_text(encoding="utf-8")
+    assert "_PUBLIC_REPORT_KEYS" not in src
+
+
+# --------------------------------------------------------------------------- #
+# Test 9 — Boundary callable returns JSON-friendly dict
+# --------------------------------------------------------------------------- #
+
+
+def test_boundary_returns_json_friendly_dict(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir)
+
+    payload = build_client_package_for_job(run_dir)
+
+    assert isinstance(payload, dict)
+    # Must round-trip through json with no custom encoder.
+    serialised = json.dumps(payload)
+    reloaded = json.loads(serialised)
+    assert reloaded["report_version"] == "v2.9.6"
+    # No dataclass leakage: every nested object is a primitive.
+    for f in reloaded["files_included"]:
+        assert isinstance(f["package_path"], str)
+        assert isinstance(f["source_path"], str)
+
+
+# --------------------------------------------------------------------------- #
+# Test 10 — Existing artifact discovery unaffected
+# --------------------------------------------------------------------------- #
+
+
+def test_collect_job_artifacts_still_works(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir)
+
+    artifacts = collect_job_artifacts(run_dir)
+    assert artifacts.run_dir == run_dir
+    assert artifacts.client_outputs.valid_emails == run_dir / "valid_emails.xlsx"
+    assert (
+        artifacts.reports.smtp_runtime_summary
+        == run_dir / "smtp_runtime_summary.json"
+    )
+
+    # Discoverable artifact name maps unchanged.
+    assert isinstance(_TECHNICAL_CSV_NAMES, dict)
+    assert isinstance(_CLIENT_OUTPUT_NAMES, dict)
+    assert isinstance(_REPORT_NAMES, dict)
+
+
+# --------------------------------------------------------------------------- #
+# Test 11 — No live network
+# --------------------------------------------------------------------------- #
+
+
+def test_no_network_imports_in_builder() -> None:
+    src = Path(client_package_builder.__file__).read_text(encoding="utf-8")
+    forbidden_tokens = (
+        "import socket",
+        "from socket",
+        "import smtplib",
+        "from smtplib",
+        "import urllib.request",
+        "from urllib.request",
+        "import requests",
+        "from requests",
+        "import http.client",
+        "from http.client",
+    )
+    for token in forbidden_tokens:
+        assert token not in src, f"builder must not contain {token!r}"
+
+
+# --------------------------------------------------------------------------- #
+# Result-object sanity
+# --------------------------------------------------------------------------- #
+
+
+def test_result_object_shape(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir)
+
+    result = build_client_delivery_package(run_dir)
+
+    assert isinstance(result, ClientPackageResult)
+    assert all(isinstance(f, ClientPackageFile) for f in result.files_included)
+    assert isinstance(result.files_excluded, tuple)
+    assert isinstance(result.warnings, tuple)
+
+
+def test_custom_output_dir_honoured(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir)
+
+    custom = tmp_path / "deliveries" / "client_pkg"
+    result = build_client_delivery_package(run_dir, output_dir=custom)
+
+    assert result.package_dir == custom.resolve()
+    assert (custom / "valid_emails.xlsx").is_file()
+    assert (custom / "client_package_manifest.json").is_file()
+    # default subdir was not used.
+    assert not (run_dir / "client_delivery_package").exists()
+
+
+def test_package_idempotent_on_rerun(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _populate_run_dir(run_dir)
+
+    first = build_client_delivery_package(run_dir)
+    second = build_client_delivery_package(run_dir)
+
+    assert first.package_dir == second.package_dir
+    # Re-running does not duplicate or break files.
+    for f in second.files_included:
+        assert f.package_path.is_file()
