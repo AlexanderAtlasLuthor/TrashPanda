@@ -6,6 +6,68 @@
   margin-bottom: 28px;
 }
 
+/* ── Collapsed accordion mode ────────────────────────────────────── */
+.collapsed {
+  margin: 18px 0 28px 0;
+}
+
+.expandBtn {
+  appearance: none;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+  text-align: left;
+  background: transparent;
+  border: 1px dashed var(--stroke-soft);
+  border-radius: 6px;
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+  color: inherit;
+}
+.expandBtn:hover {
+  background: var(--surface-low);
+  border-color: var(--stroke-strong);
+}
+
+.expandLabel {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-mid);
+}
+
+.expandHint {
+  font-size: 11px;
+  color: var(--ink-low);
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.collapseBtn {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--stroke-soft);
+  border-radius: 4px;
+  color: var(--ink-mid);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.collapseBtn:hover {
+  border-color: var(--stroke-strong);
+  color: var(--ink-high);
+}
+
 .header {
   display: flex;
   justify-content: space-between;

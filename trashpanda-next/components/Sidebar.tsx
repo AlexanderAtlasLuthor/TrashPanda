@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import styles from "./Sidebar.module.css";
 
 interface NavLinkProps {
@@ -185,28 +186,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
           />
         </div>
 
-        <div className={styles.section}>
-          <div className={styles.sectionLabel}>// Operator</div>
-          <NavLink
-            href="/operator"
-            active={isOperator}
-            label="Operator Console"
-            icon={
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M12 2l9 4v6c0 5-3.8 8.6-9 10-5.2-1.4-9-5-9-10V6l9-4z" />
-                <path d="M9 12l2 2 4-4" />
-              </svg>
-            }
-          />
-        </div>
+        <AdvancedSection isOperator={isOperator} />
 
         <div className={styles.footer}>
           <span className={styles.statusDot}></span>Engine online
@@ -217,5 +197,63 @@ export function Sidebar({ open, onClose }: SidebarProps) {
         </div>
       </aside>
     </>
+  );
+}
+
+interface AdvancedSectionProps {
+  isOperator: boolean;
+}
+
+/**
+ * "Advanced" disclosure that hides the legacy operator console + the
+ * other power-user tools behind a single-click expander. The 90% case
+ * (upload → wait → Send to client) never has to look at this menu;
+ * the auditor / founder who needs the manifest can still find it.
+ *
+ * Auto-expands when we're already inside /operator so a refresh from
+ * a deep link doesn't appear to lose state.
+ */
+function AdvancedSection({ isOperator }: AdvancedSectionProps) {
+  const [open, setOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (isOperator) setOpen(true);
+  }, [isOperator]);
+
+  return (
+    <div className={styles.section}>
+      <button
+        type="button"
+        className={styles.sectionLabelButton}
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <span className={styles.sectionLabel}>// Advanced</span>
+        <span className={styles.disclose} aria-hidden>
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && (
+        <NavLink
+          href="/operator"
+          active={isOperator}
+          label="Operator Console"
+          icon={
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 2l9 4v6c0 5-3.8 8.6-9 10-5.2-1.4-9-5-9-10V6l9-4z" />
+              <path d="M9 12l2 2 4-4" />
+            </svg>
+          }
+        />
+      )}
+    </div>
   );
 }

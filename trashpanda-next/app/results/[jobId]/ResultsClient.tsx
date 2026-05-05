@@ -12,6 +12,8 @@ import {
   SecondaryMetrics,
 } from "@/components/MetricsCards";
 import { DownloadArtifacts } from "@/components/DownloadArtifacts";
+import { SendToClientButton } from "@/components/SendToClientButton";
+import { JobHelperBanner } from "@/components/JobHelperBanner";
 import { ExecutiveSummary } from "@/components/ExecutiveSummary";
 import { ClassificationBreakdown } from "@/components/ClassificationBreakdown";
 import { TypoCorrectionsPanel } from "@/components/TypoCorrectionsPanel";
@@ -224,6 +226,9 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
       {job.status === "failed" ? (
         <>
           <div className="fade-up">
+            <JobHelperBanner result={job} />
+          </div>
+          <div className="fade-up">
             <ErrorState error={job.error} jobId={jobId} />
           </div>
           <div className="fade-up">
@@ -237,6 +242,12 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
       /* ── COMPLETED ── */
       ) : job.status === "completed" ? (
         <>
+          <div className="fade-up">
+            <JobHelperBanner result={job} />
+          </div>
+          <div className="fade-up">
+            <SendToClientButton jobId={jobId} visible />
+          </div>
           <div className="fade-up">
             <ExecutiveSummary summary={job.summary} />
           </div>
@@ -268,6 +279,7 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
               jobId={jobId}
               artifacts={job.artifacts}
               inputFilename={job.input_filename}
+              expanded={false}
             />
           </div>
           <div className="fade-up">
@@ -285,6 +297,9 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
       /* ── QUEUED / RUNNING ── */
       ) : (
         <>
+          <div className="fade-up">
+            <JobHelperBanner result={job} />
+          </div>
           <div className="fade-up">
             <JobStatusPanel result={job} logLines={logLines} />
           </div>

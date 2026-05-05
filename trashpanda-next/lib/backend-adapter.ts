@@ -696,6 +696,72 @@ export async function adapterDownloadOperatorClientPackageSafeOnly(
   );
 }
 
+// ── "Send to client" — one-click bundle ─────────────────────────────────
+// Mirrors the wire-shape of GET /api/operator/jobs/{id}/client-bundle/summary.
+export interface ClientBundleSummary {
+  available: boolean;
+  ready_for_client: boolean;
+  delivery_mode: "full" | "safe_only_partial";
+  primary_filename: string | null;
+  download_filename: string | null;
+  safe_count: number;
+  review_count: number;
+  rejected_count: number;
+  issues: Array<{ severity: string; code: string; message: string }>;
+}
+
+export async function adapterGetClientBundleSummary(
+  jobId: string,
+): Promise<ClientBundleSummary> {
+  return operatorJson<ClientBundleSummary>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/client-bundle/summary`,
+  );
+}
+
+export async function adapterDownloadClientBundle(
+  jobId: string,
+): Promise<Response> {
+  if (!backendUrl) {
+    return new Response(
+      JSON.stringify({
+        error: "backend_not_configured",
+        message: "Backend API base URL is not configured.",
+        ready_for_client: false,
+      }),
+      { status: 501, headers: { "content-type": "application/json" } },
+    );
+  }
+  return fetch(
+    `${backendUrl}/api/operator/jobs/${encodeURIComponent(jobId)}/client-bundle/download`,
+    {
+      cache: "no-store",
+      headers: { ...operatorAuthHeaders() },
+    },
+  );
+}
+
+export async function adapterDownloadExtraStrict(
+  jobId: string,
+): Promise<Response> {
+  if (!backendUrl) {
+    return new Response(
+      JSON.stringify({
+        error: "backend_not_configured",
+        message: "Backend API base URL is not configured.",
+      }),
+      { status: 501, headers: { "content-type": "application/json" } },
+    );
+  }
+  return fetch(
+    `${backendUrl}/api/operator/jobs/${encodeURIComponent(jobId)}/extra-strict/download`,
+    {
+      cache: "no-store",
+      headers: { ...operatorAuthHeaders() },
+    },
+  );
+}
+
+
 export async function adapterRunOperatorReviewGate(
   jobId: string,
 ): Promise<OperatorReviewSummary> {

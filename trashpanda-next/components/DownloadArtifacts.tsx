@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import type { JobArtifacts } from "@/lib/types";
 import { CLIENT_OUTPUT_MANIFEST } from "@/lib/types";
 import { artifactDownloadUrl, artifactZipUrl, buildZipFilename } from "@/lib/api";
@@ -7,10 +10,21 @@ interface DownloadArtifactsProps {
   jobId: string;
   artifacts: JobArtifacts | null | undefined;
   inputFilename?: string | null;
+  /**
+   * When true (default) the panel renders the full grid of buttons
+   * that has shipped historically. When false the panel collapses
+   * into an accordion labelled "Show technical files (N)" so the
+   * operator's primary attention stays on the giant
+   * SendToClientButton.
+   */
+  expanded?: boolean;
 }
 
 // Preferred PRIMARY artifact, in order. The first one that the
-// backend actually produced becomes "USE THIS FIRST" in the UI.
+// backend actually produced is highlighted with the ★ ribbon. The
+// SendToClientButton uses the same preference list — keeping them
+// aligned avoids "the big button gives me file X but the small ones
+// say file Y is recommended".
 const PRIMARY_KEY_PREFERENCES: ReadonlyArray<string> = [
   "approved_original_format",
   "valid_emails",
@@ -25,7 +39,12 @@ function pickPrimaryKey(
   return null;
 }
 
-export function DownloadArtifacts({ jobId, artifacts, inputFilename }: DownloadArtifactsProps) {
+export function DownloadArtifacts({
+  jobId,
+  artifacts,
+  inputFilename,
+  expanded = true,
+}: DownloadArtifactsProps) {
   const clientOutputs = artifacts?.client_outputs ?? {};
   const technical = artifacts?.technical_csvs ?? {};
   const reports = artifacts?.reports ?? {};
@@ -41,13 +60,52 @@ export function DownloadArtifacts({ jobId, artifacts, inputFilename }: DownloadA
   ];
 
   const primaryKey = pickPrimaryKey(clientOutputs);
+  const totalFiles =
+    Object.values(clientOutputs).filter(Boolean).length + technicalEntries.length;
+
+  // Collapsed mode: keep the panel out of the way until the operator
+  // explicitly asks for the per-file breakdown. The giant
+  // SendToClientButton is the primary action; this is for the rare
+  // case when the customer asks for one of the supporting files.
+  const [showAll, setShowAll] = useState(false);
+  if (!expanded && !showAll) {
+    return (
+      <div className={styles.collapsed}>
+        <button
+          type="button"
+          className={styles.expandBtn}
+          onClick={() => setShowAll(true)}
+          aria-expanded="false"
+        >
+          <span className={styles.expandLabel}>
+            Show technical files ({totalFiles})
+          </span>
+          <span className={styles.expandHint}>
+            Per-bucket XLSXs · CSVs · processing report · summary JSON
+          </span>
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className={styles.panel}>
       <div className={styles.header}>
         <div className={styles.title}>DOWNLOADS</div>
-        <div className={styles.badge}>
-          {CLIENT_OUTPUT_MANIFEST.length} client outputs
+        <div className={styles.headerActions}>
+          <div className={styles.badge}>
+            {CLIENT_OUTPUT_MANIFEST.length} client outputs
+          </div>
+          {!expanded && showAll && (
+            <button
+              type="button"
+              className={styles.collapseBtn}
+              onClick={() => setShowAll(false)}
+              aria-expanded="true"
+            >
+              Hide
+            </button>
+          )}
         </div>
       </div>
 

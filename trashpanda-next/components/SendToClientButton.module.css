@@ -1,0 +1,225 @@
+.wrap {
+  margin: 28px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.loading {
+  margin: 28px 0;
+  padding: 18px 20px;
+  border: 1px dashed var(--stroke-soft);
+  border-radius: 6px;
+  color: var(--ink-low);
+  font-style: italic;
+  text-align: center;
+}
+
+.errorCard,
+.blockedCard {
+  margin: 28px 0;
+  padding: 16px 18px;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.errorCard {
+  border: 1px solid rgba(255, 200, 100, 0.4);
+  background: rgba(255, 200, 100, 0.06);
+}
+.errorTitle {
+  font-weight: 700;
+  color: #ffd28a;
+}
+.errorMessage {
+  color: var(--ink-mid);
+  font-size: 13px;
+}
+
+.blockedCard {
+  border: 1px solid rgba(255, 80, 80, 0.5);
+  background: rgba(255, 80, 80, 0.06);
+}
+.blockedTitle {
+  font-weight: 700;
+  color: #ff8080;
+}
+.blockedMessage {
+  color: var(--ink-mid);
+  font-size: 13px;
+}
+
+.partialBanner {
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 200, 100, 0.45);
+  background: rgba(255, 200, 100, 0.07);
+  border-radius: 6px;
+  color: #ffd28a;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* ── The big button ────────────────────────────────────────────────── */
+.button {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 18px;
+  padding: 22px 28px;
+  border-radius: 10px;
+  text-decoration: none;
+  color: inherit;
+  border: 2px solid var(--neon, #39ff14);
+  background:
+    linear-gradient(180deg, rgba(57, 255, 20, 0.12), rgba(57, 255, 20, 0.04));
+  box-shadow:
+    0 0 0 1px rgba(57, 255, 20, 0.25) inset,
+    0 8px 32px rgba(57, 255, 20, 0.18);
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease,
+    background 120ms ease;
+}
+.button:hover {
+  transform: translateY(-2px);
+  background:
+    linear-gradient(180deg, rgba(57, 255, 20, 0.22), rgba(57, 255, 20, 0.08));
+  box-shadow:
+    0 0 0 1px rgba(57, 255, 20, 0.45) inset,
+    0 12px 40px rgba(57, 255, 20, 0.30);
+}
+.button:active {
+  transform: translateY(0);
+}
+
+.buttonReady {
+  /* default neon styling above */
+}
+
+.buttonPartial {
+  border-color: rgba(255, 200, 100, 0.85);
+  background:
+    linear-gradient(180deg, rgba(255, 200, 100, 0.15), rgba(255, 200, 100, 0.04));
+  box-shadow:
+    0 0 0 1px rgba(255, 200, 100, 0.3) inset,
+    0 8px 32px rgba(255, 200, 100, 0.18);
+}
+.buttonPartial:hover {
+  background:
+    linear-gradient(180deg, rgba(255, 200, 100, 0.25), rgba(255, 200, 100, 0.08));
+}
+
+.buttonStar {
+  font-size: 28px;
+  color: var(--neon, #39ff14);
+  line-height: 1;
+  filter: drop-shadow(0 0 6px rgba(57, 255, 20, 0.6));
+}
+.buttonPartial .buttonStar {
+  color: #ffd28a;
+  filter: drop-shadow(0 0 6px rgba(255, 200, 100, 0.7));
+}
+
+.buttonMain {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.buttonHeadline {
+  font-family: var(--font-display);
+  font-size: 22px;
+  letter-spacing: 0.04em;
+  color: var(--ink-high);
+}
+
+.buttonSubline {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink-mid);
+  text-transform: uppercase;
+}
+
+.buttonArrow {
+  font-size: 28px;
+  line-height: 1;
+  color: var(--neon, #39ff14);
+}
+.buttonPartial .buttonArrow {
+  color: #ffd28a;
+}
+
+.tally {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-mid);
+}
+
+.tallyOk { color: var(--neon, #39ff14); }
+.tallyWarn { color: #ffd28a; }
+.tallyBad { color: #ff8080; }
+.tallyMuted { color: var(--ink-low); }
+.tallyDot { color: var(--ink-low); }
+
+@media (max-width: 600px) {
+  .button {
+    grid-template-columns: auto 1fr;
+    gap: 14px;
+    padding: 18px 20px;
+  }
+  .buttonArrow { display: none; }
+  .buttonHeadline { font-size: 18px; }
+}
+
+/* ── Secondary action: Extra Strict re-clean ───────────────────────── */
+.secondary {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.secondaryBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  border: 1px dashed var(--stroke-soft);
+  background: transparent;
+  color: var(--ink-mid);
+  text-decoration: none;
+  font-size: 12px;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.secondaryBtn:hover {
+  background: var(--surface-low);
+  border-color: var(--stroke-strong);
+  color: var(--ink-high);
+}
+
+.secondaryIcon {
+  font-size: 16px;
+  line-height: 1;
+  color: var(--ink-low);
+}
+
+.secondaryHeadline {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.secondarySubline {
+  display: block;
+  font-size: 11px;
+  color: var(--ink-low);
+}

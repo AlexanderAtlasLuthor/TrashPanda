@@ -1,0 +1,48 @@
+.banner {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--stroke-soft);
+  background: var(--surface-low);
+  font-size: 13px;
+  line-height: 1.45;
+  margin-bottom: 18px;
+}
+
+.icon {
+  font-size: 18px;
+  line-height: 1;
+  align-self: center;
+}
+
+.message {
+  color: var(--ink-mid);
+}
+
+/* ── Tone variants ─────────────────────────────────────────────────── */
+.info {
+  border-color: rgba(120, 180, 255, 0.4);
+  background: rgba(120, 180, 255, 0.05);
+}
+.info .icon { color: #99c8ff; }
+
+.ok {
+  border-color: rgba(57, 255, 20, 0.45);
+  background: rgba(57, 255, 20, 0.06);
+}
+.ok .icon { color: var(--neon, #39ff14); }
+.ok .message { color: var(--ink-high); }
+
+.warn {
+  border-color: rgba(255, 200, 100, 0.45);
+  background: rgba(255, 200, 100, 0.06);
+}
+.warn .icon { color: #ffd28a; }
+
+.danger {
+  border-color: rgba(255, 80, 80, 0.5);
+  background: rgba(255, 80, 80, 0.06);
+}
+.danger .icon { color: #ff8080; }
