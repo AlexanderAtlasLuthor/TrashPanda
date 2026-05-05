@@ -1,9 +1,25 @@
+import type { ReviewBreakdown } from "@/lib/api";
+import { RESULTS_COPY, type ReviewSubdivisionKey } from "@/lib/copy";
 import type { JobSummary } from "@/lib/types";
 import styles from "./ClassificationBreakdown.module.css";
 
 interface Props {
   summary: JobSummary | null | undefined;
+  reviewBreakdown?: ReviewBreakdown | null;
 }
+
+// V2.10.10 — render the review subdivisions in a stable order so a
+// row that disappears in a later run doesn't reshuffle the rest. The
+// ordering matches "rescatability" (most rescatable first → most
+// dangerous last) so the operator's eye lands on cold-start B2B and
+// drifts down to high-risk-domain.
+const REVIEW_SUBDIVISION_ORDER: readonly ReviewSubdivisionKey[] = [
+  "review_cold_start_b2b",
+  "review_smtp_inconclusive",
+  "review_medium_probability",
+  "review_catch_all",
+  "review_domain_high_risk",
+];
 
 type Tone = "ok" | "warn" | "bad";
 
@@ -90,8 +106,51 @@ function CategoryCard({ tone, title, count, sectionLabel, reasons }: CardProps) 
   );
 }
 
-export function ClassificationBreakdown({ summary }: Props) {
+export function ClassificationBreakdown({
+  summary,
+  reviewBreakdown,
+}: Props) {
   if (!summary) return null;
+
+  // V2.10.10 — when the bundle summary supplies per-decision_reason
+  // counts, render the real subdivision instead of the legacy
+  // "common reasons" placeholder list. Subdivisions with zero rows
+  // are dropped entirely so the card mirrors the file the operator
+  // would actually find in the package.
+  const breakdownReasons: ReasonItem[] = [];
+  if (reviewBreakdown) {
+    for (const key of REVIEW_SUBDIVISION_ORDER) {
+      const count = reviewBreakdown[key];
+      if (typeof count !== "number" || count <= 0) continue;
+      const copy = RESULTS_COPY.reviewSubdivisions[key];
+      breakdownReasons.push({
+        label: copy.title,
+        detail: copy.hint,
+        count,
+      });
+    }
+  }
+
+  // Fallback to the legacy reason list when no breakdown is available
+  // (older runs, bundle summary not yet built).
+  const reviewReasons =
+    breakdownReasons.length > 0
+      ? breakdownReasons
+      : [
+          {
+            label: "Catch-all domain",
+            detail: "Server accepts any address — can't confirm delivery",
+          },
+          {
+            label: "No SMTP confirmation",
+            detail: "Mailbox couldn't be verified at send time",
+          },
+          {
+            label: "Role-based address",
+            detail: "Shared inboxes like info@, admin@, support@",
+            count: summary.role_based_emails,
+          },
+        ];
 
   return (
     <div className={styles.wrapper}>
@@ -99,35 +158,26 @@ export function ClassificationBreakdown({ summary }: Props) {
       <div className={styles.grid}>
         <CategoryCard
           tone="ok"
-          title="Ready to send"
+          title="Confirmed safe-only"
           count={summary.total_valid}
           sectionLabel="What was verified"
           reasons={[
             { label: "Valid email syntax and format" },
             { label: "Domain exists and accepts email" },
-            { label: "No risk signals detected" },
+            { label: "SMTP-confirmed or trusted consumer provider" },
+            { label: "No catch-all / cold-start cap fired" },
           ]}
         />
         <CategoryCard
           tone="warn"
-          title="Needs attention"
+          title="Require review"
           count={summary.total_review}
-          sectionLabel="Common reasons"
-          reasons={[
-            {
-              label: "Catch-all domain",
-              detail: "Server accepts any address — can't confirm delivery",
-            },
-            {
-              label: "No SMTP confirmation",
-              detail: "Mailbox couldn't be verified at send time",
-            },
-            {
-              label: "Role-based address",
-              detail: "Shared inboxes like info@, admin@, support@",
-              count: summary.role_based_emails,
-            },
-          ]}
+          sectionLabel={
+            breakdownReasons.length > 0
+              ? "Subdivision (per decision_reason)"
+              : "Common reasons"
+          }
+          reasons={reviewReasons}
         />
         <CategoryCard
           tone="bad"

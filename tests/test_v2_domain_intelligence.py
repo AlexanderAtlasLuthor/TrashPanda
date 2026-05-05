@@ -473,6 +473,140 @@ class TestPolicyDomainPriorityChain:
         assert result.decision_reason == "catch_all_confirmed"
 
 
+class TestPolicyDomainCapToggles:
+    """V2.10.10 — operator-tunable safety-cap toggles.
+
+    The YAML flags ``domain_intelligence.cold_start_requires_smtp_valid``
+    and ``domain_intelligence.high_risk_blocks_auto_approve`` exist on
+    :class:`DomainIntelligenceConfig` but used to be ignored by the
+    centralized policy. These tests pin the new contract: when the
+    flags are ``False`` the corresponding caps must not fire, leaving
+    the rest of the priority chain untouched.
+    """
+
+    def test_cold_start_cap_disabled_allows_approval(self):
+        """When ``cold_start_requires_smtp_valid=False`` a cold-start
+        row with high probability and no SMTP-candidate status reaches
+        ``auto_approve`` instead of being capped to review."""
+        result = apply_v2_decision_policy(
+            **_policy_inputs(
+                probability=0.95,
+                smtp_status=SMTP_STATUS_NOT_TESTED,
+                smtp_was_candidate=False,  # bypass V2.4 rule 5c
+                domain_risk_level="unknown",
+                domain_cold_start=True,
+            ),
+            cold_start_requires_smtp_valid=False,
+        )
+        assert result.final_action == FinalAction.AUTO_APPROVE
+
+    def test_cold_start_cap_disabled_does_not_relax_smtp_candidate_rule(self):
+        """Disabling the cold-start cap must NOT bypass rule 5c — an
+        SMTP candidate without a valid mailbox still routes to review."""
+        result = apply_v2_decision_policy(
+            **_policy_inputs(
+                probability=0.95,
+                smtp_status=SMTP_STATUS_NOT_TESTED,
+                smtp_was_candidate=True,
+                domain_cold_start=True,
+            ),
+            cold_start_requires_smtp_valid=False,
+        )
+        assert result.final_action == FinalAction.MANUAL_REVIEW
+
+    def test_high_risk_cap_disabled_allows_approval(self):
+        """When ``high_risk_blocks_auto_approve=False`` a high-risk
+        domain with valid SMTP and high probability can auto_approve."""
+        result = apply_v2_decision_policy(
+            **_policy_inputs(
+                probability=0.95,
+                smtp_status=SMTP_STATUS_VALID,
+                domain_risk_level="high",
+            ),
+            high_risk_blocks_auto_approve=False,
+        )
+        assert result.final_action == FinalAction.AUTO_APPROVE
+
+    def test_high_risk_cap_disabled_does_not_relax_terminals(self):
+        """Disabling the high-risk cap must not let an SMTP-invalid
+        row sneak through — rule 3 still terminates."""
+        result = apply_v2_decision_policy(
+            **_policy_inputs(
+                probability=0.95,
+                smtp_status=SMTP_STATUS_INVALID,
+                domain_risk_level="high",
+            ),
+            high_risk_blocks_auto_approve=False,
+        )
+        assert result.final_action == FinalAction.AUTO_REJECT
+        assert result.decision_reason == REASON_SMTP_INVALID
+
+    def test_default_toggles_match_legacy_caps(self):
+        """Without explicit overrides the policy must match the V2.6
+        cold-start cap (``manual_review`` with reason
+        ``cold_start_no_smtp_valid``)."""
+        result = apply_v2_decision_policy(
+            **_policy_inputs(
+                probability=0.95,
+                smtp_status=SMTP_STATUS_NOT_TESTED,
+                smtp_was_candidate=False,
+                domain_cold_start=True,
+            )
+        )
+        assert result.final_action == FinalAction.MANUAL_REVIEW
+        assert result.decision_reason == REASON_COLD_START_NO_SMTP_VALID
+
+
+class TestPosturePresets:
+    """V2.10.10 — verify ``apply_posture_overrides`` flips the right
+    sub-config fields and rejects unknown postures.
+    """
+
+    def _config(self):
+        return load_config()
+
+    def test_balanced_is_noop(self):
+        from app.config import apply_posture_overrides
+
+        cfg = self._config()
+        result = apply_posture_overrides(cfg, "balanced")
+        assert result.decision.approve_threshold == cfg.decision.approve_threshold
+        assert (
+            result.domain_intelligence.cold_start_requires_smtp_valid
+            == cfg.domain_intelligence.cold_start_requires_smtp_valid
+        )
+
+    def test_strict_tightens_thresholds(self):
+        from app.config import apply_posture_overrides
+
+        cfg = self._config()
+        result = apply_posture_overrides(cfg, "strict")
+        assert result.decision.approve_threshold == 0.85
+        assert result.decision.review_threshold == 0.55
+        assert result.domain_intelligence.cold_start_requires_smtp_valid is True
+        assert result.domain_intelligence.high_risk_blocks_auto_approve is True
+
+    def test_permissive_disables_cold_start_cap(self):
+        from app.config import apply_posture_overrides
+
+        cfg = self._config()
+        result = apply_posture_overrides(cfg, "permissive")
+        assert result.decision.approve_threshold == 0.75
+        assert result.decision.review_threshold == 0.45
+        assert (
+            result.domain_intelligence.cold_start_requires_smtp_valid
+            is False
+        )
+        # Even permissive keeps the high-risk cap armed.
+        assert result.domain_intelligence.high_risk_blocks_auto_approve is True
+
+    def test_unknown_posture_raises(self):
+        from app.config import apply_posture_overrides
+
+        with pytest.raises(ValueError):
+            apply_posture_overrides(self._config(), "yolo")
+
+
 # ---------------------------------------------------------------------------
 # Layer 5 — Stage + decision integration
 # ---------------------------------------------------------------------------

@@ -132,6 +132,19 @@ _COUNT_FILES: dict[str, str] = {
     "rejected_count": "invalid_or_bounce_risk.xlsx",
 }
 
+# V2.10.10 — per-subdivision row counts surfaced under the manifest's
+# ``review_breakdown`` block. Each entry is a strict subset of
+# ``review_emails.xlsx``; a subdivision file may legitimately be
+# absent (zero rows of that decision_reason) — the resolver returns
+# ``None`` for missing files, which the manifest serializes as ``null``.
+_REVIEW_BREAKDOWN_FILES: dict[str, str] = {
+    "review_cold_start_b2b": "review_cold_start_b2b.xlsx",
+    "review_smtp_inconclusive": "review_smtp_inconclusive.xlsx",
+    "review_catch_all": "review_catch_all.xlsx",
+    "review_medium_probability": "review_medium_probability.xlsx",
+    "review_domain_high_risk": "review_domain_high_risk.xlsx",
+}
+
 
 # --------------------------------------------------------------------------- #
 # Result model
@@ -169,6 +182,7 @@ class ClientPackageResult:
     safe_count: int | None
     review_count: int | None
     rejected_count: int | None
+    review_breakdown: dict[str, int | None] = field(default_factory=dict)
     source_run_dir: Path = field(default_factory=lambda: Path("."))
     generated_at: str = ""
 
@@ -198,6 +212,7 @@ class ClientPackageResult:
             "safe_count": self.safe_count,
             "review_count": self.review_count,
             "rejected_count": self.rejected_count,
+            "review_breakdown": dict(self.review_breakdown),
         }
 
 
@@ -356,6 +371,16 @@ def build_client_delivery_package(
         if warn is not None:
             warnings.append(warn)
 
+    # V2.10.10 — review-bucket subdivision row counts. A missing file
+    # (zero rows for that ``decision_reason``) returns ``None`` so the
+    # manifest serializes a ``null`` rather than a misleading zero.
+    review_breakdown_counts: dict[str, int | None] = {}
+    for sub_key, filename in _REVIEW_BREAKDOWN_FILES.items():
+        sub_count, sub_warn = _try_count_rows(package_dir / filename)
+        review_breakdown_counts[sub_key] = sub_count
+        if sub_warn is not None:
+            warnings.append(sub_warn)
+
     # ---- V2.10.8.2: safe-only partial delivery note --------------------- #
     # Only synthesize the note when partial delivery actually applies:
     # at least one safe row, and at least one row that the full client
@@ -494,6 +519,7 @@ def build_client_delivery_package(
         "safe_count": counts["safe_count"],
         "review_count": counts["review_count"],
         "rejected_count": counts["rejected_count"],
+        "review_breakdown": review_breakdown_counts,
         "safe_only_delivery": safe_only_block,
     }
     manifest_path = package_dir / _MANIFEST_FILENAME
@@ -508,6 +534,7 @@ def build_client_delivery_package(
         safe_count=counts["safe_count"],
         review_count=counts["review_count"],
         rejected_count=counts["rejected_count"],
+        review_breakdown=dict(review_breakdown_counts),
         source_run_dir=run_dir_path,
         generated_at=generated_at,
     )

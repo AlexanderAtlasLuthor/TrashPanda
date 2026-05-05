@@ -70,6 +70,15 @@ _AUDIENCE_BY_KEY: dict[str, str] = {
     "approved_original_format": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     "duplicate_emails": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     "hard_fail_emails": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    # V2.10.10 — review-bucket subdivisions. Each is a strict subset of
+    # ``review_emails`` carved by ``decision_reason`` so the operator
+    # can act on each cohort independently. Parent ``review_emails``
+    # remains intact and is the legacy-compatible deliverable.
+    "review_cold_start_b2b": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "review_smtp_inconclusive": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "review_catch_all": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "review_medium_probability": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "review_domain_high_risk": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     # V2.10.8.2 — safe-only partial delivery anchor file.
     "safe_only_delivery_note": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     # Always-on README that names the PRIMARY artifact for the customer.

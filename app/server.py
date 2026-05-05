@@ -629,6 +629,7 @@ def _run_job(
     input_path: Path,
     output_root: Path,
     config_path: str | None,
+    posture: str | None = None,
 ) -> None:
     JOB_STORE.mark_running(job_id)
     persist_job_started(job_id)
@@ -639,6 +640,7 @@ def _run_job(
             output_root=output_root,
             config_path=config_path,
             job_id=job_id,
+            posture=posture,
         )
     except Exception as exc:  # pragma: no cover - defensive guard
         if watchdog is not None:
@@ -786,6 +788,11 @@ async def create_job(
     background_tasks: BackgroundTasks,
     file: UploadFile | None = File(default=None),
     config_path: str | None = Form(default=None),
+    # V2.10.10 — operator-selectable delivery posture. ``None`` and
+    # ``balanced`` are equivalent (the default config). ``strict`` and
+    # ``permissive`` layer overrides on top of the loaded YAML — see
+    # :data:`app.config._POSTURE_OVERRIDES`.
+    posture: str | None = Form(default=None),
 ) -> dict[str, Any]:
     if file is None:
         _raise_http_error(
@@ -794,6 +801,20 @@ async def create_job(
             "Multipart form field 'file' is required.",
             {"field": "file"},
         )
+
+    if posture is not None:
+        from .config import DELIVERY_POSTURES
+
+        if posture not in DELIVERY_POSTURES:
+            _raise_http_error(
+                400,
+                "invalid_posture",
+                (
+                    "Unknown delivery posture. Expected one of "
+                    f"{', '.join(DELIVERY_POSTURES)}."
+                ),
+                {"field": "posture", "value": posture},
+            )
 
     filename = _safe_upload_filename(file.filename)
     _validate_extension(filename)
@@ -813,7 +834,9 @@ async def create_job(
     )
     if db_job_id is None:
         LOGGER.debug("DB persistence skipped for legacy job %s", job_id)
-    background_tasks.add_task(_run_job, job_id, input_path, output_root, config_path)
+    background_tasks.add_task(
+        _run_job, job_id, input_path, output_root, config_path, posture
+    )
 
     return job_result_to_dict(result)
 
@@ -833,13 +856,19 @@ async def upload_file(
     background_tasks: BackgroundTasks,
     file: UploadFile | None = File(default=None),
     config_path: str | None = Form(default=None),
+    posture: str | None = Form(default=None),
 ) -> dict[str, Any]:
     """Accept a CSV/XLSX, queue processing, return ``{job_id, status}``.
 
     Alias of :func:`create_job` with a smaller response payload tailored
     for simple integrations.
     """
-    full = await create_job(background_tasks, file=file, config_path=config_path)
+    full = await create_job(
+        background_tasks,
+        file=file,
+        config_path=config_path,
+        posture=posture,
+    )
     return {
         "job_id": full["job_id"],
         "status": full["status"],

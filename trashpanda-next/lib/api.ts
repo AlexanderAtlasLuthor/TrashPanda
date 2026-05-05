@@ -461,6 +461,34 @@ export async function downloadClientPackage(
 // Wire-shape returned by GET /api/operator/jobs/{id}/client-bundle/summary.
 // Used by the SendToClientButton to render counts + state before the
 // operator clicks the giant download button.
+//
+// V2.10.10 — `review_breakdown` carries the per-decision_reason
+// counts emitted by the package builder so the UI can show *why*
+// each review row was held back instead of presenting a single
+// "X need review" lump. Missing keys are treated as "no rows of
+// this kind" (the operator may genuinely have zero catch-all rows,
+// for example).
+//
+// `smtp_runtime` is the customer-safe subset of the SMTP runtime
+// summary (coverage + valid/inconclusive split). Absent when SMTP
+// did not run or the file is unreadable.
+export interface ReviewBreakdown {
+  review_cold_start_b2b?: number | null;
+  review_smtp_inconclusive?: number | null;
+  review_catch_all?: number | null;
+  review_medium_probability?: number | null;
+  review_domain_high_risk?: number | null;
+}
+
+export interface SmtpRuntimePublic {
+  smtp_enabled?: boolean;
+  smtp_dry_run?: boolean;
+  smtp_candidates_seen?: number;
+  smtp_candidates_attempted?: number;
+  smtp_valid_count?: number;
+  smtp_inconclusive_count?: number;
+}
+
 export interface ClientBundleSummary {
   available: boolean;
   ready_for_client: boolean;
@@ -470,6 +498,8 @@ export interface ClientBundleSummary {
   safe_count: number;
   review_count: number;
   rejected_count: number;
+  review_breakdown?: ReviewBreakdown;
+  smtp_runtime?: SmtpRuntimePublic | null;
   issues: Array<{ severity: string; code: string; message: string }>;
 }
 

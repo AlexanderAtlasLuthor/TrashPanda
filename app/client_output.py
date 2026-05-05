@@ -87,6 +87,86 @@ SUPPLEMENTARY_BUCKET_CONFIG: dict[str, dict[str, str]] = {
 }
 
 
+# V2.10.10 — Review-bucket subdivisions.
+#
+# ``review_emails.xlsx`` carries every ``manual_review`` row, but the
+# 793-row WY_small audit showed the bucket mixes very different
+# operator-action profiles (cold-start B2B that is rescatable vs.
+# catch-all consumer that is not vs. high-risk domain that is
+# effectively do-not-send). The pipeline already records a precise
+# ``decision_reason`` per row; this config splits the same data into
+# subset XLSXs the operator and customer can act on independently.
+#
+# Each subdivision is a strict subset of ``review_emails.xlsx`` —
+# the parent workbook stays intact for legacy/manifest consumers and
+# the subdivision XLSXs are emitted *in addition*. Subsets that would
+# be empty are skipped silently.
+#
+# Keys are the file stems used in the package + artifact contract; the
+# matching ``decision_reason`` values come from the canonical V2.4 /
+# V2.6 vocabulary in :mod:`app.v2_decision_policy` and the SMTP/catch-
+# all reason codes emitted there.
+REVIEW_SUBDIVISIONS: dict[str, dict[str, Any]] = {
+    "review_cold_start_b2b": {
+        "xlsx_name": "review_cold_start_b2b.xlsx",
+        "sheet_name": "review_cold_start_b2b",
+        "decision_reasons": frozenset({"cold_start_no_smtp_valid"}),
+        "operator_note": (
+            "Unconfirmed B2B / unknown domains. Often rescatable with a "
+            "second-pass / live SMTP retry from a warmed sender IP."
+        ),
+    },
+    "review_smtp_inconclusive": {
+        "xlsx_name": "review_smtp_inconclusive.xlsx",
+        "sheet_name": "review_smtp_inconclusive",
+        "decision_reasons": frozenset({
+            "smtp_blocked",
+            "smtp_timeout",
+            "smtp_temp_fail",
+            "smtp_error",
+            "smtp_unconfirmed_for_candidate",
+        }),
+        "operator_note": (
+            "MX records exist but SMTP did not return a confirmed verdict "
+            "(blocked, timeout, transient failure, or dry-run). Retry "
+            "with a different egress before sending."
+        ),
+    },
+    "review_catch_all": {
+        "xlsx_name": "review_catch_all.xlsx",
+        "sheet_name": "review_catch_all",
+        "decision_reasons": frozenset({
+            "catch_all_possible",
+            "catch_all_confirmed",
+        }),
+        "operator_note": (
+            "Catch-all providers (often Yahoo / AOL / Verizon-class). "
+            "Cannot be confirmed automatically without sending. Treat as "
+            "spam-trap risk."
+        ),
+    },
+    "review_medium_probability": {
+        "xlsx_name": "review_medium_probability.xlsx",
+        "sheet_name": "review_medium_probability",
+        "decision_reasons": frozenset({"medium_probability"}),
+        "operator_note": (
+            "Probability between 0.50 and 0.80. Mixed signals — review "
+            "case by case before sending."
+        ),
+    },
+    "review_domain_high_risk": {
+        "xlsx_name": "review_domain_high_risk.xlsx",
+        "sheet_name": "review_domain_high_risk",
+        "decision_reasons": frozenset({"domain_high_risk"}),
+        "operator_note": (
+            "Disposable, suspicious-shape, or otherwise high-risk "
+            "domain. Effectively do-not-send unless you have separate "
+            "evidence the address is real."
+        ),
+    },
+}
+
+
 # Client column profile: ordered list of (client_column_name, candidate
 # source columns in priority order). Any candidate missing in the CSV
 # is silently skipped. If none of the candidates exist, the column is
@@ -335,6 +415,30 @@ def generate_client_outputs(
         except Exception as exc:  # pragma: no cover - defensive I/O guard
             log.warning("Failed to write %s: %s", xlsx_path, exc)
 
+    # V2.10.10 — split the review bucket by ``decision_reason`` so the
+    # operator-action profile is legible without re-reading the full
+    # workbook. The parent ``review_emails.xlsx`` stays intact; these
+    # subdivisions are emitted in addition.
+    review_frame = client_frames.get("review_medium_confidence", pd.DataFrame())
+    if not review_frame.empty and "decision_reason" in review_frame.columns:
+        for sub_key, sub_cfg in REVIEW_SUBDIVISIONS.items():
+            mask = review_frame["decision_reason"].astype(str).isin(
+                sub_cfg["decision_reasons"]
+            )
+            sub_df = review_frame.loc[mask].copy()
+            if sub_df.empty:
+                continue
+            xlsx_path = run_dir / sub_cfg["xlsx_name"]
+            try:
+                _write_xlsx(sub_df, xlsx_path, sheet_name=sub_cfg["sheet_name"])
+                written[sub_key] = xlsx_path
+                log.info(
+                    "Review subdivision written | key=%s rows=%s file=%s",
+                    sub_key, len(sub_df), xlsx_path.name,
+                )
+            except Exception as exc:  # pragma: no cover - defensive I/O guard
+                log.warning("Failed to write %s: %s", xlsx_path, exc)
+
     # V2.5 — supplementary workbooks split the legacy ``invalid_or_bounce_risk``
     # cohort into duplicates and hard fails so customers can address each
     # cleanly. Failures are non-fatal: the legacy union workbook still
@@ -553,9 +657,43 @@ def _write_summary_report(
         breakdown_rows, columns=["status", "client_reason", "count"]
     )
 
+    # V2.10.10 — breakdown by decision_reason.
+    #
+    # ``breakdown_by_reason`` (above) groups by the human-readable
+    # ``client_reason`` text, which is useful for end-customers but
+    # collapses across the V2 decision vocabulary. This third sheet
+    # reuses the same combined frame and groups by ``final_action`` x
+    # ``decision_reason`` so an operator can see at a glance how the
+    # review bucket subdivides — and how many ``manual_review`` rows
+    # came from cold-start vs catch-all vs medium-probability.
+    if (
+        not combined.empty
+        and "decision_reason" in combined.columns
+        and "final_action" in combined.columns
+    ):
+        decision_counter: Counter[tuple[str, str]] = Counter(
+            zip(
+                combined["final_action"].astype(str).tolist(),
+                combined["decision_reason"].astype(str).tolist(),
+            )
+        )
+        decision_breakdown_rows = [
+            {"final_action": action, "decision_reason": reason, "count": count}
+            for (action, reason), count in sorted(decision_counter.items())
+        ]
+    else:
+        decision_breakdown_rows = []
+    decision_breakdown_df = pd.DataFrame(
+        decision_breakdown_rows,
+        columns=["final_action", "decision_reason", "count"],
+    )
+
     out_path = run_dir / "summary_report.xlsx"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         totals_df.to_excel(writer, sheet_name="totals", index=False)
         breakdown_df.to_excel(writer, sheet_name="breakdown_by_reason", index=False)
+        decision_breakdown_df.to_excel(
+            writer, sheet_name="breakdown_by_decision_reason", index=False
+        )
     return out_path

@@ -34,7 +34,11 @@ from typing import Any
 
 import pandas as pd
 
-from .config import load_config, resolve_project_paths
+from .config import (
+    apply_posture_overrides,
+    load_config,
+    resolve_project_paths,
+)
 from .io_utils import build_run_context
 from .logger import setup_run_logger
 from .models import PipelineResult
@@ -511,6 +515,7 @@ def run_cleaning_job(
     output_root: str | Path,
     config_path: str | Path | None = None,
     job_id: str | None = None,
+    posture: str | None = None,
 ) -> JobResult:
     """Run the email-cleaning pipeline as a single synchronous job.
 
@@ -527,6 +532,12 @@ def run_cleaning_job(
     job_id:
         Optional caller-supplied job identifier; auto-generated if not
         provided.
+    posture:
+        Optional V2.10.10 delivery-posture preset (``strict`` /
+        ``balanced`` / ``permissive``) layered on top of the loaded
+        AppConfig. ``None`` and ``balanced`` are no-ops; other values
+        tune the decision thresholds and the cold-start safety cap
+        as documented in :data:`app.config._POSTURE_OVERRIDES`.
 
     Returns
     -------
@@ -565,6 +576,11 @@ def run_cleaning_job(
             config_path=request.config_path,
             base_dir=project_paths.project_root,
         )
+        # V2.10.10 — operator-supplied delivery posture is layered on
+        # top of the YAML config so a permissive posture can be
+        # selected without forking ``configs/default.yaml``.
+        if posture is not None:
+            config = apply_posture_overrides(config, posture)
         request.output_root.mkdir(parents=True, exist_ok=True)
         run_id = datetime.now().strftime("run_%Y%m%d_%H%M%S")
         # Suffix with a short token so parallel jobs don't collide on

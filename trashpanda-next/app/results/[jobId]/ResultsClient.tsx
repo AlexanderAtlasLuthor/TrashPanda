@@ -2,7 +2,13 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { getJob, getJobLogs, ApiError } from "@/lib/api";
+import {
+  getJob,
+  getJobLogs,
+  getClientBundleSummary,
+  ApiError,
+  type ClientBundleSummary,
+} from "@/lib/api";
 import type { JobResult } from "@/lib/types";
 import { Topbar } from "@/components/Topbar";
 import { JobStatusPanel } from "@/components/JobStatusPanel";
@@ -62,11 +68,34 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
   const [job, setJob] = useState<JobResult | null>(initialJob);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [logLines, setLogLines] = useState<string[]>([]);
+  // V2.10.10 — bundle summary carries the public SMTP runtime subset
+  // and per-decision_reason review breakdown. We only fetch it once
+  // the job has completed; the same endpoint also drives
+  // SendToClientButton, but its hook cycles independently to keep
+  // the giant CTA from unmounting on every poll.
+  const [bundleSummary, setBundleSummary] =
+    useState<ClientBundleSummary | null>(null);
   const jobRef = useRef<JobResult | null>(initialJob);
 
   useEffect(() => {
     jobRef.current = job;
   }, [job]);
+
+  useEffect(() => {
+    if (job?.status !== "completed") return;
+    let cancelled = false;
+    getClientBundleSummary(jobId)
+      .then((summary) => {
+        if (!cancelled) setBundleSummary(summary);
+      })
+      .catch(() => {
+        // Bundle summary is enrichment, not required — fall back
+        // silently to the legacy ExecutiveSummary copy.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId, job?.status]);
 
   useEffect(() => {
     let cancelled = false;
@@ -249,7 +278,10 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
             <SendToClientButton jobId={jobId} visible />
           </div>
           <div className="fade-up">
-            <ExecutiveSummary summary={job.summary} />
+            <ExecutiveSummary
+              summary={job.summary}
+              smtpRuntime={bundleSummary?.smtp_runtime ?? null}
+            />
           </div>
           <div className="fade-up">
             <AINarrativePanel jobId={jobId} />
@@ -261,7 +293,10 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
             <SecondaryMetrics summary={job.summary} />
           </div>
           <div className="fade-up">
-            <ClassificationBreakdown summary={job.summary} />
+            <ClassificationBreakdown
+              summary={job.summary}
+              reviewBreakdown={bundleSummary?.review_breakdown ?? null}
+            />
           </div>
           {(job.summary?.total_review ?? 0) > 0 && (
             <div className="fade-up">

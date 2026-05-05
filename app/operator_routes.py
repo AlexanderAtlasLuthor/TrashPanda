@@ -1390,6 +1390,13 @@ def operator_get_client_bundle_summary(job_id: str) -> Any:
     Mirrors what the bundle download would contain *without* actually
     streaming bytes. Lets the UI render the giant button + counts +
     "Send is partial" disclaimer before the operator clicks download.
+
+    V2.10.10 — also surfaces a small SMTP runtime subset and the
+    review-bucket subdivision counts so the UI can replace the bare
+    "8.3% ready" banner with "X confirmed safe / Y require review
+    (broken down) / Z do not use" without exposing the full
+    ``smtp_runtime_summary.json`` (which carries operator-only
+    error context).
     """
 
     run_dir = _resolve_run_dir(job_id)
@@ -1408,6 +1415,11 @@ def operator_get_client_bundle_summary(job_id: str) -> Any:
     available = bool(primary_filename and safe_count > 0)
     download_name = _bundle_filename(run_dir, job_id) if available else None
 
+    review_breakdown = (
+        dict((manifest or {}).get("review_breakdown") or {})
+    )
+    smtp_runtime_public = _smtp_runtime_public_subset(run_dir)
+
     return _operator_response(
         {
             "available": available,
@@ -1418,9 +1430,48 @@ def operator_get_client_bundle_summary(job_id: str) -> Any:
             "safe_count": safe_count,
             "review_count": review_count,
             "rejected_count": rejected_count,
+            "review_breakdown": review_breakdown,
+            "smtp_runtime": smtp_runtime_public,
             "issues": review.get("issues") or [],
         }
     )
+
+
+# V2.10.10 — fields safe to surface in the customer-facing bundle
+# summary. The full ``smtp_runtime_summary.json`` carries operator
+# context (rate limits, retry counts, error totals, blocked-host
+# trivia) that is not appropriate for the UI banner. This subset is
+# the minimum needed to explain why the ready_count is what it is —
+# coverage and the valid/inconclusive split.
+_SMTP_RUNTIME_PUBLIC_FIELDS: tuple[str, ...] = (
+    "smtp_enabled",
+    "smtp_dry_run",
+    "smtp_candidates_seen",
+    "smtp_candidates_attempted",
+    "smtp_valid_count",
+    "smtp_inconclusive_count",
+)
+
+
+def _smtp_runtime_public_subset(run_dir: Path) -> dict[str, Any] | None:
+    """Return a small public subset of ``smtp_runtime_summary.json``.
+
+    Returns ``None`` when the file is absent or unreadable so the UI
+    can render "SMTP not run" without a fragile error path. Any field
+    not present in the source JSON is dropped, never defaulted.
+    """
+    raw = _read_json_or_missing(
+        run_dir / _SMTP_RUNTIME_SUMMARY_FILENAME,
+        _MISSING_GENERIC,
+    )
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("error") or raw.get("status") == "missing":
+        return None
+    subset: dict[str, Any] = {
+        key: raw[key] for key in _SMTP_RUNTIME_PUBLIC_FIELDS if key in raw
+    }
+    return subset or None
 
 
 # --------------------------------------------------------------------------- #

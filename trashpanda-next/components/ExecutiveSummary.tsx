@@ -1,8 +1,11 @@
+import type { SmtpRuntimePublic } from "@/lib/api";
+import { RESULTS_COPY } from "@/lib/copy";
 import type { JobSummary } from "@/lib/types";
 import styles from "./ExecutiveSummary.module.css";
 
 interface Props {
   summary: JobSummary | null | undefined;
+  smtpRuntime?: SmtpRuntimePublic | null;
 }
 
 type Tone = "ok" | "warn" | "bad";
@@ -35,7 +38,10 @@ function getHeadline(validPct: number | null): string {
   if (validPct === null) return "Your list has been processed";
   if (validPct > 95) return "Your list is in excellent shape";
   if (validPct >= 80) return "Your list is in good shape";
-  return "Your list needs attention";
+  // V2.10.10 — clarify that "needs attention" describes the safe-only
+  // ready cohort, not the entire list. Most "review" rows are
+  // unconfirmed (B2B / catch-all consumer) rather than invalid.
+  return "Most rows need review before sending";
 }
 
 function ToneIcon({ tone }: { tone: Tone }) {
@@ -64,7 +70,7 @@ function ToneIcon({ tone }: { tone: Tone }) {
   );
 }
 
-export function ExecutiveSummary({ summary }: Props) {
+export function ExecutiveSummary({ summary, smtpRuntime }: Props) {
   const total = summary?.total_input_rows ?? null;
   const valid = summary?.total_valid ?? null;
   const review = summary?.total_review ?? null;
@@ -83,13 +89,30 @@ export function ExecutiveSummary({ summary }: Props) {
       ? Math.round(invalidPct * 10) / 10
       : null;
 
+  // V2.10.10 — render a customer-facing SMTP coverage caption when
+  // the bundle summary supplied a public subset. Surfacing this fixes
+  // the "8.3% ready, no explanation" UX: the operator now sees, e.g.,
+  // "SMTP: 940 of 1000 candidates probed · 312 confirmed valid · 528
+  // inconclusive." right next to the headline.
+  const smtpCaption = smtpRuntime
+    ? RESULTS_COPY.smtpCaption(
+        smtpRuntime.smtp_candidates_attempted,
+        smtpRuntime.smtp_candidates_seen,
+        smtpRuntime.smtp_valid_count,
+        smtpRuntime.smtp_inconclusive_count,
+        smtpRuntime.smtp_enabled,
+        smtpRuntime.smtp_dry_run,
+      )
+    : null;
+
   const metrics: Array<{ value: string; label: string; color: string; tooltip?: string }> = [];
   if (validPct !== null) {
     metrics.push({
       value: `${fmt(validPct)}%`,
-      label: "ready to send",
+      label: "confirmed safe-only",
       color: "var(--neon)",
-      tooltip: "Based on strict validation rules.",
+      tooltip:
+        "Strict safe-only delivery — SMTP-confirmed or trusted consumer providers with high deliverability probability.",
     });
   }
   if (invalidPct !== null && invalidPct > 0) {
@@ -102,8 +125,10 @@ export function ExecutiveSummary({ summary }: Props) {
   if (review !== null && review > 0) {
     metrics.push({
       value: fmtCount(review),
-      label: "need review",
+      label: "require review",
       color: "var(--warn)",
+      tooltip:
+        "Unconfirmed — mostly B2B / catch-all consumer. See breakdown below.",
     });
   }
 
@@ -157,6 +182,10 @@ export function ExecutiveSummary({ summary }: Props) {
           </span>
           <span className={styles.estimateValue}>+{fmt(improvementPct)}%</span>
         </div>
+      )}
+
+      {smtpCaption && (
+        <div className={styles.smtpCaption}>{smtpCaption}</div>
       )}
     </div>
   );

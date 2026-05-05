@@ -379,6 +379,35 @@ def _policy_from_context(
         return default
 
 
+def _domain_intelligence_caps_from_context(
+    context: PipelineContext,
+) -> tuple[bool, bool]:
+    """Read V2.6 safety-cap toggles from ``context.config.domain_intelligence``.
+
+    Returns ``(high_risk_blocks_auto_approve,
+    cold_start_requires_smtp_valid)`` with the policy defaults
+    (``True``, ``True``) when config is missing or unparseable. These
+    flags exist on :class:`DomainIntelligenceConfig` and used to be
+    loaded but never consulted by ``apply_v2_decision_policy`` — the
+    V2.10.10 audit identified that as the gap that locked every
+    cold-start row into review regardless of operator preference.
+    """
+    cfg = getattr(context, "config", None)
+    intel_cfg = getattr(cfg, "domain_intelligence", None) if cfg is not None else None
+    if intel_cfg is None:
+        return True, True
+    try:
+        high_risk_blocks = bool(
+            getattr(intel_cfg, "high_risk_blocks_auto_approve", True)
+        )
+        cold_start_requires_smtp_valid = bool(
+            getattr(intel_cfg, "cold_start_requires_smtp_valid", True)
+        )
+    except (TypeError, ValueError):
+        return True, True
+    return high_risk_blocks, cold_start_requires_smtp_valid
+
+
 class DecisionStage(Stage):
     """Compute V2 deliverability probability + final action per row.
 
@@ -439,6 +468,10 @@ class DecisionStage(Stage):
     def run(self, payload: ChunkPayload, context: PipelineContext) -> ChunkPayload:
         thresholds = self._thresholds
         policy = _policy_from_context(context, self._policy)
+        (
+            high_risk_blocks_auto_approve,
+            cold_start_requires_smtp_valid,
+        ) = _domain_intelligence_caps_from_context(context)
 
         frame = payload.frame
         rows = frame.to_dict(orient="records")
@@ -524,6 +557,10 @@ class DecisionStage(Stage):
                 # V2.6 — domain-intelligence inputs.
                 domain_risk_level=domain_risk_level,
                 domain_cold_start=domain_cold_start,
+                # V2.10.10 — operator-tunable safety-cap toggles
+                # sourced from ``domain_intelligence.*`` config.
+                high_risk_blocks_auto_approve=high_risk_blocks_auto_approve,
+                cold_start_requires_smtp_valid=cold_start_requires_smtp_valid,
             )
 
             factor_names = "|".join(f.name for f in comp.factors)

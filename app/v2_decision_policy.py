@@ -222,6 +222,16 @@ def apply_v2_decision_policy(
     # old behaviour unchanged.
     domain_risk_level: str = "unknown",
     domain_cold_start: bool = False,
+    # V2.10.10 — domain-intelligence safety-cap toggles. The
+    # corresponding YAML flags
+    # (``domain_intelligence.high_risk_blocks_auto_approve`` and
+    # ``domain_intelligence.cold_start_requires_smtp_valid``) used to be
+    # loaded into AppConfig but never consulted here, so rules 5d/5e
+    # were unconditional regardless of operator preference. Surfacing
+    # them as kwargs lets per-job postures (strict / balanced /
+    # permissive) tune the cold-start cap without forking the policy.
+    high_risk_blocks_auto_approve: bool = True,
+    cold_start_requires_smtp_valid: bool = True,
 ) -> DecisionResult:
     """The single source of truth for V2.4 + V2.6 final action.
 
@@ -322,8 +332,14 @@ def apply_v2_decision_policy(
 
         # 5d. V2.6 — high-risk domain caps approval. A known-bad
         # domain (disposable, suspicious-shape, future history-driven
-        # signals) cannot reach clean even with valid SMTP.
-        if domain_risk_level in _DOMAIN_HIGH_RISK_SET:
+        # signals) cannot reach clean even with valid SMTP. Gated by
+        # ``high_risk_blocks_auto_approve`` so a permissive posture
+        # can opt out (the disposable list is still independently
+        # capped by V1 hard_fail / probability scoring).
+        if (
+            high_risk_blocks_auto_approve
+            and domain_risk_level in _DOMAIN_HIGH_RISK_SET
+        ):
             return DecisionResult(
                 final_action=FinalAction.MANUAL_REVIEW,
                 decision_reason=REASON_DOMAIN_HIGH_RISK,
@@ -338,7 +354,14 @@ def apply_v2_decision_policy(
         # already covers ``smtp_was_candidate AND smtp != valid``),
         # but explicit at the domain level so the audit trail says
         # *why* the row was capped (``cold_start_no_smtp_valid``).
-        if domain_cold_start and smtp_status != _SMTP_VALID:
+        # Gated by ``cold_start_requires_smtp_valid`` so a permissive
+        # posture can deliver high-probability cold-start domains
+        # without an SMTP confirmation.
+        if (
+            cold_start_requires_smtp_valid
+            and domain_cold_start
+            and smtp_status != _SMTP_VALID
+        ):
             return DecisionResult(
                 final_action=FinalAction.MANUAL_REVIEW,
                 decision_reason=REASON_COLD_START_NO_SMTP_VALID,
