@@ -47,6 +47,7 @@ if __name__ == "__main__" and __package__ in (None, ""):
 
 from app.config import load_config, resolve_project_paths  # noqa: E402
 from app.customer_bundle import emit_customer_bundle  # noqa: E402
+from app.defensive_rubric import emit_rubric  # noqa: E402
 from app.io_utils import build_run_context  # noqa: E402
 from app.logger import setup_run_logger  # noqa: E402
 from app.pipeline import EmailCleaningPipeline  # noqa: E402
@@ -86,6 +87,17 @@ def _run(args: argparse.Namespace) -> dict:
         run_context=run_context,
     )
 
+    # Build the per-row rubric BEFORE the customer bundle so the
+    # bundle can use the rubric's classifications to route rows when
+    # no SMTP evidence is present.
+    rubric_path, rubric = emit_rubric(result.run_dir)
+
+    rubric_counts: dict[str, int] = {"clean": 0, "risky": 0, "removed": 0}
+    for r in rubric.values():
+        rubric_counts[r.classification] = (
+            rubric_counts.get(r.classification, 0) + 1
+        )
+
     bundle = emit_customer_bundle(result.run_dir)
 
     return {
@@ -95,6 +107,11 @@ def _run(args: argparse.Namespace) -> dict:
         "total_files": result.total_files,
         "total_rows": result.total_rows,
         "smtp_probing": "disabled (defensive-only mode)",
+        "defensive_rubric": {
+            "report_path": str(rubric_path),
+            "counts": rubric_counts,
+            "total_rows": len(rubric),
+        },
         "customer_bundle": {
             "dir": str(bundle.bundle_dir),
             "counts": bundle.counts,

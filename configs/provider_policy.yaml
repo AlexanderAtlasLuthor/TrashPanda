@@ -1,0 +1,59 @@
+# Per-provider SMTP routing policy.
+#
+# Loaded by app/validation_v2/network/provider_routing.py. Domains
+# whose policy resolves to ``action: skip`` (or ``relay:*``, which is
+# treated as skip until the relay backend lands) are merged into the
+# SMTP probe skip-set in addition to the canonical
+# ``configs/skip_smtp_providers.txt``.
+#
+# Default action is ``direct`` — probe over our own SMTP. Add a
+# group below to override behavior for a family of domains.
+#
+# Action values:
+#   direct                     probe via direct SMTP from our own IP
+#   skip                       short-circuit to ``inconclusive``
+#   relay:<name>               (placeholder) future external relay
+#
+# Group-level fields:
+#   domains: list of recipient domains the policy applies to
+#   action:  see above
+#   max_per_run: cap candidates per pilot run (null = no cap)
+#   reason:  human-readable explanation, surfaced in logs
+
+default:
+  action: direct
+  max_per_run: null
+  reason: ""
+
+providers:
+  yahoo_family:
+    domains:
+      - yahoo.com
+      - ymail.com
+      - rocketmail.com
+      - aol.com
+      - aim.com
+      - verizon.net
+      - sbcglobal.net
+      - att.net
+      - bellsouth.net
+    action: skip
+    reason: "Yahoo / AOL / Verizon family — opaque acceptance + reputation throttling. Direct probing produces noise."
+
+  microsoft_family:
+    domains:
+      - outlook.com
+      - hotmail.com
+      - live.com
+      - msn.com
+    action: direct
+    max_per_run: 50
+    reason: "Microsoft consumer — probe directly but cap to avoid IP block escalation. Watch for S3150 in DSNs."
+
+  google_consumer:
+    domains:
+      - gmail.com
+      - googlemail.com
+    action: direct
+    max_per_run: 50
+    reason: "Gmail consumer — probe directly with cap. Reputation-sensitive."

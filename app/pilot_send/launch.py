@@ -104,6 +104,51 @@ def _validate(config: PilotSendConfig, *, batch_size: int) -> str | None:
 # --------------------------------------------------------------------------- #
 
 
+def _check_sender_reputation() -> None:
+    """Opt-in pre-pilot sender reputation check.
+
+    When ``TRASHPANDA_SENDING_IP`` is set, look up the latest
+    reputation snapshots for that IP and emit a warning log if the
+    aggregate signal is red. Never blocks the pilot — the operator
+    sees the warning and decides. Unset env var = no-op (preserves
+    test behavior and back-compat for existing deployments).
+    """
+    import os
+
+    ip = (os.environ.get("TRASHPANDA_SENDING_IP") or "").strip()
+    if not ip:
+        return
+    try:
+        from ..sender_reputation import is_safe_to_pilot, open_store
+
+        with open_store() as conn:
+            decision = is_safe_to_pilot(conn, ip)
+    except Exception as exc:  # pragma: no cover - defensive
+        logging.getLogger(__name__).debug(
+            "sender_reputation: skipped (%s)", exc,
+        )
+        return
+
+    log = logging.getLogger(__name__)
+    if decision.overall_status == "red":
+        log.warning(
+            "pre-pilot reputation check: ip=%s overall=RED — "
+            "consider delaying. reasons: %s",
+            ip, "; ".join(decision.reasons),
+        )
+    elif decision.overall_status == "yellow":
+        log.warning(
+            "pre-pilot reputation check: ip=%s overall=yellow — "
+            "monitor closely. reasons: %s",
+            ip, "; ".join(decision.reasons),
+        )
+    else:
+        log.info(
+            "pre-pilot reputation check: ip=%s overall=%s",
+            ip, decision.overall_status,
+        )
+
+
 def _send_failure_verdict(outcome: PilotSendOutcome) -> str:
     """Translate a sender failure into a tracker verdict.
 
@@ -188,6 +233,12 @@ def launch_pilot(
             counts=PilotCounts(),
             error=error,
         )
+
+    # Optional pre-pilot reputation check. Strictly opt-in via the
+    # TRASHPANDA_SENDING_IP env var; unset = no check (preserves test
+    # behavior). Result is logged but never blocks — the operator
+    # decides whether to proceed when reputation is red.
+    _check_sender_reputation()
 
     batch_id = uuid.uuid4().hex[:12]
     candidates = select_candidates(run_dir_path, batch_size=batch_size)

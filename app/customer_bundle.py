@@ -36,6 +36,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from .defensive_rubric import (
+    CLASSIFICATION_CLEAN,
+    CLASSIFICATION_REMOVED,
+    CLASSIFICATION_RISKY,
+    DEFENSIVE_RUBRIC_REPORT_FILENAME,
+)
 from .pilot_send.evidence import CSV_COLUMNS, SMTP_EVIDENCE_REPORT_FILENAME
 
 
@@ -147,14 +153,15 @@ known-bad domains) AND — where we ran a pilot — were not rejected
 by the recipient provider with a recipient-level signal.
 
 ### `review_provider_limited.csv`
-Recipients where the **only** negative signal was that the
-recipient provider rejected or throttled our sending IP / network
-(Microsoft "block list" replies, Yahoo `TSS04` deferrals, etc.).
-**These are not evidence the email is bad.** They mean we could
-not verify them with the current sending infrastructure. Treat
-them as "deliverability unknown" until a re-test from a different
-sender. Sending to them is a business call, not a data-cleanliness
-call.
+Recipients that need human review before sending. Reasons may
+include: (a) the recipient provider rejected or throttled our
+sending IP/network (Microsoft "block list" replies, Yahoo `TSS04`
+deferrals) — these are NOT evidence the email is bad, just
+unverifiable from current infrastructure; (b) role-based addresses
+(`info@`, `admin@`, etc.) which are deliverable but low-quality;
+(c) domains with weak deliverability history. None of these are
+proven bad — sending to them is a business call, not a
+data-cleanliness call.
 
 ### `high_risk_removed.csv`
 Rows we explicitly removed from the deliverable. Reasons include:
@@ -242,6 +249,94 @@ def emit_customer_bundle(
     high_risk_removed = _concat_unique(
         [do_not_send, pilot_hard, removed_invalid], on="email",
     )
+
+    # ---- Defensive rubric override (when present) ----
+    # If a defensive rubric report exists in the run dir, treat it as
+    # an authoritative re-classification for any row whose pilot
+    # status is silent. Pilot evidence (recipient-level rejection or
+    # delivered) always wins; for everything else, the rubric demotes
+    # rows from clean → review_provider_limited (risky) or
+    # high_risk_removed (removed) so the customer bundle reflects what
+    # we can actually defend without a pilot.
+    rubric_path = run_dir_path / DEFENSIVE_RUBRIC_REPORT_FILENAME
+    rubric_df = _read_any(rubric_path)
+    if (
+        not rubric_df.empty
+        and "email" in rubric_df.columns
+        and "classification" in rubric_df.columns
+    ):
+        rubric_classes = dict(
+            zip(
+                rubric_df["email"].astype(str).str.strip().str.lower(),
+                rubric_df["classification"].astype(str).str.strip().str.lower(),
+            )
+        )
+        # Pilot-evidenced emails: never re-classify these. Pilot data
+        # is a stronger signal than rubric heuristics.
+        pilot_evidenced: set[str] = set()
+        for frame in (delivery_verified, pilot_hard):
+            if not frame.empty and "email" in frame.columns:
+                pilot_evidenced |= set(
+                    frame["email"].astype(str).str.strip().str.lower()
+                )
+
+        def _demoted(df: pd.DataFrame, target: str) -> pd.DataFrame:
+            """Pull rows out of df whose rubric classification is target
+            and whose email is not pilot-evidenced."""
+            if df.empty or "email" not in df.columns:
+                return pd.DataFrame()
+            email_lower = df["email"].astype(str).str.strip().str.lower()
+            mask = email_lower.map(
+                lambda e: rubric_classes.get(e) == target
+                and e not in pilot_evidenced
+            )
+            return df.loc[mask].copy()
+
+        # Demote rubric=removed rows out of clean/review into removed.
+        demoted_to_removed = pd.concat(
+            [
+                _demoted(clean_candidates, CLASSIFICATION_REMOVED),
+                _demoted(review_provider_limited, CLASSIFICATION_REMOVED),
+            ],
+            ignore_index=True,
+            sort=False,
+        )
+        # Demote rubric=risky rows out of clean into review.
+        demoted_to_review = _demoted(clean_candidates, CLASSIFICATION_RISKY)
+
+        if not demoted_to_removed.empty:
+            removed_emails = set(
+                demoted_to_removed["email"].astype(str).str.strip().str.lower()
+            )
+            for frame_name, frame in (
+                ("clean_candidates", clean_candidates),
+                ("review_provider_limited", review_provider_limited),
+            ):
+                if frame.empty or "email" not in frame.columns:
+                    continue
+                keep = ~frame["email"].astype(str).str.strip().str.lower().isin(
+                    removed_emails
+                )
+                if frame_name == "clean_candidates":
+                    clean_candidates = frame.loc[keep].reset_index(drop=True)
+                else:
+                    review_provider_limited = frame.loc[keep].reset_index(drop=True)
+            high_risk_removed = _concat_unique(
+                [high_risk_removed, demoted_to_removed], on="email",
+            )
+
+        if not demoted_to_review.empty:
+            review_emails = set(
+                demoted_to_review["email"].astype(str).str.strip().str.lower()
+            )
+            if not clean_candidates.empty and "email" in clean_candidates.columns:
+                keep = ~clean_candidates["email"].astype(str).str.strip().str.lower().isin(
+                    review_emails
+                )
+                clean_candidates = clean_candidates.loc[keep].reset_index(drop=True)
+            review_provider_limited = _concat_unique(
+                [review_provider_limited, demoted_to_review], on="email",
+            )
 
     # ---- Write outputs ----
     files_written: dict[str, Path] = {}

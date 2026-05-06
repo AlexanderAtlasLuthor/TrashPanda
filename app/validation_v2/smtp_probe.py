@@ -128,6 +128,21 @@ def load_skip_providers_from_file(
             "skip_smtp_providers: failed to read %s (%s) — using built-in defaults",
             candidate, exc,
         )
+
+    # Additionally fold in any domains the per-provider policy file
+    # marks as ``skip`` (or ``relay:*``, treated as skip until the
+    # relay backend is wired). Behavior is strictly additive:
+    # missing/empty policy file → no extra domains.
+    try:
+        from .network.provider_routing import load_provider_policy
+
+        policy_table = load_provider_policy()
+        domains.update(policy_table.skip_domains())
+    except Exception as exc:  # pragma: no cover - defensive
+        _LOGGER.debug(
+            "provider_policy: failed to merge skip-set (%s) — ignoring",
+            exc,
+        )
     return frozenset(domains)
 
 
