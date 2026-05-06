@@ -14,6 +14,10 @@
  */
 
 import type {
+  BatchList,
+  BatchProgress,
+  BatchStatusDoc,
+  BatchUploadResponse,
   JobCancelResponse,
   JobList,
   JobLogs,
@@ -60,6 +64,68 @@ export async function getSystemInfo(): Promise<SystemInfo> {
 
 export interface UploadFileOptions {
   config_path?: string;
+}
+
+// V2.10.18 — auto-chunked batch jobs.
+
+export interface UploadBatchOptions {
+  chunk_size?: number;
+  threshold_rows?: number;
+  allow_partial?: boolean;
+  cleanup?: boolean;
+}
+
+export async function uploadBatch(
+  file: File,
+  options?: UploadBatchOptions,
+): Promise<BatchUploadResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  if (options?.chunk_size !== undefined) {
+    form.append("chunk_size", String(options.chunk_size));
+  }
+  if (options?.threshold_rows !== undefined) {
+    form.append("threshold_rows", String(options.threshold_rows));
+  }
+  if (options?.allow_partial !== undefined) {
+    form.append("allow_partial", String(options.allow_partial));
+  }
+  if (options?.cleanup !== undefined) {
+    form.append("cleanup", String(options.cleanup));
+  }
+  const res = await fetch("/api/batches/upload", {
+    method: "POST",
+    body: form,
+  });
+  return handleResponse<BatchUploadResponse>(res);
+}
+
+export async function getBatchProgress(
+  batchId: string,
+): Promise<BatchProgress> {
+  const res = await fetch(
+    `/api/batches/${encodeURIComponent(batchId)}/progress`,
+    { cache: "no-store" },
+  );
+  return handleResponse<BatchProgress>(res);
+}
+
+export async function getBatchStatusDoc(
+  batchId: string,
+): Promise<BatchStatusDoc> {
+  const res = await fetch(`/api/batches/${encodeURIComponent(batchId)}`, {
+    cache: "no-store",
+  });
+  return handleResponse<BatchStatusDoc>(res);
+}
+
+export async function listBatches(): Promise<BatchList> {
+  const res = await fetch("/api/batches", { cache: "no-store" });
+  return handleResponse<BatchList>(res);
+}
+
+export function batchBundleDownloadUrl(batchId: string): string {
+  return `/api/batches/${encodeURIComponent(batchId)}/customer-bundle`;
 }
 
 export class ApiError extends Error {

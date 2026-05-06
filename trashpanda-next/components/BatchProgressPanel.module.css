@@ -1,0 +1,144 @@
+.panel {
+  border: 1px solid #2c2c30;
+  border-radius: 8px;
+  background: #18181b;
+  padding: 1rem 1.25rem;
+  color: #e5e5e7;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.title {
+  font-weight: 600;
+  font-size: 1rem;
+  letter-spacing: 0.01em;
+}
+
+.batchId {
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  color: #a1a1aa;
+  font-size: 0.8rem;
+}
+
+.statusBadge {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.statusBadge.queued { background: #3f3f46; color: #d4d4d8; }
+.statusBadge.running { background: #1e3a8a; color: #bfdbfe; }
+.statusBadge.completed { background: #14532d; color: #bbf7d0; }
+.statusBadge.failed { background: #7f1d1d; color: #fecaca; }
+.statusBadge.partial_failure { background: #713f12; color: #fef3c7; }
+
+.aggregateBar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.barTrack {
+  flex: 1 1 auto;
+  height: 8px;
+  background: #27272a;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.barFill {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6, #22d3ee);
+  transition: width 0.4s ease-out;
+}
+
+.barFill.completed { background: linear-gradient(90deg, #22c55e, #4ade80); }
+.barFill.failed { background: #ef4444; }
+
+.summaryLine {
+  font-size: 0.85rem;
+  color: #a1a1aa;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.table th, .table td {
+  text-align: left;
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid #27272a;
+}
+
+.table th {
+  font-weight: 500;
+  color: #a1a1aa;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.table td.right { text-align: right; font-variant-numeric: tabular-nums; }
+
+.chunkStatus { display: inline-flex; align-items: center; gap: 0.4rem; }
+.chunkStatus .icon { font-size: 0.9em; }
+.chunkStatus.running { color: #93c5fd; }
+.chunkStatus.completed { color: #86efac; }
+.chunkStatus.failed { color: #fca5a5; }
+.chunkStatus.pending { color: #71717a; }
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.actionBtn {
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.actionBtn:hover { background: #1d4ed8; }
+.actionBtn.disabled, .actionBtn:disabled {
+  background: #3f3f46;
+  color: #71717a;
+  cursor: not-allowed;
+}
+
+.errorBox {
+  background: #2a0a0a;
+  border: 1px solid #7f1d1d;
+  color: #fecaca;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

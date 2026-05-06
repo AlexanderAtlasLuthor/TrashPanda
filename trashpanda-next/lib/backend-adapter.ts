@@ -251,6 +251,108 @@ export async function adapterGetArtifactZip(jobId: string): Promise<Response> {
   );
 }
 
+// ---------------------------------------------------------------------------
+// V2.10.18 — auto-chunked batch jobs.
+// All adapters require the Python backend (no mock — the orchestrator runs
+// in a worker thread on the backend; there's nothing meaningful to mock).
+// ---------------------------------------------------------------------------
+
+const BATCH_BACKEND_REQUIRED =
+  "Batch jobs require the Python backend. Set TRASHPANDA_BACKEND_URL.";
+
+export interface AdapterBatchUploadOptions {
+  chunk_size?: number;
+  threshold_rows?: number;
+  allow_partial?: boolean;
+  cleanup?: boolean;
+}
+
+export async function adapterUploadBatch(
+  file: File,
+  options?: AdapterBatchUploadOptions,
+): Promise<import("./types").BatchUploadResponse> {
+  if (!useProxy) {
+    throw new Error(BATCH_BACKEND_REQUIRED);
+  }
+  const form = new FormData();
+  form.append("file", file);
+  if (options?.chunk_size !== undefined) {
+    form.append("chunk_size", String(options.chunk_size));
+  }
+  if (options?.threshold_rows !== undefined) {
+    form.append("threshold_rows", String(options.threshold_rows));
+  }
+  if (options?.allow_partial !== undefined) {
+    form.append("allow_partial", String(options.allow_partial));
+  }
+  if (options?.cleanup !== undefined) {
+    form.append("cleanup", String(options.cleanup));
+  }
+  const res = await fetch(`${backendUrl}/batches/upload`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    throw new Error(`Backend rejected batch upload (${res.status})`);
+  }
+  return (await res.json()) as import("./types").BatchUploadResponse;
+}
+
+export async function adapterGetBatchProgress(
+  batchId: string,
+): Promise<import("./types").BatchProgress | null> {
+  if (!useProxy) {
+    throw new Error(BATCH_BACKEND_REQUIRED);
+  }
+  const res = await fetch(
+    `${backendUrl}/batches/${encodeURIComponent(batchId)}/progress`,
+    { cache: "no-store" },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Backend error (${res.status})`);
+  return (await res.json()) as import("./types").BatchProgress;
+}
+
+export async function adapterGetBatchStatusDoc(
+  batchId: string,
+): Promise<import("./types").BatchStatusDoc | null> {
+  if (!useProxy) {
+    throw new Error(BATCH_BACKEND_REQUIRED);
+  }
+  const res = await fetch(
+    `${backendUrl}/batches/${encodeURIComponent(batchId)}`,
+    { cache: "no-store" },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Backend error (${res.status})`);
+  return (await res.json()) as import("./types").BatchStatusDoc;
+}
+
+export async function adapterListBatches(): Promise<
+  import("./types").BatchList
+> {
+  if (!useProxy) {
+    throw new Error(BATCH_BACKEND_REQUIRED);
+  }
+  const res = await fetch(`${backendUrl}/batches`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Backend error (${res.status})`);
+  return (await res.json()) as import("./types").BatchList;
+}
+
+export async function adapterDownloadBatchBundle(
+  batchId: string,
+): Promise<Response> {
+  if (!useProxy) {
+    return new Response(
+      JSON.stringify({ message: BATCH_BACKEND_REQUIRED }),
+      { status: 501, headers: { "content-type": "application/json" } },
+    );
+  }
+  return fetch(
+    `${backendUrl}/batches/${encodeURIComponent(batchId)}/customer-bundle/download`,
+  );
+}
+
 export async function adapterGetJobList(limit: number): Promise<JobList> {
   if (useProxy) {
     const res = await fetch(`${backendUrl}/jobs?limit=${limit}`, {

@@ -8,6 +8,86 @@
 
 export type JobStatus = "queued" | "running" | "completed" | "failed";
 
+// V2.10.18 — auto-chunked batch jobs.
+export type BatchStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "partial_failure";
+
+export interface BatchMergedCounts {
+  clean_deliverable: number;
+  review_provider_limited: number;
+  high_risk_removed: number;
+}
+
+/** Lightweight aggregate the UI polls every few seconds. */
+export interface BatchProgress {
+  batch_id: string;
+  status: BatchStatus;
+  n_chunks: number;
+  n_completed: number;
+  n_failed: number;
+  n_running: number;
+  n_pending: number;
+  current_chunk_index: number | null;
+  merged_counts: BatchMergedCounts | null;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+}
+
+/** One row in the chunks[] of the full batch status doc. */
+export interface BatchChunkState {
+  index: number;
+  input_path: string;
+  run_dir: string;
+  status: "pending" | "running" | "completed" | "failed";
+  started_at: string | null;
+  completed_at: string | null;
+  exit_code: number | null;
+  counts: {
+    clean_deliverable: number;
+    high_risk_removed: number;
+    review_provider_limited: number;
+  } | null;
+  error: string | null;
+}
+
+/** Full batch status document — mirrors auto_chunked_status.json. */
+export interface BatchStatusDoc {
+  started_at: string;
+  completed_at: string | null;
+  input_file: string;
+  input_format: "csv" | "xlsx";
+  total_rows: number;
+  threshold_rows: number;
+  chunk_size: number;
+  status: BatchStatus;
+  chunks: BatchChunkState[];
+  merged_at: string | null;
+  merged_counts: BatchMergedCounts | null;
+  error: string | null;
+}
+
+export interface BatchUploadResponse {
+  batch_id: string;
+  batch_dir: string;
+  input_filename: string;
+  created_at: string;
+  config: {
+    chunk_size: number;
+    threshold_rows: number;
+    allow_partial: boolean;
+    cleanup: boolean;
+  };
+}
+
+export interface BatchList {
+  batches: BatchProgress[];
+}
+
 export interface JobError {
   error_type: string;
   message: string;
