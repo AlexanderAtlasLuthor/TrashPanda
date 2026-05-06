@@ -261,6 +261,24 @@ def _log_revision_banner() -> None:
     log_startup_banner()
 
 
+@app.on_event("startup")
+def _wire_batch_router() -> None:
+    # Auto-chunked batch jobs (V2.10.18). Wired at startup so a
+    # config-only deploy of the new module enables the feature
+    # without server.py edits beyond this hook.
+    from .batch_routes import get_store, router as batch_router
+
+    app.include_router(batch_router)
+    # Reap batches that were "running" when the previous process
+    # died. The store does this lazily on first request anyway, but
+    # forcing it at startup makes orphaned batches surface in
+    # /batches immediately.
+    try:
+        get_store().reap_orphans()
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
