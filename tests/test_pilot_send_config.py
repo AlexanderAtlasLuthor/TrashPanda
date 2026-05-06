@@ -10,6 +10,7 @@ from app.pilot_send.config import (
     IMAPCredentials,
     PilotMessageTemplate,
     PilotSendConfig,
+    RelayConfig,
     read_pilot_config,
     write_pilot_config,
 )
@@ -39,6 +40,52 @@ class TestIMAPCredentials:
     def test_configured_when_host_and_user_set(self):
         creds = IMAPCredentials(host="imap.acme.com", username="bounces")
         assert creds.is_configured() is True
+
+
+class TestRelayConfig:
+    """V2.10.13 — relay metadata persistence + activation predicate."""
+
+    def test_default_relay_not_configured(self):
+        assert RelayConfig().is_configured() is False
+
+    def test_host_set_marks_configured(self):
+        assert RelayConfig(host="relay.example.com").is_configured() is True
+
+    def test_blank_host_not_configured(self):
+        assert RelayConfig(host="   ").is_configured() is False
+
+    def test_relay_round_trip(self, tmp_path: Path):
+        cfg = PilotSendConfig(
+            relay=RelayConfig(
+                host="relay.example.com",
+                port=2525,
+                username="bob",
+                password_env="MY_RELAY_PWD",
+                use_starttls=False,
+            ),
+        )
+        write_pilot_config(tmp_path, cfg)
+        loaded = read_pilot_config(tmp_path)
+        assert loaded.relay.host == "relay.example.com"
+        assert loaded.relay.port == 2525
+        assert loaded.relay.username == "bob"
+        assert loaded.relay.password_env == "MY_RELAY_PWD"
+        assert loaded.relay.use_starttls is False
+
+    def test_relay_password_never_persisted(self, tmp_path: Path):
+        """Defense in depth: only ``password_env`` (var name) is on
+        disk; no ``password`` key leaks into the JSON."""
+        cfg = PilotSendConfig(
+            relay=RelayConfig(
+                host="relay.example.com",
+                username="bob",
+                password_env="MY_RELAY_PWD",
+            ),
+        )
+        path = write_pilot_config(tmp_path, cfg)
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+        assert "password" not in parsed.get("relay", {})
+        assert parsed["relay"]["password_env"] == "MY_RELAY_PWD"
 
 
 class TestPilotSendConfigPredicates:

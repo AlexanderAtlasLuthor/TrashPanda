@@ -196,6 +196,10 @@ def launch_pilot(
     sender_kwargs: dict = {}
     if smtp_factory is not None:
         sender_kwargs["smtp_factory"] = smtp_factory
+    elif cfg.relay.is_configured():
+        # V2.10.13 — operator opted into relay mode. The factory
+        # handles AUTH; SMTPSender skips MX resolution.
+        sender_kwargs["relay_config"] = cfg.relay
     if sleep_fn is not None:
         sender_kwargs["sleep_fn"] = sleep_fn
     sender = SMTPSender(**sender_kwargs)

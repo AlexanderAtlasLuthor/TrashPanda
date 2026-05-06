@@ -32,6 +32,7 @@ What this module does NOT do
 from __future__ import annotations
 
 import logging
+import os
 import smtplib
 import socket
 import ssl
@@ -41,6 +42,8 @@ from dataclasses import dataclass
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 from typing import Callable, Iterable, Protocol
+
+from .config import RelayConfig
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -178,13 +181,22 @@ class SMTPSender:
         self,
         *,
         smtp_factory: Callable[..., SMTPTransport] | None = None,
+        relay_config: RelayConfig | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
         clock_fn: Callable[[], float] = time.perf_counter,
         timeout_seconds: float = DEFAULT_SMTP_TIMEOUT_SECONDS,
         per_recipient_delay_seconds: float = DEFAULT_PER_RECIPIENT_DELAY_SECONDS,
         ehlo_hostname: str = "trashpanda.local",
     ) -> None:
-        self._factory = smtp_factory or self._default_factory
+        self._relay = (
+            relay_config if relay_config and relay_config.is_configured() else None
+        )
+        if smtp_factory is not None:
+            self._factory = smtp_factory
+        elif self._relay is not None:
+            self._factory = self._make_relay_factory(self._relay)
+        else:
+            self._factory = self._default_factory
         self._sleep = sleep_fn
         self._clock = clock_fn
         self._timeout = timeout_seconds
@@ -207,6 +219,41 @@ class SMTPSender:
         except smtplib.SMTPException:
             pass
         return smtp
+
+    @staticmethod
+    def _make_relay_factory(
+        relay: RelayConfig,
+    ) -> Callable[..., SMTPTransport]:
+        """V2.10.13 — relay-mode factory.
+
+        Connects to the operator's submission relay rather than the
+        recipient MX. Reads the password from ``relay.password_env``
+        at call time so the literal credential never enters the
+        config object or the run dir. Empty username skips AUTH
+        (open relays exist on the LAN of some operators)."""
+
+        def make(*, host: str, port: int, timeout: float) -> SMTPTransport:
+            # ``host`` / ``port`` are passed by ``send_one`` after it
+            # substitutes the relay endpoint — bind to the relay
+            # values explicitly so a future caller can't accidentally
+            # bypass and connect to the recipient MX.
+            smtp = smtplib.SMTP(relay.host, port=relay.port, timeout=timeout)
+            smtp.ehlo()
+            if relay.use_starttls:
+                smtp.starttls(context=ssl.create_default_context())
+                smtp.ehlo()
+            if relay.username:
+                password = os.environ.get(relay.password_env, "")
+                if not password:
+                    raise smtplib.SMTPAuthenticationError(
+                        535,
+                        f"relay password env var {relay.password_env} is empty"
+                            .encode("utf-8"),
+                    )
+                smtp.login(relay.username, password)
+            return smtp
+
+        return make
 
     # --- Public API --------------------------------------------------- #
 
@@ -259,7 +306,15 @@ class SMTPSender:
                 error="invalid_recipient",
             )
 
-        mx_hosts = _resolve_mx(domain, timeout=self._timeout)
+        if self._relay is not None:
+            # V2.10.13 relay mode: single hop to the operator's
+            # submission server, no MX iteration. The relay handles
+            # downstream delivery + DKIM signing.
+            mx_hosts = [self._relay.host]
+            connect_port = self._relay.port
+        else:
+            mx_hosts = _resolve_mx(domain, timeout=self._timeout)
+            connect_port = DEFAULT_SMTP_PORT
         last_code: int | None = None
         last_msg: str | None = None
         last_error: str | None = None
@@ -268,7 +323,7 @@ class SMTPSender:
             try:
                 transport = self._factory(
                     host=mx_host,
-                    port=DEFAULT_SMTP_PORT,
+                    port=connect_port,
                     timeout=self._timeout,
                 )
             except (
