@@ -1,0 +1,17 @@
+[Unit]
+Description=TrashPanda — auto-deploy timer (poll origin/main every minute)
+Documentation=deploy/auto_deploy.sh
+
+[Timer]
+# Tight loop — a 60s detect-to-deploy window is fine for a project
+# at this scale and saves operator time vs. a 5-15min cadence.
+# Operators that want a different cadence can override this with
+# `systemctl edit trashpanda-auto-deploy.timer`.
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Unit=trashpanda-auto-deploy.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

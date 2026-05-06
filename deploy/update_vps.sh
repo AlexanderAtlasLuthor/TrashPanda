@@ -34,6 +34,12 @@ git -C "${REPO_DIR}" fetch --depth=1 origin "${REPO_BRANCH}"
 git -C "${REPO_DIR}" checkout "${REPO_BRANCH}"
 git -C "${REPO_DIR}" reset --hard "origin/${REPO_BRANCH}"
 
+# Stamp the running revision so /version surfaces what's actually
+# deployed (rather than depending on a git call inside the running
+# process, which can race with this very pull).
+git -C "${REPO_DIR}" rev-parse HEAD > "${REPO_DIR}/VERSION"
+log "stamped VERSION = $(cat "${REPO_DIR}/VERSION" | cut -c1-7)"
+
 log "refreshing python dependencies"
 "${REPO_DIR}/.venv/bin/pip" install --upgrade pip wheel >/dev/null
 "${REPO_DIR}/.venv/bin/pip" install -r "${REPO_DIR}/requirements.txt"

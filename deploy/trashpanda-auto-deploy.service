@@ -1,0 +1,18 @@
+[Unit]
+Description=TrashPanda — auto-deploy hook (poll origin/main and update on new commits)
+Documentation=deploy/auto_deploy.sh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /root/trashpanda/deploy/auto_deploy.sh
+# Don't restart on failure — the timer will retry on the next tick.
+# Keep stdout/stderr separate from the script log file so journalctl
+# stays useful for unit-level diagnostics.
+StandardOutput=journal
+StandardError=journal
+# Reasonable timeout: a healthy update_vps.sh takes ~30s
+# (pip + restart + /healthz). Anything past 5min is a hung pull or
+# stuck systemctl restart and worth surfacing.
+TimeoutStartSec=300

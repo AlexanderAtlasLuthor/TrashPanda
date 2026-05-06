@@ -251,6 +251,16 @@ JOB_STORE = InMemoryJobStore()
 
 app = FastAPI(title="TrashPanda HTTP API")
 
+
+@app.on_event("startup")
+def _log_revision_banner() -> None:
+    # First line in the backend log answers "what code is this?".
+    # The May 2026 deploy-drift incident motivated making this
+    # visible without having to ssh and `git log`.
+    from .version import log_startup_banner
+    log_startup_banner()
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -773,6 +783,22 @@ def healthz() -> dict[str, Any]:
         "auth_enabled": auth_enabled(),
         "wall_clock_seconds": MAX_JOB_WALL_CLOCK_SECONDS,
     }
+
+
+@app.get("/version")
+def version() -> dict[str, Any]:
+    """Identity of the running revision.
+
+    Operators / the UI hit this to detect deploy drift between the
+    code on ``main`` and what's actually serving requests. Cheap,
+    cached, never touches the database. ``source`` indicates how
+    the SHA was resolved — ``version_file`` is the deploy-script
+    happy path, ``git`` is a dev fallback, ``unknown`` means we
+    couldn't determine it (still safe to operate, just opaque).
+    """
+    from .version import get_version
+
+    return get_version().to_dict()
 
 
 @app.get("/system/info")
