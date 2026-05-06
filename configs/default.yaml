@@ -99,6 +99,32 @@ smtp_probe:
   max_per_domain: 3
   negative_adjustment_trigger_threshold: 3
 
+# Persistent per-email send history (SMTP probe deduplication).
+#
+# Operators iterate the same dataset many times — a sample, then a copy,
+# then a re-export. Without a cross-run memory of "we already probed
+# this address", every iteration burns sender reputation and SMTP quota
+# on candidates whose result we already have. This block enables a
+# small SQLite store keyed by ``email_normalized`` that the V2.2 SMTP
+# verification stage consults *before* each live probe; on a fresh hit
+# (within ``ttl_days``) the persisted result is replayed into the
+# per-run cache and emitted as if it had just been probed — no SMTP
+# traffic is generated.
+#
+# Only LIVE probes are recorded. Dry-run probes never write to the
+# store, so a dry-run sanity pass cannot poison subsequent live runs.
+#
+# Knobs:
+#   * ``ttl_days``     — 0 / null = never expire; default 30 days.
+#   * ``force_resend`` — operator escape hatch; true means probe every
+#                        candidate again (the store is still updated
+#                        with the new outcome).
+email_send_history:
+  enabled: true
+  sqlite_path: runtime/history/email_send_history.sqlite
+  ttl_days: 30
+  force_resend: false
+
 # V2.7 — Feedback Loop / Bounce Outcome Ingestion.
 #
 # Closes the learning loop: real campaign outcomes (delivered,

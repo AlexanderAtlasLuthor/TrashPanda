@@ -101,6 +101,23 @@ DEFAULT_SMTP_PROBE_VALUES: dict[str, Any] = {
 }
 
 
+DEFAULT_EMAIL_SEND_HISTORY_VALUES: dict[str, Any] = {
+    # Persistent per-email send history. When enabled, the SMTP
+    # verification stage consults this store before each live probe and
+    # replays the recorded outcome (within ``ttl_days``) instead of
+    # re-opening the SMTP handshake. Only live probes are recorded —
+    # dry-run results are never written.
+    #
+    # ``ttl_days`` of 0 / null means "never expire". ``force_resend``
+    # is the operator escape hatch: when true the store is read past
+    # but ignored, so a single run can re-validate every address.
+    "enabled": True,
+    "sqlite_path": "runtime/history/email_send_history.sqlite",
+    "ttl_days": 30,
+    "force_resend": False,
+}
+
+
 DEFAULT_TYPO_CORRECTION_VALUES: dict[str, Any] = {
     # "suggest_only" (default, safe) never modifies the row; it only
     # populates the new ``typo_detected`` / ``suggested_*`` columns.
@@ -412,6 +429,23 @@ class SMTPProbeConfig:
 
 
 @dataclass(slots=True)
+class EmailSendHistoryConfig:
+    """Persistent per-email send history (SMTP probe deduplication).
+
+    Read by :class:`app.engine.stages.SMTPVerificationStage` to skip
+    re-probing addresses already validated in a previous run. ``ttl_days``
+    of ``None`` / ``0`` means "never expire". ``force_resend=True`` makes
+    the stage read past the store and probe every candidate again — useful
+    when re-validating after a long gap.
+    """
+
+    enabled: bool = bool(DEFAULT_EMAIL_SEND_HISTORY_VALUES["enabled"])
+    sqlite_path: str = str(DEFAULT_EMAIL_SEND_HISTORY_VALUES["sqlite_path"])
+    ttl_days: int = int(DEFAULT_EMAIL_SEND_HISTORY_VALUES["ttl_days"])
+    force_resend: bool = bool(DEFAULT_EMAIL_SEND_HISTORY_VALUES["force_resend"])
+
+
+@dataclass(slots=True)
 class AppConfig:
     """Runtime configuration used by the pipeline bootstrap."""
 
@@ -438,6 +472,9 @@ class AppConfig:
     )
     bounce_ingestion: BounceIngestionConfig = field(
         default_factory=BounceIngestionConfig
+    )
+    email_send_history: EmailSendHistoryConfig = field(
+        default_factory=EmailSendHistoryConfig
     )
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
     post_passes: PostPassesConfig = field(default_factory=PostPassesConfig)
@@ -490,6 +527,11 @@ def load_config(
     )
     bounce_raw = (
         raw_values.pop("bounce_ingestion", {})
+        if isinstance(raw_values, dict)
+        else {}
+    )
+    email_history_raw = (
+        raw_values.pop("email_send_history", {})
         if isinstance(raw_values, dict)
         else {}
     )
@@ -590,6 +632,24 @@ def load_config(
         ),
     )
 
+    email_history_merged = {
+        **DEFAULT_EMAIL_SEND_HISTORY_VALUES,
+        **(email_history_raw or {}),
+    }
+    raw_ttl = email_history_merged.get("ttl_days")
+    try:
+        ttl_value = int(raw_ttl) if raw_ttl is not None else 0
+    except (TypeError, ValueError):
+        ttl_value = 0
+    if ttl_value < 0:
+        ttl_value = 0
+    email_history_config = EmailSendHistoryConfig(
+        enabled=bool(email_history_merged["enabled"]),
+        sqlite_path=str(email_history_merged["sqlite_path"]),
+        ttl_days=ttl_value,
+        force_resend=bool(email_history_merged["force_resend"]),
+    )
+
     bounce_merged = {**DEFAULT_BOUNCE_INGESTION_VALUES, **(bounce_raw or {})}
     bounce_config = BounceIngestionConfig(
         enabled=bool(bounce_merged["enabled"]),
@@ -666,6 +726,7 @@ def load_config(
         catch_all=catch_all_config,
         domain_intelligence=domain_intel_config,
         bounce_ingestion=bounce_config,
+        email_send_history=email_history_config,
         rollout=rollout_config,
         post_passes=post_passes_config,
         typo_correction=typo_config,

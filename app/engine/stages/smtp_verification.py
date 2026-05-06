@@ -61,6 +61,10 @@ from ...smtp_runtime import (
     compute_retry_backoff_seconds,
     get_or_create_smtp_runtime_summary,
 )
+from ...validation_v2.email_send_history import (
+    EmailSendHistoryStore,
+    EmailSendRecord,
+)
 from ...validation_v2.services.domain_intelligence import provider_family_for
 from ...validation_v2.smtp_probe import (
     SMTPResult,
@@ -467,6 +471,111 @@ def _max_retries_in_process(context: PipelineContext) -> int:
     return min(n, _MAX_IN_PROCESS_RETRIES)
 
 
+# --------------------------------------------------------------------------- #
+# Email send history (cross-run dedup) helpers                                #
+# --------------------------------------------------------------------------- #
+
+
+def _email_send_history_cfg(context: PipelineContext):
+    cfg = getattr(context, "config", None)
+    return getattr(cfg, "email_send_history", None) if cfg is not None else None
+
+
+def _resolve_email_send_history_store(
+    context: PipelineContext,
+) -> EmailSendHistoryStore | None:
+    """Return the per-run :class:`EmailSendHistoryStore` or None.
+
+    Lookup order (so tests retain full control):
+      1. ``context.extras["email_send_history_store"]`` — a store
+         already opened by the test or by ``pipeline.run`` is reused
+         verbatim. Tests that want to exercise the dedup path inject
+         an in-memory store here.
+      2. ``context.config.email_send_history`` — opens a real SQLite
+         file lazily, caches it in ``context.extras`` for the duration
+         of the run, and returns it. Only fires when the run carries a
+         real ``run_context`` (i.e. a production / API-driven run);
+         legacy stage tests use a bare ``PipelineContext`` and must
+         not have a real on-disk DB created underneath them.
+      3. None — when the config block is missing, ``enabled=False``,
+         or there is no run_context.
+    """
+    extras = getattr(context, "extras", None)
+    if extras is not None:
+        existing = extras.get("email_send_history_store")
+        if existing is not None:
+            return existing  # type: ignore[no-any-return]
+
+    cfg = _email_send_history_cfg(context)
+    if cfg is None or not bool(getattr(cfg, "enabled", False)):
+        return None
+
+    # Only open the on-disk store for real runs. Legacy unit tests
+    # construct a bare ``PipelineContext()`` (no run_context) and
+    # exercise the stage directly — opening a default-pathed SQLite
+    # file there would (a) leak state between tests and (b) create
+    # ``runtime/history/email_send_history.sqlite`` in the test cwd.
+    # Tests that care about cross-run dedup pass an explicit store
+    # via ``context.extras["email_send_history_store"]`` (path 1).
+    if getattr(context, "run_context", None) is None:
+        return None
+
+    db_path = str(getattr(cfg, "sqlite_path", "") or "").strip()
+    if not db_path:
+        return None
+
+    try:
+        store = EmailSendHistoryStore(db_path)
+        store._ensure_connection()  # noqa: SLF001 — surface schema errors early
+    except Exception as exc:  # pragma: no cover - defensive
+        _LOGGER.warning(
+            "email_send_history store unavailable at %s: %s", db_path, exc
+        )
+        return None
+
+    if extras is not None:
+        extras["email_send_history_store"] = store
+    return store
+
+
+def _email_history_ttl_days(context: PipelineContext) -> int | None:
+    cfg = _email_send_history_cfg(context)
+    if cfg is None:
+        return None
+    raw = getattr(cfg, "ttl_days", None)
+    if raw is None:
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def _email_history_force_resend(context: PipelineContext) -> bool:
+    cfg = _email_send_history_cfg(context)
+    if cfg is None:
+        return False
+    return bool(getattr(cfg, "force_resend", False))
+
+
+def _smtp_result_from_history(record: EmailSendRecord) -> SMTPResult:
+    """Reconstruct an :class:`SMTPResult` from a persisted record.
+
+    The four canonical booleans (``success``, ``is_catch_all_like``,
+    ``inconclusive``) plus the response code/message are preserved
+    verbatim so :func:`normalize_smtp_status` and the column emitter
+    behave identically on cache replay vs. a live probe.
+    """
+    return SMTPResult(
+        success=bool(record.last_was_success),
+        response_code=record.last_response_code,
+        response_message=record.last_response_message or "",
+        is_catch_all_like=bool(record.last_is_catch_all),
+        inconclusive=bool(record.last_inconclusive),
+    )
+
+
 # Statuses that signal an operationally-transient failure where a
 # short backoff + retry on the same connection sequence is worth
 # trying. ``error`` is intentionally excluded because it covers
@@ -563,6 +672,9 @@ class SMTPVerificationStage(Stage):
         cache: SMTPCache = context.extras.setdefault("smtp_cache", SMTPCache())
         probe_fn, _is_live = _resolve_probe_fn(context, self._injected_probe_fn)
         probe_kwargs = _smtp_probe_kwargs(context)
+        history_store = _resolve_email_send_history_store(context)
+        history_ttl_days = _email_history_ttl_days(context)
+        history_force_resend = _email_history_force_resend(context)
         max_candidates = _max_candidates_per_run(context)
         rate_limit = _rate_limit_per_second(context)
         min_interval = 1.0 / rate_limit if rate_limit > 0 else 0.0
@@ -609,6 +721,36 @@ class SMTPVerificationStage(Stage):
                 runtime_summary.record_status(normalize_smtp_status(cached))
                 _emit_from_result(out, cached, was_candidate=True)
                 continue
+
+            # Cross-run dedup. When the persistent send-history store
+            # has a fresh record for this email (within ``ttl_days``)
+            # we replay its result instead of opening a new SMTP
+            # handshake. The replayed result is also cached per-run
+            # so subsequent identical rows in this run hit the cheap
+            # in-memory path. ``force_resend`` flips this off without
+            # disabling writes — the operator can re-validate every
+            # address and the new outcome will overwrite the stored one.
+            if (
+                history_store is not None
+                and not history_force_resend
+            ):
+                try:
+                    record = history_store.lookup_fresh(
+                        email_normalized, history_ttl_days
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    _LOGGER.debug(
+                        "email_send_history lookup failed for %s: %s",
+                        email_normalized, exc,
+                    )
+                    record = None
+                if record is not None:
+                    replay = _smtp_result_from_history(record)
+                    cache.set(email_normalized, replay)
+                    history_store.history_hits += 1
+                    runtime_summary.record_status(normalize_smtp_status(replay))
+                    _emit_from_result(out, replay, was_candidate=True)
+                    continue
 
             # Run-level safety net: stop probing past the configured
             # ceiling but still emit canonical columns. The remaining
@@ -672,6 +814,44 @@ class SMTPVerificationStage(Stage):
             final_status = normalize_smtp_status(result)
             runtime_summary.record_probe_attempt(final_status)
             _emit_from_result(out, result, was_candidate=True)
+
+            # Persist the outcome so future runs (over the same data
+            # or a copy of it) can skip this address. We deliberately
+            # write for **every** probe-fn invocation other than the
+            # dry-run sentinel: injected mocks in tests want their
+            # outcomes recorded so integration tests can pin the
+            # write path, and live probes obviously do too. The
+            # dry-run probe is identified by its sentinel
+            # ``response_message="dry_run"`` and explicitly skipped
+            # so a sanity pass with ``smtp_probe.dry_run=true`` never
+            # poisons the store.
+            if (
+                history_store is not None
+                and (result.response_message or "").strip() != "dry_run"
+            ):
+                try:
+                    history_store.record(
+                        email_normalized=email_normalized,
+                        domain=_coerce_str(
+                            row.get("corrected_domain") or row.get("domain")
+                        ).lower(),
+                        status=final_status,
+                        smtp_result=result.verdict,
+                        response_code=(
+                            int(result.response_code)
+                            if result.response_code is not None
+                            else None
+                        ),
+                        response_message=result.response_message or "",
+                        was_success=bool(result.success),
+                        is_catch_all=bool(result.is_catch_all_like),
+                        inconclusive=bool(result.inconclusive),
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    _LOGGER.debug(
+                        "email_send_history record failed for %s: %s",
+                        email_normalized, exc,
+                    )
 
             # V2.10.11 — persistent retry queue enqueue. Only triggers
             # for outcomes still operationally transient AFTER the
