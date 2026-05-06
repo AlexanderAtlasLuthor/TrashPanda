@@ -774,6 +774,39 @@ export interface PilotSendCounts {
   hard_bounce_rate: number;
 }
 
+export interface PilotResultRow {
+  email: string;
+  domain: string;
+  provider_family: string;
+  batch_id: string;
+  state: string;
+  dsn_status: string | null;
+  dsn_smtp_code: string | null;
+  dsn_diagnostic: string | null;
+  sent_at: string | null;
+  dsn_received_at: string | null;
+}
+
+export interface PilotResultGroups {
+  delivered: PilotResultRow[];
+  hard_bounce: PilotResultRow[];
+  soft_bounce: PilotResultRow[];
+  blocked: PilotResultRow[];
+  deferred: PilotResultRow[];
+  complaint: PilotResultRow[];
+  unknown: PilotResultRow[];
+  sent: PilotResultRow[];
+  pending_send: PilotResultRow[];
+  expired: PilotResultRow[];
+}
+
+export interface PilotSendImpact {
+  to_safe: number;
+  to_removed: number;
+  to_review: number;
+  awaiting: number;
+}
+
 export interface PilotSendStatus {
   available: boolean;
   config_ready: boolean;
@@ -785,6 +818,8 @@ export interface PilotSendStatus {
   sender_address: string;
   subject: string;
   counts: PilotSendCounts;
+  results: PilotResultGroups;
+  impact: PilotSendImpact;
 }
 
 export interface PilotMessageTemplateInput {
@@ -852,6 +887,13 @@ export interface PilotFinalizeResult {
   files_written: Record<string, string>;
   counts: PilotSendCounts;
   bounce_ingestion_csv: string | null;
+  package_dir?: string | null;
+  manifest_path?: string | null;
+  safe_count?: number | null;
+  review_count?: number | null;
+  rejected_count?: number | null;
+  review_action_breakdown?: Record<string, number | null>;
+  files_regenerated?: string[];
 }
 
 export async function getPilotSendStatus(

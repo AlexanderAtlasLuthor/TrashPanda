@@ -35,6 +35,9 @@ import type {
   PilotPreviewResult,
   PilotSendConfigInput,
   PilotSendStatus,
+  RetryQueueDrainResult,
+  RetryQueueFinalizeResult,
+  RetryQueueStatus,
 } from "./api";
 import {
   createMockJob,
@@ -803,6 +806,42 @@ export async function adapterGetOperatorReviewSummary(
 ): Promise<OperatorReviewSummary> {
   return operatorJson<OperatorReviewSummary>(
     `/api/operator/jobs/${encodeURIComponent(jobId)}/operator-review`,
+  );
+}
+
+export async function adapterGetOperatorRetryQueueStatus(
+  jobId: string,
+): Promise<RetryQueueStatus> {
+  return operatorJson<RetryQueueStatus>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/retry-queue/status`,
+  );
+}
+
+export async function adapterRunOperatorRetryQueueDrain(
+  jobId: string,
+): Promise<RetryQueueDrainResult> {
+  return operatorJson<RetryQueueDrainResult>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/retry-queue/run`,
+    { method: "POST" },
+  );
+}
+
+export async function adapterSetOperatorRetryQueueAutoRetry(
+  jobId: string,
+  enabled: boolean,
+): Promise<{ auto_retry_enabled: boolean }> {
+  return operatorJson<{ auto_retry_enabled: boolean }>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/retry-queue/auto-retry?enabled=${encodeURIComponent(String(enabled))}`,
+    { method: "PATCH" },
+  );
+}
+
+export async function adapterFinalizeOperatorRetryQueue(
+  jobId: string,
+): Promise<RetryQueueFinalizeResult> {
+  return operatorJson<RetryQueueFinalizeResult>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/retry-queue/finalize`,
+    { method: "POST" },
   );
 }
 

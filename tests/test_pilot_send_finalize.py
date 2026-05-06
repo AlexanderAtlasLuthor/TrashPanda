@@ -11,6 +11,7 @@ import pytest
 from app.db.pilot_send_tracker import (
     open_for_run as open_tracker,
     VERDICT_BLOCKED,
+    VERDICT_DEFERRED,
     VERDICT_DELIVERED,
     VERDICT_HARD_BOUNCE,
     VERDICT_SOFT_BOUNCE,
@@ -58,7 +59,8 @@ def _setup_tracker(
                 continue
             tracker.mark_sent(row.id, message_id=f"<{token}@x>", now=sent_at)
             if verdict in {VERDICT_DELIVERED, VERDICT_HARD_BOUNCE,
-                           VERDICT_SOFT_BOUNCE, VERDICT_BLOCKED}:
+                           VERDICT_SOFT_BOUNCE, VERDICT_BLOCKED,
+                           VERDICT_DEFERRED}:
                 tracker.record_dsn(token, dsn_status=verdict, now=sent_at)
 
 
@@ -120,6 +122,104 @@ class TestHappyPath:
         assert result.counts.hard_bounce == 1
         assert result.counts.soft_bounce == 1
         assert result.counts.blocked == 1
+
+    def test_rebuckets_technical_csvs_for_client_outputs(
+        self, run_dir: Path
+    ):
+        columns = [
+            "email",
+            "source_row_number",
+            "provider_family",
+            "deliverability_probability",
+            "smtp_status",
+            "final_action",
+            "decision_reason",
+            "client_reason",
+        ]
+        review_rows = [
+            {
+                "email": "ok@x.com",
+                "source_row_number": "2",
+                "provider_family": "corporate_unknown",
+                "deliverability_probability": "0.72",
+                "smtp_status": "timeout",
+                "final_action": "manual_review",
+                "decision_reason": "smtp_timeout",
+                "client_reason": "Needs retry",
+            },
+            {
+                "email": "hard@x.com",
+                "source_row_number": "3",
+                "provider_family": "corporate_unknown",
+                "deliverability_probability": "0.70",
+                "smtp_status": "timeout",
+                "final_action": "manual_review",
+                "decision_reason": "smtp_timeout",
+                "client_reason": "Needs retry",
+            },
+            {
+                "email": "soft@x.com",
+                "source_row_number": "4",
+                "provider_family": "corporate_unknown",
+                "deliverability_probability": "0.70",
+                "smtp_status": "timeout",
+                "final_action": "manual_review",
+                "decision_reason": "smtp_timeout",
+                "client_reason": "Needs retry",
+            },
+            {
+                "email": "blocked@x.com",
+                "source_row_number": "5",
+                "provider_family": "corporate_unknown",
+                "deliverability_probability": "0.70",
+                "smtp_status": "timeout",
+                "final_action": "manual_review",
+                "decision_reason": "smtp_timeout",
+                "client_reason": "Needs retry",
+            },
+            {
+                "email": "deferred@x.com",
+                "source_row_number": "6",
+                "provider_family": "corporate_unknown",
+                "deliverability_probability": "0.70",
+                "smtp_status": "timeout",
+                "final_action": "manual_review",
+                "decision_reason": "smtp_timeout",
+                "client_reason": "Needs retry",
+            },
+        ]
+        pd.DataFrame(columns=columns).to_csv(
+            run_dir / "clean_high_confidence.csv", index=False
+        )
+        pd.DataFrame(review_rows, columns=columns).to_csv(
+            run_dir / "review_medium_confidence.csv", index=False
+        )
+        pd.DataFrame(columns=columns).to_csv(
+            run_dir / "removed_invalid.csv", index=False
+        )
+
+        _setup_tracker(
+            run_dir,
+            rows=[
+                ("t1", "ok@x.com", VERDICT_DELIVERED),
+                ("t2", "hard@x.com", VERDICT_HARD_BOUNCE),
+                ("t3", "soft@x.com", VERDICT_SOFT_BOUNCE),
+                ("t4", "blocked@x.com", VERDICT_BLOCKED),
+                ("t5", "deferred@x.com", VERDICT_DEFERRED),
+            ],
+        )
+        finalize_pilot(run_dir, feed_bounce_ingestion=False)
+
+        clean = pd.read_csv(run_dir / "clean_high_confidence.csv")
+        review = pd.read_csv(run_dir / "review_medium_confidence.csv")
+        removed = pd.read_csv(run_dir / "removed_invalid.csv")
+
+        assert clean["email"].tolist() == ["ok@x.com"]
+        assert set(review["email"].tolist()) == {"soft@x.com", "deferred@x.com"}
+        assert set(removed["email"].tolist()) == {"hard@x.com", "blocked@x.com"}
+        assert clean.loc[0, "decision_reason"] == "pilot_delivery_verified"
+        assert set(removed["final_action"].tolist()) == {"auto_reject"}
+        assert set(review["final_action"].tolist()) == {"manual_review"}
 
     def test_files_have_correct_rows(self, run_dir: Path):
         _setup_tracker(

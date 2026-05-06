@@ -10,6 +10,7 @@ import {
   previewPilotCandidates,
   setPilotSendConfig,
   type PilotPreviewCandidate,
+  type PilotResultRow,
   type PilotSendConfigInput,
   type PilotSendStatus,
 } from "@/lib/api";
@@ -19,6 +20,71 @@ import styles from "./PilotSendCard.module.css";
 interface Props {
   jobId: string;
   visible?: boolean;
+  onFinalize?: () => void | Promise<void>;
+}
+
+function emptyRows(rows: PilotResultRow[] | undefined): PilotResultRow[] {
+  return rows ?? [];
+}
+
+function resultCode(row: PilotResultRow): string {
+  return row.dsn_smtp_code || row.dsn_status || row.state;
+}
+
+function diagnostic(row: PilotResultRow): string {
+  const text = row.dsn_diagnostic?.trim();
+  if (text) return text;
+  if (row.dsn_status) return row.dsn_status;
+  return row.state;
+}
+
+function OutcomeList({
+  title,
+  subtitle,
+  rows,
+  tone,
+  empty,
+}: {
+  title: string;
+  subtitle: string;
+  rows: PilotResultRow[];
+  tone: "success" | "danger" | "warn" | "muted";
+  empty: string;
+}) {
+  return (
+    <div className={`${styles.outcomePanel} ${styles[`outcome_${tone}`]}`}>
+      <div className={styles.outcomeHeader}>
+        <div>
+          <div className={styles.outcomeTitle}>{title}</div>
+          <div className={styles.outcomeSubtitle}>{subtitle}</div>
+        </div>
+        <div className={styles.outcomeCount}>{rows.length.toLocaleString()}</div>
+      </div>
+      {rows.length === 0 ? (
+        <div className={styles.emptyOutcome}>{empty}</div>
+      ) : (
+        <ul className={styles.outcomeList}>
+          {rows.slice(0, 12).map((row) => (
+            <li key={`${row.batch_id}:${row.email}:${resultCode(row)}`}>
+              <div className={styles.resultTopline}>
+                <code>{row.email}</code>
+                <span>{resultCode(row)}</span>
+              </div>
+              <div className={styles.resultMeta}>
+                {row.provider_family || row.domain}
+                {diagnostic(row) ? ` · ${diagnostic(row)}` : ""}
+              </div>
+            </li>
+          ))}
+          {rows.length > 12 && (
+            <li className={styles.moreRows}>
+              +{(rows.length - 12).toLocaleString()} more in tracker
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -34,7 +100,11 @@ interface Props {
  * intentionally collapsable — most jobs won't run a pilot send and
  * the form is large.
  */
-export function PilotSendCard({ jobId, visible = true }: Props) {
+export function PilotSendCard({
+  jobId,
+  visible = true,
+  onFinalize: onFinalizeComplete,
+}: Props) {
   const [status, setStatus] = useState<PilotSendStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<
@@ -142,6 +212,7 @@ export function PilotSendCard({ jobId, visible = true }: Props) {
     try {
       await finalizePilot(jobId);
       await refresh();
+      await onFinalizeComplete?.();
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Finalize failed");
     } finally {
@@ -150,6 +221,25 @@ export function PilotSendCard({ jobId, visible = true }: Props) {
   };
 
   const c = status?.counts;
+  const results = status?.results;
+  const deliveredRows = emptyRows(results?.delivered);
+  const removedRows = [
+    ...emptyRows(results?.hard_bounce),
+    ...emptyRows(results?.blocked),
+    ...emptyRows(results?.complaint),
+  ];
+  const reviewRows = [
+    ...emptyRows(results?.soft_bounce),
+    ...emptyRows(results?.deferred),
+    ...emptyRows(results?.unknown),
+    ...emptyRows(results?.expired),
+  ];
+  const awaitingRows = [
+    ...emptyRows(results?.sent),
+    ...emptyRows(results?.pending_send),
+  ];
+  const hasPilotRows =
+    deliveredRows.length + removedRows.length + reviewRows.length + awaitingRows.length > 0;
   const launchDisabled =
     busy !== "idle" || !status?.config_ready || !status?.authorization_confirmed;
 
@@ -196,6 +286,31 @@ export function PilotSendCard({ jobId, visible = true }: Props) {
           <span className={styles.muted}>
             hard-bounce rate {(c.hard_bounce_rate * 100).toFixed(1)}%
           </span>
+        </div>
+      )}
+
+      {c && (
+        <div className={styles.impactGrid}>
+          <div className={`${styles.impactTile} ${styles.impactSuccess}`}>
+            <span>Passed</span>
+            <strong>{deliveredRows.length.toLocaleString()}</strong>
+            <small>moves to confirmed safe</small>
+          </div>
+          <div className={`${styles.impactTile} ${styles.impactDanger}`}>
+            <span>Hard / blocked</span>
+            <strong>{removedRows.length.toLocaleString()}</strong>
+            <small>moves to high-risk removed</small>
+          </div>
+          <div className={`${styles.impactTile} ${styles.impactWarn}`}>
+            <span>Soft / deferred</span>
+            <strong>{reviewRows.length.toLocaleString()}</strong>
+            <small>stays in manual review</small>
+          </div>
+          <div className={styles.impactTile}>
+            <span>Waiting</span>
+            <strong>{awaitingRows.length.toLocaleString()}</strong>
+            <small>not re-bucketed yet</small>
+          </div>
         </div>
       )}
 
@@ -517,6 +632,42 @@ export function PilotSendCard({ jobId, visible = true }: Props) {
               </li>
             )}
           </ul>
+        </div>
+      )}
+
+      {hasPilotRows && (
+        <div className={styles.resultsBlock}>
+          <div className={styles.subheading}>Bounce check outcomes</div>
+          <div className={styles.outcomesGrid}>
+            <OutcomeList
+              title="Passed delivery check"
+              subtitle="Will become delivery-verified"
+              rows={deliveredRows}
+              tone="success"
+              empty="No passed rows yet."
+            />
+            <OutcomeList
+              title="Hard bounce / blocked"
+              subtitle="Will move to high-risk removed"
+              rows={removedRows}
+              tone="danger"
+              empty="No hard bounces or blocks."
+            />
+            <OutcomeList
+              title="Soft / deferred"
+              subtitle="Stays in review for another pass"
+              rows={reviewRows}
+              tone="warn"
+              empty="No transient bounces."
+            />
+            <OutcomeList
+              title="Still waiting"
+              subtitle="Sent or queued without final verdict"
+              rows={awaitingRows}
+              tone="muted"
+              empty="No rows waiting."
+            />
+          </div>
         </div>
       )}
 

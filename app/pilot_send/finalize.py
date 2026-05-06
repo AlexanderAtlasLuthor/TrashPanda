@@ -60,6 +60,7 @@ from ..db.pilot_send_tracker import (
     VERDICT_DELIVERED,
     VERDICT_HARD_BOUNCE,
     VERDICT_SOFT_BOUNCE,
+    VERDICT_UNKNOWN,
     open_for_run,
     PilotCounts,
 )
@@ -75,6 +76,19 @@ PILOT_SOFT_BOUNCES_XLSX: str = "pilot_soft_bounces.xlsx"
 PILOT_BLOCKED_OR_DEFERRED_XLSX: str = "pilot_blocked_or_deferred.xlsx"
 PILOT_SUMMARY_REPORT_XLSX: str = "pilot_summary_report.xlsx"
 UPDATED_DO_NOT_SEND_XLSX: str = "updated_do_not_send.xlsx"
+
+
+_TECHNICAL_BUCKET_FILES: dict[str, str] = {
+    "clean_high_confidence": "clean_high_confidence.csv",
+    "review_medium_confidence": "review_medium_confidence.csv",
+    "removed_invalid": "removed_invalid.csv",
+}
+
+_PILOT_REVIEW_VERDICTS: frozenset[str] = frozenset({
+    VERDICT_SOFT_BOUNCE,
+    VERDICT_DEFERRED,
+    VERDICT_UNKNOWN,
+})
 
 
 @dataclass(slots=True)
@@ -199,6 +213,228 @@ def _merge_into_do_not_send(
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         combined.to_excel(writer, sheet_name="do_not_send", index=False)
     return out_path
+
+
+# --------------------------------------------------------------------------- #
+# Technical CSV re-bucketing
+# --------------------------------------------------------------------------- #
+
+
+def _normalize_email(value: object) -> str:
+    text = str(value or "").strip().lower()
+    return text if "@" in text else ""
+
+
+def _read_bucket_csv(path: Path) -> pd.DataFrame:
+    if not path.is_file() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(
+            path,
+            dtype=str,
+            keep_default_na=False,
+            na_filter=False,
+        )
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
+
+
+def _write_bucket_csv(path: Path, df: pd.DataFrame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+
+
+def _source_row_for_email(
+    frames: dict[str, pd.DataFrame],
+    email: str,
+) -> dict[str, object] | None:
+    """Return the best existing technical CSV row for ``email``.
+
+    Pilot send candidates originate from the review action XLSXs, so
+    prefer the review bucket when a row still exists there. On a
+    re-run, the same email may already have been moved to clean or
+    removed; those are valid sources too, which keeps finalize
+    idempotent.
+    """
+    for bucket in (
+        "review_medium_confidence",
+        "clean_high_confidence",
+        "removed_invalid",
+    ):
+        df = frames.get(bucket, pd.DataFrame())
+        if df.empty or "email" not in df.columns:
+            continue
+        mask = df["email"].map(_normalize_email) == email
+        if bool(mask.any()):
+            return df.loc[mask].iloc[0].to_dict()
+    return None
+
+
+def _fallback_row(row: PilotRow) -> dict[str, object]:
+    return {
+        "email": row.email,
+        "source_row_number": str(row.source_row or ""),
+        "domain": row.domain,
+        "provider_family": row.provider_family or "corporate_unknown",
+    }
+
+
+def _response_message(row: PilotRow) -> str:
+    diagnostic = (row.dsn_diagnostic or "").strip()
+    if diagnostic:
+        return diagnostic[:300]
+    verdict = row.dsn_status or row.state
+    return f"pilot_send:{verdict}"
+
+
+def _apply_pilot_verdict_columns(
+    data: dict[str, object],
+    row: PilotRow,
+    *,
+    target_bucket: str,
+) -> dict[str, object]:
+    """Stamp the technical row with the post-pilot decision columns."""
+    verdict = row.dsn_status or "unknown"
+    code = row.dsn_smtp_code or ""
+    message = _response_message(row)
+    out = dict(data)
+    out["email"] = row.email
+    out["provider_family"] = (
+        out.get("provider_family") or row.provider_family or "corporate_unknown"
+    )
+    out["smtp_response_code"] = code
+    out["smtp_response_message"] = message
+    out["pilot_send_verdict"] = verdict
+    out["pilot_send_batch_id"] = row.batch_id
+    out["pilot_send_finalized_at"] = datetime.now(timezone.utc).isoformat()
+
+    if target_bucket == "clean_high_confidence":
+        out.update({
+            "final_action": "auto_approve",
+            "decision_reason": "pilot_delivery_verified",
+            "decision_confidence": "1.0",
+            "deliverability_probability": "1.0",
+            "smtp_status": "valid",
+            "smtp_confirmed_valid": "true",
+            "smtp_response_type": "pilot_delivered",
+            "client_reason": "Pilot send verified delivery.",
+            "final_output_reason": "pilot_delivery_verified",
+        })
+    elif target_bucket == "removed_invalid":
+        reason = f"pilot_{verdict}"
+        smtp_status = "blocked" if verdict == VERDICT_BLOCKED else "invalid"
+        if verdict == VERDICT_COMPLAINT:
+            smtp_status = "complaint"
+        out.update({
+            "final_action": "auto_reject",
+            "decision_reason": reason,
+            "decision_confidence": "1.0",
+            "deliverability_probability": "0.0",
+            "smtp_status": smtp_status,
+            "smtp_confirmed_valid": "false",
+            "smtp_response_type": verdict,
+            "client_reason": (
+                "Pilot send produced a hard bounce or block. Do not use."
+            ),
+            "final_output_reason": reason,
+        })
+    else:
+        reason = f"pilot_{verdict}"
+        smtp_status = "temp_fail" if verdict == VERDICT_SOFT_BOUNCE else "deferred"
+        if verdict == VERDICT_UNKNOWN:
+            smtp_status = "unknown"
+        out.update({
+            "final_action": "manual_review",
+            "decision_reason": reason,
+            "decision_confidence": "0.8",
+            "smtp_status": smtp_status,
+            "smtp_confirmed_valid": "false",
+            "smtp_response_type": verdict,
+            "client_reason": (
+                "Pilot send returned a transient or inconclusive bounce. "
+                "Keep in review before retrying."
+            ),
+            "final_output_reason": reason,
+        })
+    return out
+
+
+def _target_bucket_for_pilot_row(row: PilotRow) -> str | None:
+    verdict = row.dsn_status
+    if verdict in DELIVERY_VERIFIED_VERDICTS:
+        return "clean_high_confidence"
+    if verdict in DO_NOT_SEND_VERDICTS:
+        return "removed_invalid"
+    if verdict in _PILOT_REVIEW_VERDICTS or row.state == "expired":
+        return "review_medium_confidence"
+    return None
+
+
+def _apply_pilot_results_to_technical_buckets(
+    *,
+    run_dir: Path,
+    rows: list[PilotRow],
+) -> dict[str, Path]:
+    """Move pilot-result rows into the base CSV buckets.
+
+    This is the step that makes "Re-clean with pilot results" update
+    the dashboard counts and regenerated client package. Hard bounces
+    and blocks become removed rows, transient bounces remain review,
+    and delivery-verified rows become clean. Pending/sent rows are
+    intentionally left untouched until the operator has a verdict.
+    """
+    targets: dict[str, str] = {}
+    by_email: dict[str, PilotRow] = {}
+    for row in rows:
+        email = _normalize_email(row.email)
+        if not email:
+            continue
+        bucket = _target_bucket_for_pilot_row(row)
+        if bucket is None:
+            continue
+        targets[email] = bucket
+        by_email[email] = row
+
+    if not targets:
+        return {}
+
+    frames = {
+        bucket: _read_bucket_csv(run_dir / filename)
+        for bucket, filename in _TECHNICAL_BUCKET_FILES.items()
+    }
+    moved_rows: dict[str, list[dict[str, object]]] = {
+        bucket: [] for bucket in _TECHNICAL_BUCKET_FILES
+    }
+
+    for email, bucket in targets.items():
+        pilot_row = by_email[email]
+        source = _source_row_for_email(frames, email) or _fallback_row(pilot_row)
+        moved_rows[bucket].append(
+            _apply_pilot_verdict_columns(
+                source,
+                pilot_row,
+                target_bucket=bucket,
+            )
+        )
+
+    target_emails = set(targets)
+    written: dict[str, Path] = {}
+    for bucket, filename in _TECHNICAL_BUCKET_FILES.items():
+        path = run_dir / filename
+        current = frames.get(bucket, pd.DataFrame())
+        if not current.empty and "email" in current.columns:
+            keep_mask = ~current["email"].map(_normalize_email).isin(target_emails)
+            current = current.loc[keep_mask].copy()
+        additions = moved_rows[bucket]
+        if additions:
+            current = pd.concat(
+                [current, pd.DataFrame(additions)],
+                ignore_index=True,
+                sort=False,
+            )
+        _write_bucket_csv(path, current)
+        written[bucket] = path
+    return written
 
 
 # --------------------------------------------------------------------------- #
@@ -339,6 +575,13 @@ def finalize_pilot(
         )
         if merged is not None:
             files_written["updated_do_not_send"] = merged
+
+        bucket_updates = _apply_pilot_results_to_technical_buckets(
+            run_dir=run_dir_path,
+            rows=all_rows,
+        )
+        for bucket, path in bucket_updates.items():
+            files_written[f"{bucket}_csv"] = path
 
     # Bounce-ingestion bridge — feed per-domain aggregate.
     bounce_csv: Path | None = None

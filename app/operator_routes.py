@@ -1261,12 +1261,23 @@ def _read_smtp_runtime_for_run(run_dir: Path) -> dict[str, Any] | None:
 
 
 def _job_summary_counts(job_id: str) -> dict[str, int]:
-    """Best-effort counts from the stored job summary."""
+    """Best-effort counts from the latest summary artifacts.
+
+    Operator re-clean actions regenerate ``summary_report.xlsx`` after
+    the original job has already completed. Prefer that fresh artifact
+    over the stored JobResult snapshot so bundle gates and dashboard
+    refreshes see the updated safe / review / rejected counts.
+    """
 
     from . import server
+    from .api_boundary import load_job_summary
 
     result = server._load_job_result(job_id)
     summary = getattr(result, "summary", None) if result is not None else None
+    try:
+        summary = load_job_summary(_resolve_run_dir(job_id)) or summary
+    except Exception:
+        pass
     return {
         "safe_count": _coerce_count(getattr(summary, "total_valid", 0)),
         "review_count": _coerce_count(getattr(summary, "total_review", 0)),
@@ -1680,6 +1691,70 @@ def operator_finalize_retry_queue(job_id: str) -> Any:
     )
 
 
+_PILOT_RESULT_KEYS: tuple[str, ...] = (
+    "delivered",
+    "hard_bounce",
+    "soft_bounce",
+    "blocked",
+    "deferred",
+    "complaint",
+    "unknown",
+    "sent",
+    "pending_send",
+    "expired",
+)
+
+
+def _pilot_row_to_operator_dict(row: Any) -> dict[str, Any]:
+    def _iso(value: Any) -> str | None:
+        return value.isoformat() if value is not None else None
+
+    return {
+        "email": row.email,
+        "domain": row.domain,
+        "provider_family": row.provider_family,
+        "batch_id": row.batch_id,
+        "state": row.state,
+        "dsn_status": row.dsn_status,
+        "dsn_smtp_code": row.dsn_smtp_code,
+        "dsn_diagnostic": (row.dsn_diagnostic or "")[:300],
+        "sent_at": _iso(row.sent_at),
+        "dsn_received_at": _iso(row.dsn_received_at),
+    }
+
+
+def _empty_pilot_results() -> dict[str, list[dict[str, Any]]]:
+    return {key: [] for key in _PILOT_RESULT_KEYS}
+
+
+def _pilot_results_from_rows(rows: list[Any]) -> dict[str, list[dict[str, Any]]]:
+    results = _empty_pilot_results()
+    for row in rows:
+        key = row.dsn_status if row.dsn_status in results else row.state
+        if key not in results:
+            key = "unknown"
+        results[key].append(_pilot_row_to_operator_dict(row))
+    return results
+
+
+def _pilot_impact_from_counts(counts: Any) -> dict[str, int]:
+    return {
+        "to_safe": int(counts.delivered or 0),
+        "to_removed": int(
+            (counts.hard_bounce or 0)
+            + (counts.blocked or 0)
+            + (counts.complaint or 0)
+        ),
+        "to_review": int(
+            (counts.soft_bounce or 0)
+            + (counts.deferred or 0)
+            + (counts.unknown or 0)
+            + (counts.expired or 0)
+        ),
+        "awaiting": int((counts.pending_send or 0) + (counts.sent or 0)),
+    }
+
+
 @router.get("/jobs/{job_id}/pilot-send/status")
 def operator_get_pilot_send_status(job_id: str) -> Any:
     """Pilot-send tracker counts + config readiness for the UI card.
@@ -1712,7 +1787,10 @@ def operator_get_pilot_send_status(job_id: str) -> Any:
     if tracker_path.is_file():
         with closing(open_for_run(run_dir)) as tracker:
             counts = tracker.counts()
+            rows = tracker.snapshot(limit=500)
         payload["counts"] = counts.to_dict()
+        payload["results"] = _pilot_results_from_rows(rows)
+        payload["impact"] = _pilot_impact_from_counts(counts)
     else:
         payload["counts"] = {
             "pending_send": 0,
@@ -1728,6 +1806,13 @@ def operator_get_pilot_send_status(job_id: str) -> Any:
             "unknown": 0,
             "total": 0,
             "hard_bounce_rate": 0.0,
+        }
+        payload["results"] = _empty_pilot_results()
+        payload["impact"] = {
+            "to_safe": 0,
+            "to_removed": 0,
+            "to_review": 0,
+            "awaiting": 0,
         }
     return _operator_response(payload)
 
@@ -1899,10 +1984,17 @@ def operator_finalize_pilot(job_id: str) -> Any:
     ``updated_do_not_send.xlsx`` / etc., and feeds the results into
     the V2.7 ``bounce_ingestion`` per-domain aggregate.
     """
+    from .client_output import generate_client_outputs
+    from .client_package_builder import build_client_delivery_package
     from .pilot_send.finalize import finalize_pilot
 
     run_dir = _resolve_run_dir(job_id)
     result = finalize_pilot(run_dir)
+    written = {}
+    package = None
+    if result.files_written:
+        written = generate_client_outputs(run_dir)
+        package = build_client_delivery_package(run_dir)
     return _operator_response(
         {
             "files_written": {
@@ -1914,6 +2006,17 @@ def operator_finalize_pilot(job_id: str) -> Any:
                 if result.bounce_ingestion_csv
                 else None
             ),
+            "package_dir": str(package.package_dir) if package else None,
+            "manifest_path": str(package.manifest_path) if package else None,
+            "safe_count": package.safe_count if package else None,
+            "review_count": package.review_count if package else None,
+            "rejected_count": package.rejected_count if package else None,
+            "review_action_breakdown": (
+                dict(package.review_action_breakdown) if package else {}
+            ),
+            "files_regenerated": [
+                str(path) for path in written.values()
+            ],
         }
     )
 

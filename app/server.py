@@ -553,7 +553,35 @@ def _load_job_result(job_id: str) -> JobResult | None:
     # DB is unavailable or has no record for this job; fall back to the
     # in-memory store so the public API keeps working in dev/test and when
     # PostgreSQL is down.
-    return JOB_STORE.get(job_id)
+    in_memory = JOB_STORE.get(job_id)
+    if in_memory is not None:
+        return in_memory
+    return _load_completed_job_from_run_dir(job_id)
+
+
+def _load_completed_job_from_run_dir(job_id: str) -> JobResult | None:
+    """Rehydrate a completed job from runtime artifacts after a restart."""
+    job_output_dir = RUNTIME_ROOT / "jobs" / job_id
+    run_dir = _latest_run_dir(job_output_dir)
+    if run_dir is None:
+        return None
+    try:
+        summary = load_job_summary(run_dir)
+        artifacts = collect_job_artifacts(run_dir)
+        mtime = datetime.fromtimestamp(run_dir.stat().st_mtime, tz=timezone.utc)
+    except Exception:
+        return None
+    return JobResult(
+        job_id=job_id,
+        status=JobStatus.COMPLETED,
+        input_filename=job_id,
+        run_dir=run_dir,
+        summary=summary,
+        artifacts=artifacts,
+        error=None,
+        started_at=mtime,
+        finished_at=mtime,
+    )
 
 
 def _db_artifact_path(

@@ -69,6 +69,70 @@
   color: var(--warn, #ffb83a);
 }
 
+.impactGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.impactTile {
+  min-height: 82px;
+  padding: 10px 12px;
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.025);
+  display: grid;
+  align-content: space-between;
+  gap: 5px;
+}
+
+.impactTile span {
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.impactTile strong {
+  color: var(--text-default, rgba(255, 255, 255, 0.9));
+  font-size: 28px;
+  line-height: 1;
+}
+
+.impactTile small {
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.impactSuccess {
+  border-color: rgba(142, 255, 58, 0.3);
+  background: rgba(142, 255, 58, 0.05);
+}
+
+.impactSuccess strong {
+  color: var(--neon, #8eff3a);
+}
+
+.impactDanger {
+  border-color: rgba(255, 58, 92, 0.35);
+  background: rgba(255, 58, 92, 0.05);
+}
+
+.impactDanger strong {
+  color: var(--danger, rgba(255, 58, 92, 0.95));
+}
+
+.impactWarn {
+  border-color: rgba(255, 184, 58, 0.35);
+  background: rgba(255, 184, 58, 0.05);
+}
+
+.impactWarn strong {
+  color: var(--warn, #ffb83a);
+}
+
 .warning {
   margin-bottom: 12px;
   padding: 8px 10px;
@@ -228,6 +292,127 @@
   overflow-y: auto;
 }
 
+.resultsBlock {
+  margin-top: 14px;
+}
+
+.outcomesGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.outcomePanel {
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  background: rgba(3, 8, 14, 0.38);
+  min-height: 172px;
+  overflow: hidden;
+}
+
+.outcome_success {
+  border-color: rgba(142, 255, 58, 0.26);
+}
+
+.outcome_danger {
+  border-color: rgba(255, 58, 92, 0.35);
+}
+
+.outcome_warn {
+  border-color: rgba(255, 184, 58, 0.35);
+}
+
+.outcome_muted {
+  border-color: rgba(148, 163, 184, 0.22);
+}
+
+.outcomeHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.outcomeTitle {
+  color: var(--text-default, rgba(255, 255, 255, 0.9));
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.outcomeSubtitle {
+  margin-top: 3px;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.outcomeCount {
+  min-width: 34px;
+  text-align: right;
+  color: var(--text-default, rgba(255, 255, 255, 0.9));
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.outcomeList {
+  list-style: none;
+  margin: 0;
+  padding: 8px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.outcomeList li {
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.outcomeList li:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.resultTopline {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.resultTopline code {
+  color: rgba(255, 255, 255, 0.88);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.resultTopline span {
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  flex-shrink: 0;
+}
+
+.resultMeta {
+  margin-top: 3px;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.emptyOutcome,
+.moreRows {
+  padding: 12px;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  font-size: 12px;
+}
+
 .error {
   margin-top: 10px;
   padding: 8px 10px;
@@ -236,4 +421,29 @@
   background: rgba(255, 58, 92, 0.06);
   color: var(--danger, rgba(255, 58, 92, 0.95));
   font-size: 12px;
+}
+
+@media (max-width: 980px) {
+  .impactGrid,
+  .outcomesGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .impactGrid,
+  .outcomesGrid,
+  .field {
+    grid-template-columns: 1fr;
+  }
+
+  .actions {
+    align-items: stretch;
+  }
+
+  .btnPrimary,
+  .btnSecondary,
+  .btnDanger {
+    width: 100%;
+  }
 }

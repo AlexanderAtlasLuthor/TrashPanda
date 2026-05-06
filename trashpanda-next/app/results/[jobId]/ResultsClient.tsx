@@ -9,7 +9,7 @@ import {
   ApiError,
   type ClientBundleSummary,
 } from "@/lib/api";
-import type { JobResult } from "@/lib/types";
+import type { JobResult, JobSummary } from "@/lib/types";
 import { Topbar } from "@/components/Topbar";
 import { JobStatusPanel } from "@/components/JobStatusPanel";
 import { LiveLogsPanel } from "@/components/LiveLogsPanel";
@@ -33,6 +33,19 @@ const LOG_LIMIT = 25;
 
 function shouldPoll(job: JobResult | null): boolean {
   return job?.status === "queued" || job?.status === "running";
+}
+
+function summaryWithBundleCounts(
+  summary: JobSummary | null | undefined,
+  bundleSummary: ClientBundleSummary | null,
+): JobSummary | null {
+  if (!bundleSummary) return summary ?? null;
+  return {
+    ...(summary ?? {}),
+    total_valid: bundleSummary.safe_count,
+    total_review: bundleSummary.review_count,
+    total_invalid_or_bounce_risk: bundleSummary.rejected_count,
+  };
 }
 
 function formatDuration(
@@ -221,6 +234,18 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
     failed:    { title: "JOB/FAILED",   crumb: "FAILED"    },
   };
   const { title, crumb } = titleByStatus[job.status];
+  const displaySummary = summaryWithBundleCounts(job.summary, bundleSummary);
+  const refreshCompletedCounts = () => {
+    getClientBundleSummary(jobId)
+      .then(setBundleSummary)
+      .catch(() => {});
+    getJob(jobId)
+      .then((next) => {
+        jobRef.current = next;
+        setJob(next);
+      })
+      .catch(() => {});
+  };
 
   return (
     <>
@@ -281,7 +306,7 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
           </div>
           <div className="fade-up">
             <ExecutiveSummary
-              summary={job.summary}
+              summary={displaySummary}
               smtpRuntime={bundleSummary?.smtp_runtime ?? null}
             />
           </div>
@@ -289,14 +314,14 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
             <AINarrativePanel jobId={jobId} />
           </div>
           <div className="fade-up">
-            <MetricsCards summary={job.summary} />
+            <MetricsCards summary={displaySummary} />
           </div>
           <div className="fade-up">
-            <SecondaryMetrics summary={job.summary} />
+            <SecondaryMetrics summary={displaySummary} />
           </div>
           <div className="fade-up">
             <ClassificationBreakdown
-              summary={job.summary}
+              summary={displaySummary}
               reviewBreakdown={bundleSummary?.review_breakdown ?? null}
               reviewActionBreakdown={
                 bundleSummary?.review_action_breakdown ?? null
@@ -307,22 +332,22 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
             <RetryQueueCard
               jobId={jobId}
               visible
-              onFinalize={() => {
-                // Refetch the bundle summary so the breakdown card
-                // immediately reflects the re-classification done by
-                // the finalize endpoint.
-                getClientBundleSummary(jobId)
-                  .then(setBundleSummary)
-                  .catch(() => {});
-              }}
+              onFinalize={refreshCompletedCounts}
             />
           </div>
           <div className="fade-up">
-            <PilotSendCard jobId={jobId} visible />
+            <PilotSendCard
+              jobId={jobId}
+              visible
+              onFinalize={refreshCompletedCounts}
+            />
           </div>
-          {(job.summary?.total_review ?? 0) > 0 && (
+          {(displaySummary?.total_review ?? 0) > 0 && (
             <div className="fade-up">
-              <ReviewQueueBanner jobId={jobId} count={job.summary!.total_review!} />
+              <ReviewQueueBanner
+                jobId={jobId}
+                count={displaySummary!.total_review!}
+              />
             </div>
           )}
           <div className="fade-up">

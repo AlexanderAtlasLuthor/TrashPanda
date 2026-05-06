@@ -159,6 +159,8 @@ class TestStatus:
         assert body["available"] is True
         assert body["counts"]["pending_send"] == 1
         assert body["counts"]["total"] == 1
+        assert body["impact"]["awaiting"] == 1
+        assert body["results"]["pending_send"][0]["email"] == "x@y.com"
 
 
 # --------------------------------------------------------------------- #
@@ -391,6 +393,48 @@ class TestFinalize:
             tracker.record_dsn("t-ok", dsn_status=VERDICT_DELIVERED)
             tracker.record_dsn("t-hard", dsn_status=VERDICT_HARD_BOUNCE)
 
+        columns = [
+            "email",
+            "source_row_number",
+            "provider_family",
+            "deliverability_probability",
+            "smtp_status",
+            "final_action",
+            "decision_reason",
+            "client_reason",
+        ]
+        pd.DataFrame(columns=columns).to_csv(
+            run_dir / "clean_high_confidence.csv", index=False
+        )
+        pd.DataFrame(
+            [
+                {
+                    "email": "ok@x.com",
+                    "source_row_number": "2",
+                    "provider_family": "corporate_unknown",
+                    "deliverability_probability": "0.72",
+                    "smtp_status": "timeout",
+                    "final_action": "manual_review",
+                    "decision_reason": "smtp_timeout",
+                    "client_reason": "Needs retry",
+                },
+                {
+                    "email": "hard@x.com",
+                    "source_row_number": "3",
+                    "provider_family": "corporate_unknown",
+                    "deliverability_probability": "0.70",
+                    "smtp_status": "timeout",
+                    "final_action": "manual_review",
+                    "decision_reason": "smtp_timeout",
+                    "client_reason": "Needs retry",
+                },
+            ],
+            columns=columns,
+        ).to_csv(run_dir / "review_medium_confidence.csv", index=False)
+        pd.DataFrame(columns=columns).to_csv(
+            run_dir / "removed_invalid.csv", index=False
+        )
+
         res = client.post(
             "/api/operator/jobs/job_f2/pilot-send/finalize",
         )
@@ -402,3 +446,6 @@ class TestFinalize:
         assert "updated_do_not_send" in files
         assert body["counts"]["delivered"] == 1
         assert body["counts"]["hard_bounce"] == 1
+        assert body["safe_count"] == 1
+        assert body["review_count"] == 0
+        assert body["rejected_count"] == 1
