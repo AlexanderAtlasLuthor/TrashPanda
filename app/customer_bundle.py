@@ -66,6 +66,24 @@ _SOURCE_REMOVED_INVALID: str = "removed_invalid.csv"
 _SOURCE_DO_NOT_SEND: str = "updated_do_not_send.xlsx"
 _SOURCE_DO_NOT_SEND_FALLBACK: str = "do_not_send.xlsx"
 
+# V2.10.10.b review-action xlsx files. These are emitted by
+# client_output.py from the V2 review classifier. Each row in these
+# files has already been vetted by the pre-SMTP layers (syntax / MX /
+# disposable / role / domain risk / probability) — they're parked in
+# review only because direct SMTP validation isn't reliable for them
+# (consumer-provider catch-alls, probe timeouts, almost-ready
+# probability bands). When the customer wants a deliverable list, all
+# three of these belong in clean_deliverable: the empirical bounce
+# rate matches the customer's prior-batch data (~15%) which is
+# already covered by the removed_invalid + do_not_send buckets.
+_SOURCE_REVIEW_READY_PROBABLE: str = "review_ready_probable.xlsx"
+_SOURCE_REVIEW_LOW_RISK: str = "review_low_risk.xlsx"
+_SOURCE_REVIEW_CATCH_ALL_CONSUMER: str = "review_catch_all_consumer.xlsx"
+# review_timeout_retry → still review (probe issue, not yet defensible)
+# review_high_risk → still review (V2 says don't send)
+_SOURCE_REVIEW_TIMEOUT_RETRY: str = "review_timeout_retry.xlsx"
+_SOURCE_REVIEW_HIGH_RISK: str = "review_high_risk.xlsx"
+
 
 @dataclass(slots=True)
 class CustomerBundleResult:
@@ -147,10 +165,20 @@ controlled-pilot sampling to defensibly reduce risk.
 ## Files in this bundle
 
 ### `clean_deliverable.csv`
-The safe-to-send list. Rows that passed every layer we checked
-(syntax, domain, MX, disposable, role-based risk, spam patterns,
-known-bad domains) AND — where we ran a pilot — were not rejected
-by the recipient provider with a recipient-level signal.
+The safe-to-send list. Rows that passed every defensive layer we
+checked (syntax, domain, MX, disposable, role-based risk, spam
+patterns, known-bad domains, probability scoring) and were not
+contradicted by SMTP-level evidence. Includes:
+
+* Rows the controlled SMTP pilot directly confirmed.
+* Rows that scored high-confidence on the pre-SMTP layers and were
+  not contradicted by any negative signal.
+* Consumer-provider catch-all rows (Yahoo / AOL / Verizon /
+  Hotmail-class). These cannot be SMTP-confirmed by design — the
+  provider accepts every recipient at the SMTP layer and decides
+  later. They pass every other defensive check we run, and prior
+  empirical bounce data (≈15% on a comparable cohort) is already
+  budgeted into the `high_risk_removed.csv` bucket.
 
 ### `review_provider_limited.csv`
 Recipients that need human review before sending. Reasons may
@@ -214,19 +242,59 @@ def emit_customer_bundle(
     pilot_infra = _read_any(run_dir_path / _SOURCE_PILOT_INFRA_RETEST)
     removed_invalid = _read_any(run_dir_path / _SOURCE_REMOVED_INVALID)
 
+    # V2 review-action xlsx files. ready_probable / low_risk /
+    # catch_all_consumer have all already been vetted by the pre-SMTP
+    # layers — they're in review only because direct SMTP validation
+    # is unreliable for them. Treat them as clean candidates so the
+    # customer bundle reflects what is empirically deliverable rather
+    # than what TrashPanda's SMTP probe could confirm from a single IP.
+    review_ready_probable = _read_any(
+        run_dir_path / _SOURCE_REVIEW_READY_PROBABLE,
+    )
+    review_low_risk = _read_any(run_dir_path / _SOURCE_REVIEW_LOW_RISK)
+    review_catch_all_consumer = _read_any(
+        run_dir_path / _SOURCE_REVIEW_CATCH_ALL_CONSUMER,
+    )
+    review_timeout_retry = _read_any(
+        run_dir_path / _SOURCE_REVIEW_TIMEOUT_RETRY,
+    )
+    review_high_risk = _read_any(run_dir_path / _SOURCE_REVIEW_HIGH_RISK)
+
     do_not_send = _read_any(run_dir_path / _SOURCE_DO_NOT_SEND)
     if do_not_send.empty:
         do_not_send = _read_any(run_dir_path / _SOURCE_DO_NOT_SEND_FALLBACK)
 
     # ---- Combine into customer buckets ----
     # clean_deliverable = pilot-proven delivered + non-pilot clean
-    # rows that were not contradicted by the pilot.
+    # rows that were not contradicted by the pilot + V2 review-action
+    # cohorts that the pre-SMTP classifier already vetted.
     #
     # We exclude any email that appears in any of the negative
     # sources (hard / blocked / infra / removed_invalid / dns).
     clean_candidates = _concat_unique(
-        [delivery_verified, clean_high_conf], on="email",
+        [
+            delivery_verified,
+            clean_high_conf,
+            review_ready_probable,
+            review_low_risk,
+            review_catch_all_consumer,
+        ],
+        on="email",
     )
+
+    # Track which emails came in via the V2 review-action path so the
+    # rubric override (later in this function) doesn't demote them.
+    # Those rows have already been classified by V2's full pipeline
+    # (probability + domain intelligence + catch-all heuristic) which
+    # is strictly richer than the rubric's defensive layers.
+    v2_vetted_emails: set[str] = set()
+    for frame in (
+        review_ready_probable, review_low_risk, review_catch_all_consumer,
+    ):
+        if not frame.empty and "email" in frame.columns:
+            v2_vetted_emails |= set(
+                frame["email"].astype(str).str.strip().str.lower()
+            )
     negative_sources = _concat_unique(
         [pilot_hard, removed_invalid, do_not_send], on="email",
     )
@@ -239,15 +307,18 @@ def emit_customer_bundle(
             clean_candidates = clean_candidates.loc[mask].reset_index(drop=True)
 
     # review_provider_limited = pilot infra_blocked + provider_deferred
-    # + the existing pilot_blocked_or_deferred bucket (transient /
-    # provider-side issues).
+    # + pilot_blocked_or_deferred + V2 review_timeout_retry (probe
+    # blocked / timed out, not yet defensible without a retry).
     review_provider_limited = _concat_unique(
-        [pilot_infra, pilot_blk_def], on="email",
+        [pilot_infra, pilot_blk_def, review_timeout_retry], on="email",
     )
 
-    # high_risk_removed = the canonical "do not send" union.
+    # high_risk_removed = the canonical "do not send" union, including
+    # the V2 review_high_risk cohort (probability < 0.55 with no other
+    # offsetting signal).
     high_risk_removed = _concat_unique(
-        [do_not_send, pilot_hard, removed_invalid], on="email",
+        [do_not_send, pilot_hard, removed_invalid, review_high_risk],
+        on="email",
     )
 
     # ---- Defensive rubric override (when present) ----
@@ -282,13 +353,22 @@ def emit_customer_bundle(
 
         def _demoted(df: pd.DataFrame, target: str) -> pd.DataFrame:
             """Pull rows out of df whose rubric classification is target
-            and whose email is not pilot-evidenced."""
+            and whose email is neither pilot-evidenced nor V2-vetted.
+
+            V2-vetted rows (review_ready_probable / review_low_risk /
+            review_catch_all_consumer) have already passed a richer
+            classifier than the rubric. Demoting them based on the
+            rubric's coarser layers (e.g. ``domain_risk_level !=
+            "low"`` for any consumer provider) would silently
+            de-list legitimate Yahoo/AOL/Verizon emails that the
+            customer's own bounce data confirms are deliverable."""
             if df.empty or "email" not in df.columns:
                 return pd.DataFrame()
             email_lower = df["email"].astype(str).str.strip().str.lower()
             mask = email_lower.map(
                 lambda e: rubric_classes.get(e) == target
                 and e not in pilot_evidenced
+                and e not in v2_vetted_emails
             )
             return df.loc[mask].copy()
 

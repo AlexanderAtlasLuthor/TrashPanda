@@ -172,6 +172,117 @@ class TestCustomerBundleStructure:
         assert first.counts == second.counts
 
 
+class TestReviewActionSources:
+    """V2.10.10.b review-action xlsx files (ready_probable / low_risk /
+    catch_all_consumer) feed the clean_deliverable bucket."""
+
+    def test_catch_all_consumer_lands_in_clean(self, tmp_path: Path):
+        # Critical regression: 525 Yahoo/AOL emails that the SMTP
+        # pilot can't probe must NOT end up in review or removed —
+        # they pass every other defensive check.
+        _write_xlsx(
+            tmp_path / "review_catch_all_consumer.xlsx",
+            [
+                {"email": "alice@yahoo.com"},
+                {"email": "bob@aol.com"},
+                {"email": "carol@hotmail.com"},
+            ],
+        )
+        result = emit_customer_bundle(tmp_path)
+        clean = _read_csv(result.files_written["clean_deliverable"])
+        emails = set(clean["email"].astype(str).str.lower())
+        assert emails == {"alice@yahoo.com", "bob@aol.com", "carol@hotmail.com"}
+        assert result.counts["clean_deliverable"] == 3
+
+    def test_ready_probable_and_low_risk_land_in_clean(self, tmp_path: Path):
+        _write_xlsx(
+            tmp_path / "review_ready_probable.xlsx",
+            [{"email": "ready@x.com"}],
+        )
+        _write_xlsx(
+            tmp_path / "review_low_risk.xlsx",
+            [{"email": "lowrisk@x.com"}],
+        )
+        result = emit_customer_bundle(tmp_path)
+        clean = _read_csv(result.files_written["clean_deliverable"])
+        emails = set(clean["email"].astype(str).str.lower())
+        assert emails == {"ready@x.com", "lowrisk@x.com"}
+
+    def test_review_action_emails_excluded_when_in_negative_sources(
+        self, tmp_path: Path,
+    ):
+        # If an email appears in BOTH review_catch_all_consumer AND
+        # do_not_send (e.g. a stale review-action xlsx from a prior
+        # run), do_not_send wins.
+        _write_xlsx(
+            tmp_path / "review_catch_all_consumer.xlsx",
+            [{"email": "good@yahoo.com"}, {"email": "bad@yahoo.com"}],
+        )
+        _write_xlsx(
+            tmp_path / "updated_do_not_send.xlsx",
+            [{"email": "bad@yahoo.com"}],
+        )
+        result = emit_customer_bundle(tmp_path)
+        clean = _read_csv(result.files_written["clean_deliverable"])
+        emails = set(clean["email"].astype(str).str.lower())
+        assert "good@yahoo.com" in emails
+        assert "bad@yahoo.com" not in emails
+
+    def test_review_high_risk_lands_in_high_risk_removed(
+        self, tmp_path: Path,
+    ):
+        _write_xlsx(
+            tmp_path / "review_high_risk.xlsx",
+            [{"email": "highrisk@x.com"}],
+        )
+        result = emit_customer_bundle(tmp_path)
+        removed = _read_csv(result.files_written["high_risk_removed"])
+        emails = set(removed["email"].astype(str).str.lower())
+        assert "highrisk@x.com" in emails
+
+    def test_review_timeout_retry_lands_in_review(self, tmp_path: Path):
+        _write_xlsx(
+            tmp_path / "review_timeout_retry.xlsx",
+            [{"email": "timeout@x.com"}],
+        )
+        result = emit_customer_bundle(tmp_path)
+        review = _read_csv(result.files_written["review_provider_limited"])
+        emails = set(review["email"].astype(str).str.lower())
+        assert "timeout@x.com" in emails
+
+    def test_v2_vetted_rows_exempt_from_rubric_demotion(self, tmp_path: Path):
+        # A consumer-provider row may have ``domain_risk_level=medium``
+        # in the rubric report (the rubric flags every non-low-risk
+        # provider as risky). Without an exemption, the rubric would
+        # pull these out of clean — exactly the regression we're
+        # avoiding.
+        _write_xlsx(
+            tmp_path / "review_catch_all_consumer.xlsx",
+            [{"email": "alice@yahoo.com"}],
+        )
+        # Synthesize a defensive_rubric_report.csv that says risky.
+        from app.defensive_rubric import (
+            CSV_COLUMNS,
+            DEFENSIVE_RUBRIC_REPORT_FILENAME,
+        )
+        import csv
+        with (tmp_path / DEFENSIVE_RUBRIC_REPORT_FILENAME).open(
+            "w", newline="", encoding="utf-8",
+        ) as fh:
+            writer = csv.writer(fh)
+            writer.writerow(CSV_COLUMNS)
+            writer.writerow([
+                "alice@yahoo.com",
+                "true", "true", "true", "true", "false",
+                "risky", "risky: domain_risk=medium",
+            ])
+
+        result = emit_customer_bundle(tmp_path)
+        clean = _read_csv(result.files_written["clean_deliverable"])
+        emails = set(clean["email"].astype(str).str.lower())
+        assert "alice@yahoo.com" in emails
+
+
 class TestMissingSources:
     def test_no_pilot_files_still_emits_bundle(self, tmp_path: Path):
         # Defensive-only mode: only clean_high_confidence.csv exists,
