@@ -14,14 +14,16 @@ read to defend each routing decision. Schema:
 column                            meaning
 ================================  ==============================================================
 email                             The address that was probed.
-domain                            Lowercased domain.
-provider_family                   yahoo_family / microsoft_family / corporate_unknown / ...
-pilot_verdict                     The internal ``dsn_status`` (e.g. ``hard_bounce``).
-evidence_class                    The honest classification — see EVIDENCE_* constants below.
-actionable_for_customer           ``true`` iff the evidence is about the recipient (safe to act
-                                  on). ``false`` for sender-side rejections and "no evidence".
+bucket                            The internal ``dsn_status`` / pilot bucket
+                                  (e.g. ``hard_bounce``, ``infrastructure_blocked``).
 smtp_code                         Raw SMTP / DSN status code.
 smtp_reason                       Diagnostic text (truncated to 300 chars).
+evidence_class                    One of: ``rcpt_refused`` | ``infra_blocked`` |
+                                  ``provider_deferred`` | ``accepted`` | ``no_evidence``.
+domain                            Lowercased domain (extra column, not in core spec).
+provider_family                   Provider family (extra column, not in core spec).
+actionable_for_customer           ``true`` iff the evidence is about the recipient (safe to act
+                                  on). ``false`` for sender-side rejections and "no evidence".
 recommended_action                Short string the operator can read at a glance.
 ================================  ==============================================================
 
@@ -53,65 +55,64 @@ SMTP_EVIDENCE_REPORT_FILENAME: str = "smtp_evidence_report.csv"
 
 
 # ---------------------------------------------------------------------------
-# Evidence taxonomy
+# Evidence taxonomy — exactly the 5 classes in the customer-facing spec.
 # ---------------------------------------------------------------------------
 
-# Recipient-level evidence: the destination MX explicitly addressed
-# the recipient. Safe for the customer to act on.
-EVIDENCE_RECIPIENT_REJECTED: str = "recipient_rejected"
-EVIDENCE_RECIPIENT_ACCEPTED: str = "recipient_accepted"
-EVIDENCE_TRANSIENT_SOFT: str = "transient_soft"
-EVIDENCE_COMPLAINT: str = "complaint"
-
-# Content / policy evidence: still a recipient-side rejection but the
-# reason is content/policy (DMARC, spam, content filter), not the
-# mailbox per se. Marked actionable because the message would not
-# arrive to that recipient as-sent.
-EVIDENCE_CONTENT_BLOCKED: str = "content_blocked"
-
-# Sender-side evidence: the rejection describes our IP / network /
-# reputation, not the recipient. NOT actionable for the customer.
-EVIDENCE_SENDER_INFRA_BLOCKED: str = "sender_infra_blocked"
-EVIDENCE_SENDER_PROVIDER_DEFERRED: str = "sender_provider_deferred"
-
-# No evidence yet (pending / sent without DSN / expired without
-# DSN / unparseable). Operator should not draw a conclusion.
+EVIDENCE_RCPT_REFUSED: str = "rcpt_refused"
+EVIDENCE_ACCEPTED: str = "accepted"
+EVIDENCE_INFRA_BLOCKED: str = "infra_blocked"
+EVIDENCE_PROVIDER_DEFERRED: str = "provider_deferred"
 EVIDENCE_NO_EVIDENCE: str = "no_evidence"
+
+ALL_EVIDENCE_CLASSES: tuple[str, ...] = (
+    EVIDENCE_RCPT_REFUSED,
+    EVIDENCE_ACCEPTED,
+    EVIDENCE_INFRA_BLOCKED,
+    EVIDENCE_PROVIDER_DEFERRED,
+    EVIDENCE_NO_EVIDENCE,
+)
 
 
 # Whether each evidence class can be acted on by the customer (i.e.
-# is this row evidence about the recipient?).
+# is this row evidence about the recipient?). Sender-side classes
+# (infra_blocked / provider_deferred) and no_evidence are NOT
+# actionable.
 _ACTIONABLE: frozenset[str] = frozenset({
-    EVIDENCE_RECIPIENT_REJECTED,
-    EVIDENCE_RECIPIENT_ACCEPTED,
-    EVIDENCE_CONTENT_BLOCKED,
-    EVIDENCE_COMPLAINT,
+    EVIDENCE_RCPT_REFUSED,
+    EVIDENCE_ACCEPTED,
 })
 
 
+# Map the 8 internal pilot verdicts onto the 5 spec evidence classes.
+# Rationale for each collapse:
+#   * blocked (content/policy) → rcpt_refused: the message will not
+#     reach this recipient as-sent; functionally a refusal of this
+#     recipient for this message. The bucket column preserves the
+#     finer "blocked" detail for anyone who needs it.
+#   * complaint                 → rcpt_refused: terminal recipient
+#     signal — must not send to them again.
+#   * soft_bounce / deferred    → no_evidence: transient signals are
+#     not evidence either way.
 _VERDICT_TO_EVIDENCE: dict[str, str] = {
-    VERDICT_DELIVERED: EVIDENCE_RECIPIENT_ACCEPTED,
-    VERDICT_HARD_BOUNCE: EVIDENCE_RECIPIENT_REJECTED,
-    VERDICT_SOFT_BOUNCE: EVIDENCE_TRANSIENT_SOFT,
-    VERDICT_DEFERRED: EVIDENCE_TRANSIENT_SOFT,
-    VERDICT_BLOCKED: EVIDENCE_CONTENT_BLOCKED,
-    VERDICT_COMPLAINT: EVIDENCE_COMPLAINT,
-    VERDICT_INFRA_BLOCKED: EVIDENCE_SENDER_INFRA_BLOCKED,
-    VERDICT_PROVIDER_DEFERRED: EVIDENCE_SENDER_PROVIDER_DEFERRED,
+    VERDICT_DELIVERED: EVIDENCE_ACCEPTED,
+    VERDICT_HARD_BOUNCE: EVIDENCE_RCPT_REFUSED,
+    VERDICT_BLOCKED: EVIDENCE_RCPT_REFUSED,
+    VERDICT_COMPLAINT: EVIDENCE_RCPT_REFUSED,
+    VERDICT_SOFT_BOUNCE: EVIDENCE_NO_EVIDENCE,
+    VERDICT_DEFERRED: EVIDENCE_NO_EVIDENCE,
+    VERDICT_INFRA_BLOCKED: EVIDENCE_INFRA_BLOCKED,
+    VERDICT_PROVIDER_DEFERRED: EVIDENCE_PROVIDER_DEFERRED,
     VERDICT_UNKNOWN: EVIDENCE_NO_EVIDENCE,
 }
 
 
 _RECOMMENDED_ACTION: dict[str, str] = {
-    EVIDENCE_RECIPIENT_ACCEPTED: "deliver",
-    EVIDENCE_RECIPIENT_REJECTED: "remove from list",
-    EVIDENCE_CONTENT_BLOCKED: "remove from list (content/policy)",
-    EVIDENCE_COMPLAINT: "remove from list (abuse complaint)",
-    EVIDENCE_TRANSIENT_SOFT: "retry later",
-    EVIDENCE_SENDER_INFRA_BLOCKED: (
+    EVIDENCE_ACCEPTED: "deliver",
+    EVIDENCE_RCPT_REFUSED: "remove from list",
+    EVIDENCE_INFRA_BLOCKED: (
         "do not act on recipient — re-test from clean sender IP"
     ),
-    EVIDENCE_SENDER_PROVIDER_DEFERRED: (
+    EVIDENCE_PROVIDER_DEFERRED: (
         "do not act on recipient — provider throttled our sender"
     ),
     EVIDENCE_NO_EVIDENCE: "leave in review until verdict arrives",
@@ -121,13 +122,13 @@ _RECOMMENDED_ACTION: dict[str, str] = {
 @dataclass(frozen=True, slots=True)
 class EvidenceRow:
     email: str
-    domain: str
-    provider_family: str
-    pilot_verdict: str
-    evidence_class: str
-    actionable_for_customer: bool
+    bucket: str
     smtp_code: str
     smtp_reason: str
+    evidence_class: str
+    domain: str
+    provider_family: str
+    actionable_for_customer: bool
     recommended_action: str
 
 
@@ -139,26 +140,29 @@ def _classify_row(row: PilotRow) -> EvidenceRow:
         evidence_class = EVIDENCE_NO_EVIDENCE
     return EvidenceRow(
         email=row.email,
-        domain=row.domain,
-        provider_family=row.provider_family or "corporate_unknown",
-        pilot_verdict=verdict or row.state or "",
-        evidence_class=evidence_class,
-        actionable_for_customer=evidence_class in _ACTIONABLE,
+        bucket=verdict or row.state or "",
         smtp_code=row.dsn_smtp_code or "",
         smtp_reason=(row.dsn_diagnostic or "")[:300],
+        evidence_class=evidence_class,
+        domain=row.domain,
+        provider_family=row.provider_family or "corporate_unknown",
+        actionable_for_customer=evidence_class in _ACTIONABLE,
         recommended_action=_RECOMMENDED_ACTION.get(evidence_class, ""),
     )
 
 
+# Column order matches the customer-facing spec
+# (``email | bucket | smtp_code | smtp_reason | evidence_class``)
+# first, then operational extras.
 CSV_COLUMNS: tuple[str, ...] = (
     "email",
-    "domain",
-    "provider_family",
-    "pilot_verdict",
-    "evidence_class",
-    "actionable_for_customer",
+    "bucket",
     "smtp_code",
     "smtp_reason",
+    "evidence_class",
+    "domain",
+    "provider_family",
+    "actionable_for_customer",
     "recommended_action",
 )
 
@@ -180,13 +184,13 @@ def write_smtp_evidence_report(
             ev = _classify_row(pilot_row)
             writer.writerow([
                 ev.email,
-                ev.domain,
-                ev.provider_family,
-                ev.pilot_verdict,
-                ev.evidence_class,
-                "true" if ev.actionable_for_customer else "false",
+                ev.bucket,
                 ev.smtp_code,
                 ev.smtp_reason,
+                ev.evidence_class,
+                ev.domain,
+                ev.provider_family,
+                "true" if ev.actionable_for_customer else "false",
                 ev.recommended_action,
             ])
             written += 1
@@ -194,15 +198,13 @@ def write_smtp_evidence_report(
 
 
 __all__ = [
+    "ALL_EVIDENCE_CLASSES",
     "CSV_COLUMNS",
-    "EVIDENCE_COMPLAINT",
-    "EVIDENCE_CONTENT_BLOCKED",
+    "EVIDENCE_ACCEPTED",
+    "EVIDENCE_INFRA_BLOCKED",
     "EVIDENCE_NO_EVIDENCE",
-    "EVIDENCE_RECIPIENT_ACCEPTED",
-    "EVIDENCE_RECIPIENT_REJECTED",
-    "EVIDENCE_SENDER_INFRA_BLOCKED",
-    "EVIDENCE_SENDER_PROVIDER_DEFERRED",
-    "EVIDENCE_TRANSIENT_SOFT",
+    "EVIDENCE_PROVIDER_DEFERRED",
+    "EVIDENCE_RCPT_REFUSED",
     "EvidenceRow",
     "SMTP_EVIDENCE_REPORT_FILENAME",
     "write_smtp_evidence_report",

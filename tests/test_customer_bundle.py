@@ -8,11 +8,11 @@ from pathlib import Path
 import pandas as pd
 
 from app.customer_bundle import (
-    CLEAN_DELIVERABLE_XLSX,
+    CLEAN_DELIVERABLE_CSV,
     CUSTOMER_BUNDLE_DIRNAME,
     CUSTOMER_README,
-    HIGH_RISK_REMOVED_XLSX,
-    REVIEW_PROVIDER_LIMITED_XLSX,
+    HIGH_RISK_REMOVED_CSV,
+    REVIEW_PROVIDER_LIMITED_CSV,
     emit_customer_bundle,
 )
 from app.pilot_send.evidence import (
@@ -30,12 +30,11 @@ def _write_xlsx(path: Path, rows: list[dict]) -> None:
 
 def _write_csv(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    df = pd.DataFrame(rows)
-    df.to_csv(path, index=False)
+    pd.DataFrame(rows).to_csv(path, index=False)
 
 
-def _read_xlsx(path: Path) -> pd.DataFrame:
-    return pd.read_excel(path, sheet_name=0, dtype=str)
+def _read_csv(path: Path) -> pd.DataFrame:
+    return pd.read_csv(path, dtype=str, keep_default_na=False, na_filter=False)
 
 
 class TestCustomerBundleRouting:
@@ -58,7 +57,7 @@ class TestCustomerBundleRouting:
 
         result = emit_customer_bundle(tmp_path)
 
-        clean = _read_xlsx(result.files_written["clean_deliverable"])
+        clean = _read_csv(result.files_written["clean_deliverable"])
         emails = set(clean["email"].astype(str).str.lower())
         assert "good@example.com" in emails
         assert "contradicted@example.com" not in emails
@@ -77,7 +76,7 @@ class TestCustomerBundleRouting:
 
         result = emit_customer_bundle(tmp_path)
 
-        review = _read_xlsx(result.files_written["review_provider_limited"])
+        review = _read_csv(result.files_written["review_provider_limited"])
         emails = set(review["email"].astype(str).str.lower())
         assert emails == {
             "msft@outlook.com",
@@ -103,7 +102,7 @@ class TestCustomerBundleRouting:
 
         result = emit_customer_bundle(tmp_path)
 
-        removed = _read_xlsx(result.files_written["high_risk_removed"])
+        removed = _read_csv(result.files_written["high_risk_removed"])
         emails = set(removed["email"].astype(str).str.lower())
         assert emails == {
             "complaint@x.com",
@@ -113,37 +112,42 @@ class TestCustomerBundleRouting:
 
 
 class TestCustomerBundleStructure:
-    def test_emits_all_four_files_plus_readme(self, tmp_path: Path):
-        # Empty inputs are fine — bundle should still produce header
-        # files and the README.
+    def test_emits_all_four_csvs_plus_readme(self, tmp_path: Path):
+        # Spec: 4 files, all CSV, + README.
         result = emit_customer_bundle(tmp_path)
 
         bundle_dir = tmp_path / CUSTOMER_BUNDLE_DIRNAME
-        assert (bundle_dir / CLEAN_DELIVERABLE_XLSX).is_file()
-        assert (bundle_dir / REVIEW_PROVIDER_LIMITED_XLSX).is_file()
-        assert (bundle_dir / HIGH_RISK_REMOVED_XLSX).is_file()
+        assert (bundle_dir / CLEAN_DELIVERABLE_CSV).is_file()
+        assert (bundle_dir / REVIEW_PROVIDER_LIMITED_CSV).is_file()
+        assert (bundle_dir / HIGH_RISK_REMOVED_CSV).is_file()
         assert (bundle_dir / SMTP_EVIDENCE_REPORT_FILENAME).is_file()
         assert (bundle_dir / CUSTOMER_README).is_file()
+        # All four data files end in .csv per spec.
+        for filename in (
+            CLEAN_DELIVERABLE_CSV,
+            REVIEW_PROVIDER_LIMITED_CSV,
+            HIGH_RISK_REMOVED_CSV,
+            SMTP_EVIDENCE_REPORT_FILENAME,
+        ):
+            assert filename.endswith(".csv"), filename
+
         readme_text = (bundle_dir / CUSTOMER_README).read_text(encoding="utf-8")
-        # The README must include the honest framing — both the
-        # promise and the explicit non-promise.
+        # Honest framing: both promise and explicit non-promise.
         assert "What we promise" in readme_text
         assert "What we do NOT promise" in readme_text
         assert "review_provider_limited" in readme_text
-        # Empty counts are zero, not missing.
+
         assert result.counts["clean_deliverable"] == 0
         assert result.counts["smtp_evidence_report"] == 0
 
     def test_evidence_report_is_copied_when_present(self, tmp_path: Path):
-        # Pre-existing evidence report (as written by finalize_pilot)
-        # should be copied verbatim into the customer bundle.
         evidence_path = tmp_path / SMTP_EVIDENCE_REPORT_FILENAME
         with evidence_path.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.writer(fh)
             writer.writerow(CSV_COLUMNS)
             writer.writerow([
-                "a@x.com", "x.com", "corp", "delivered",
-                "recipient_accepted", "true", "250", "ok", "deliver",
+                "a@x.com", "delivered", "250", "ok", "accepted",
+                "x.com", "corp", "true", "deliver",
             ])
 
         result = emit_customer_bundle(tmp_path)
@@ -154,6 +158,7 @@ class TestCustomerBundleStructure:
             rows = list(csv.DictReader(fh))
         assert len(rows) == 1
         assert rows[0]["email"] == "a@x.com"
+        assert rows[0]["evidence_class"] == "accepted"
         assert result.counts["smtp_evidence_report"] == 1
 
     def test_idempotent(self, tmp_path: Path):
@@ -163,22 +168,20 @@ class TestCustomerBundleStructure:
         )
         first = emit_customer_bundle(tmp_path)
         second = emit_customer_bundle(tmp_path)
-        # Same files written, same counts, no errors.
         assert first.files_written.keys() == second.files_written.keys()
         assert first.counts == second.counts
 
 
 class TestMissingSources:
     def test_no_pilot_files_still_emits_bundle(self, tmp_path: Path):
-        # Only a clean_high_confidence.csv exists (defensive-only mode
-        # output). Bundle should still build, with that as the clean
-        # deliverable and empty review/removed.
+        # Defensive-only mode: only clean_high_confidence.csv exists,
+        # no pilot ran. Bundle still builds.
         _write_csv(
             tmp_path / "clean_high_confidence.csv",
             [{"email": "ok@x.com"}, {"email": "ok2@x.com"}],
         )
         result = emit_customer_bundle(tmp_path)
-        clean = _read_xlsx(result.files_written["clean_deliverable"])
+        clean = _read_csv(result.files_written["clean_deliverable"])
         emails = set(clean["email"].astype(str).str.lower())
         assert emails == {"ok@x.com", "ok2@x.com"}
         assert result.counts["clean_deliverable"] == 2
@@ -188,13 +191,11 @@ class TestMissingSources:
     def test_falls_back_from_updated_to_legacy_do_not_send(
         self, tmp_path: Path,
     ):
-        # When updated_do_not_send.xlsx is missing, legacy
-        # do_not_send.xlsx is used instead.
         _write_xlsx(
             tmp_path / "do_not_send.xlsx",
             [{"email": "legacy@x.com"}],
         )
         result = emit_customer_bundle(tmp_path)
-        removed = _read_xlsx(result.files_written["high_risk_removed"])
+        removed = _read_csv(result.files_written["high_risk_removed"])
         emails = set(removed["email"].astype(str).str.lower())
         assert "legacy@x.com" in emails

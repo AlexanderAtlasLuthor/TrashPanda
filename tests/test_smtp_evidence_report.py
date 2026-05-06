@@ -1,4 +1,12 @@
-"""V2.10.13 — smtp_evidence_report tests."""
+"""V2.10.13 — smtp_evidence_report tests.
+
+Asserts the report matches the customer-facing spec:
+  columns: email | bucket | smtp_code | smtp_reason | evidence_class
+           (+ operational extras: domain, provider_family,
+            actionable_for_customer, recommended_action)
+  evidence_class values: rcpt_refused | infra_blocked | provider_deferred
+           | accepted | no_evidence
+"""
 
 from __future__ import annotations
 
@@ -19,15 +27,13 @@ from app.db.pilot_send_tracker import (
     VERDICT_UNKNOWN,
 )
 from app.pilot_send.evidence import (
+    ALL_EVIDENCE_CLASSES,
     CSV_COLUMNS,
-    EVIDENCE_COMPLAINT,
-    EVIDENCE_CONTENT_BLOCKED,
+    EVIDENCE_ACCEPTED,
+    EVIDENCE_INFRA_BLOCKED,
     EVIDENCE_NO_EVIDENCE,
-    EVIDENCE_RECIPIENT_ACCEPTED,
-    EVIDENCE_RECIPIENT_REJECTED,
-    EVIDENCE_SENDER_INFRA_BLOCKED,
-    EVIDENCE_SENDER_PROVIDER_DEFERRED,
-    EVIDENCE_TRANSIENT_SOFT,
+    EVIDENCE_PROVIDER_DEFERRED,
+    EVIDENCE_RCPT_REFUSED,
     SMTP_EVIDENCE_REPORT_FILENAME,
     write_smtp_evidence_report,
 )
@@ -69,17 +75,43 @@ def _read_report(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(fh))
 
 
+class TestSpecConformance:
+    """Hard-pin the schema to the customer-facing spec exactly."""
+
+    def test_evidence_class_vocabulary_is_exactly_five(self):
+        assert set(ALL_EVIDENCE_CLASSES) == {
+            "rcpt_refused",
+            "accepted",
+            "infra_blocked",
+            "provider_deferred",
+            "no_evidence",
+        }
+
+    def test_csv_header_starts_with_spec_columns(self, tmp_path: Path):
+        path = tmp_path / SMTP_EVIDENCE_REPORT_FILENAME
+        write_smtp_evidence_report([], path=path)
+        with path.open("r", encoding="utf-8") as fh:
+            header = next(csv.reader(fh))
+        # Spec-required columns must come first, in this order.
+        assert header[:5] == [
+            "email", "bucket", "smtp_code", "smtp_reason", "evidence_class",
+        ]
+        # Full schema = spec + operational extras.
+        assert tuple(header) == CSV_COLUMNS
+
+
 class TestVerdictToEvidenceMapping:
-    def test_delivered_is_recipient_accepted_actionable(self, tmp_path: Path):
+    def test_delivered_is_accepted_actionable(self, tmp_path: Path):
         path = tmp_path / SMTP_EVIDENCE_REPORT_FILENAME
         write_smtp_evidence_report(
             [_row(email="a@x.com", verdict=VERDICT_DELIVERED)], path=path,
         )
         rows = _read_report(path)
-        assert rows[0]["evidence_class"] == EVIDENCE_RECIPIENT_ACCEPTED
+        assert rows[0]["evidence_class"] == EVIDENCE_ACCEPTED
         assert rows[0]["actionable_for_customer"] == "true"
+        assert rows[0]["bucket"] == VERDICT_DELIVERED
 
-    def test_hard_bounce_is_recipient_rejected_actionable(self, tmp_path: Path):
+    def test_hard_bounce_is_rcpt_refused_actionable(self, tmp_path: Path):
         path = tmp_path / SMTP_EVIDENCE_REPORT_FILENAME
         write_smtp_evidence_report(
             [_row(email="a@x.com", verdict=VERDICT_HARD_BOUNCE,
@@ -87,31 +119,38 @@ class TestVerdictToEvidenceMapping:
             path=path,
         )
         rows = _read_report(path)
-        assert rows[0]["evidence_class"] == EVIDENCE_RECIPIENT_REJECTED
+        assert rows[0]["evidence_class"] == EVIDENCE_RCPT_REFUSED
         assert rows[0]["actionable_for_customer"] == "true"
         assert "remove" in rows[0]["recommended_action"]
+        # The original verdict is preserved in the bucket column.
+        assert rows[0]["bucket"] == VERDICT_HARD_BOUNCE
 
-    def test_blocked_is_content_blocked_actionable(self, tmp_path: Path):
+    def test_blocked_collapses_to_rcpt_refused(self, tmp_path: Path):
+        # Content/policy block: the message will not reach this
+        # recipient as-sent. Spec only has 5 classes; this collapses
+        # to rcpt_refused but bucket="blocked" keeps the detail.
         path = tmp_path / SMTP_EVIDENCE_REPORT_FILENAME
         write_smtp_evidence_report(
             [_row(email="a@x.com", verdict=VERDICT_BLOCKED)], path=path,
         )
         rows = _read_report(path)
-        assert rows[0]["evidence_class"] == EVIDENCE_CONTENT_BLOCKED
-        assert rows[0]["actionable_for_customer"] == "true"
+        assert rows[0]["evidence_class"] == EVIDENCE_RCPT_REFUSED
+        assert rows[0]["bucket"] == VERDICT_BLOCKED
 
-    def test_complaint_is_complaint_actionable(self, tmp_path: Path):
+    def test_complaint_collapses_to_rcpt_refused(self, tmp_path: Path):
+        # Abuse complaint: terminal recipient signal.
         path = tmp_path / SMTP_EVIDENCE_REPORT_FILENAME
         write_smtp_evidence_report(
             [_row(email="a@x.com", verdict=VERDICT_COMPLAINT)], path=path,
         )
         rows = _read_report(path)
-        assert rows[0]["evidence_class"] == EVIDENCE_COMPLAINT
-        assert rows[0]["actionable_for_customer"] == "true"
+        assert rows[0]["evidence_class"] == EVIDENCE_RCPT_REFUSED
+        assert rows[0]["bucket"] == VERDICT_COMPLAINT
 
-    def test_soft_bounce_and_deferred_are_transient_actionable(
+    def test_soft_bounce_and_deferred_are_no_evidence(
         self, tmp_path: Path,
     ):
+        # Transient signals — not evidence either way.
         path = tmp_path / SMTP_EVIDENCE_REPORT_FILENAME
         write_smtp_evidence_report(
             [
@@ -121,12 +160,11 @@ class TestVerdictToEvidenceMapping:
             path=path,
         )
         rows = _read_report(path)
-        assert rows[0]["evidence_class"] == EVIDENCE_TRANSIENT_SOFT
-        assert rows[1]["evidence_class"] == EVIDENCE_TRANSIENT_SOFT
-        # Transient signals are NOT actionable for customer routing.
+        assert rows[0]["evidence_class"] == EVIDENCE_NO_EVIDENCE
+        assert rows[1]["evidence_class"] == EVIDENCE_NO_EVIDENCE
         assert rows[0]["actionable_for_customer"] == "false"
 
-    def test_infrastructure_blocked_is_sender_side_not_actionable(
+    def test_infrastructure_blocked_is_infra_blocked_not_actionable(
         self, tmp_path: Path,
     ):
         path = tmp_path / SMTP_EVIDENCE_REPORT_FILENAME
@@ -140,11 +178,11 @@ class TestVerdictToEvidenceMapping:
             path=path,
         )
         rows = _read_report(path)
-        assert rows[0]["evidence_class"] == EVIDENCE_SENDER_INFRA_BLOCKED
+        assert rows[0]["evidence_class"] == EVIDENCE_INFRA_BLOCKED
         assert rows[0]["actionable_for_customer"] == "false"
         assert "re-test" in rows[0]["recommended_action"]
 
-    def test_provider_deferred_is_sender_side_not_actionable(
+    def test_provider_deferred_is_provider_deferred_not_actionable(
         self, tmp_path: Path,
     ):
         path = tmp_path / SMTP_EVIDENCE_REPORT_FILENAME
@@ -158,7 +196,7 @@ class TestVerdictToEvidenceMapping:
             path=path,
         )
         rows = _read_report(path)
-        assert rows[0]["evidence_class"] == EVIDENCE_SENDER_PROVIDER_DEFERRED
+        assert rows[0]["evidence_class"] == EVIDENCE_PROVIDER_DEFERRED
         assert rows[0]["actionable_for_customer"] == "false"
 
     def test_unknown_and_pending_are_no_evidence(self, tmp_path: Path):
@@ -183,10 +221,6 @@ class TestFileFormat:
         assert n == 0
         rows = _read_report(path)
         assert rows == []
-        # Verify header is exactly the documented column set.
-        with path.open("r", encoding="utf-8") as fh:
-            header = next(csv.reader(fh))
-        assert tuple(header) == CSV_COLUMNS
 
     def test_diagnostic_is_truncated_to_300_chars(self, tmp_path: Path):
         path = tmp_path / SMTP_EVIDENCE_REPORT_FILENAME

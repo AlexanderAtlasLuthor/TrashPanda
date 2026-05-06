@@ -7,16 +7,17 @@ exist for engineers and operators; they are not the right names to
 hand to a non-technical buyer.
 
 This module emits a parallel, customer-language bundle into
-``<run_dir>/customer_bundle/`` with four files:
+``<run_dir>/customer_bundle/`` with four files (all CSV, per the
+customer-facing spec):
 
-* ``clean_deliverable.xlsx``        — the safe-to-send list.
-* ``review_provider_limited.xlsx``  — recipients we could not
+* ``clean_deliverable.csv``        — the safe-to-send list.
+* ``review_provider_limited.csv``  — recipients we could not
   verify because the recipient provider rejected/throttled our
   sending IP. NOT evidence the email is bad.
-* ``high_risk_removed.xlsx``        — explicitly removed from the
+* ``high_risk_removed.csv``        — explicitly removed from the
   deliverable (recipient-level rejection, content/policy block,
   abuse complaint, syntax/MX/disposable failures).
-* ``smtp_evidence_report.csv``      — per-row audit, copy of the
+* ``smtp_evidence_report.csv``     — per-row audit, copy of the
   one written by ``finalize_pilot``.
 
 Plus ``README_CUSTOMER.md`` explaining the honest framing: we
@@ -35,14 +36,15 @@ from pathlib import Path
 
 import pandas as pd
 
-from .pilot_send.evidence import SMTP_EVIDENCE_REPORT_FILENAME
+from .pilot_send.evidence import CSV_COLUMNS, SMTP_EVIDENCE_REPORT_FILENAME
 
 
 CUSTOMER_BUNDLE_DIRNAME: str = "customer_bundle"
 
-CLEAN_DELIVERABLE_XLSX: str = "clean_deliverable.xlsx"
-REVIEW_PROVIDER_LIMITED_XLSX: str = "review_provider_limited.xlsx"
-HIGH_RISK_REMOVED_XLSX: str = "high_risk_removed.xlsx"
+# Customer-facing filenames per spec — all CSV.
+CLEAN_DELIVERABLE_CSV: str = "clean_deliverable.csv"
+REVIEW_PROVIDER_LIMITED_CSV: str = "review_provider_limited.csv"
+HIGH_RISK_REMOVED_CSV: str = "high_risk_removed.csv"
 CUSTOMER_README: str = "README_CUSTOMER.md"
 
 
@@ -96,15 +98,14 @@ def _concat_unique(frames: list[pd.DataFrame], *, on: str) -> pd.DataFrame:
     return combined.loc[keep].reset_index(drop=True)
 
 
-def _write_xlsx(df: pd.DataFrame, path: Path, sheet_name: str) -> None:
+def _write_csv(df: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if df.empty:
         # Write a header-only file so consumers can rely on the file
         # existing. Use a single ``email`` column when nothing else
         # is known.
         df = pd.DataFrame(columns=["email"])
-    with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name=sheet_name, index=False)
+    df.to_csv(path, index=False)
 
 
 # ---------------------------------------------------------------------------
@@ -139,13 +140,13 @@ controlled-pilot sampling to defensibly reduce risk.
 
 ## Files in this bundle
 
-### `clean_deliverable.xlsx`
+### `clean_deliverable.csv`
 The safe-to-send list. Rows that passed every layer we checked
 (syntax, domain, MX, disposable, role-based risk, spam patterns,
 known-bad domains) AND — where we ran a pilot — were not rejected
 by the recipient provider with a recipient-level signal.
 
-### `review_provider_limited.xlsx`
+### `review_provider_limited.csv`
 Recipients where the **only** negative signal was that the
 recipient provider rejected or throttled our sending IP / network
 (Microsoft "block list" replies, Yahoo `TSS04` deferrals, etc.).
@@ -155,7 +156,7 @@ them as "deliverability unknown" until a re-test from a different
 sender. Sending to them is a business call, not a data-cleanliness
 call.
 
-### `high_risk_removed.xlsx`
+### `high_risk_removed.csv`
 Rows we explicitly removed from the deliverable. Reasons include:
 syntax/MX/disposable failures, a recipient-level SMTP rejection
 (user unknown, mailbox not found), content/policy bounces (DMARC,
@@ -172,11 +173,11 @@ decision.
 
 ## How to use this
 
-1. Use `clean_deliverable.xlsx` for the campaign.
+1. Use `clean_deliverable.csv` for the campaign.
 2. Decide separately whether to also include
-   `review_provider_limited.xlsx`. They are NOT clean, but they
+   `review_provider_limited.csv`. They are NOT clean, but they
    are also NOT proven bad — they are unverified.
-3. Do NOT send to `high_risk_removed.xlsx`.
+3. Do NOT send to `high_risk_removed.csv`.
 4. Keep `smtp_evidence_report.csv` for your records.
 """
 
@@ -246,20 +247,18 @@ def emit_customer_bundle(
     files_written: dict[str, Path] = {}
     counts: dict[str, int] = {}
 
-    clean_path = bundle_dir / CLEAN_DELIVERABLE_XLSX
-    _write_xlsx(clean_candidates, clean_path, "clean_deliverable")
+    clean_path = bundle_dir / CLEAN_DELIVERABLE_CSV
+    _write_csv(clean_candidates, clean_path)
     files_written["clean_deliverable"] = clean_path
     counts["clean_deliverable"] = int(len(clean_candidates))
 
-    review_path = bundle_dir / REVIEW_PROVIDER_LIMITED_XLSX
-    _write_xlsx(
-        review_provider_limited, review_path, "review_provider_limited",
-    )
+    review_path = bundle_dir / REVIEW_PROVIDER_LIMITED_CSV
+    _write_csv(review_provider_limited, review_path)
     files_written["review_provider_limited"] = review_path
     counts["review_provider_limited"] = int(len(review_provider_limited))
 
-    removed_path = bundle_dir / HIGH_RISK_REMOVED_XLSX
-    _write_xlsx(high_risk_removed, removed_path, "high_risk_removed")
+    removed_path = bundle_dir / HIGH_RISK_REMOVED_CSV
+    _write_csv(high_risk_removed, removed_path)
     files_written["high_risk_removed"] = removed_path
     counts["high_risk_removed"] = int(len(high_risk_removed))
 
@@ -274,7 +273,6 @@ def emit_customer_bundle(
                 0, sum(1 for _ in fh) - 1,
             )
     else:
-        from .pilot_send.evidence import CSV_COLUMNS
         with evidence_dst.open("w", newline="", encoding="utf-8") as fh:
             csv.writer(fh).writerow(CSV_COLUMNS)
         counts["smtp_evidence_report"] = 0
@@ -292,11 +290,11 @@ def emit_customer_bundle(
 
 
 __all__ = [
-    "CLEAN_DELIVERABLE_XLSX",
+    "CLEAN_DELIVERABLE_CSV",
     "CUSTOMER_BUNDLE_DIRNAME",
     "CUSTOMER_README",
     "CustomerBundleResult",
-    "HIGH_RISK_REMOVED_XLSX",
-    "REVIEW_PROVIDER_LIMITED_XLSX",
+    "HIGH_RISK_REMOVED_CSV",
+    "REVIEW_PROVIDER_LIMITED_CSV",
     "emit_customer_bundle",
 ]
