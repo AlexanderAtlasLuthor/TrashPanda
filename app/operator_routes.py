@@ -1511,6 +1511,244 @@ def operator_finalize_retry_queue(job_id: str) -> Any:
     )
 
 
+@router.get("/jobs/{job_id}/pilot-send/status")
+def operator_get_pilot_send_status(job_id: str) -> Any:
+    """Pilot-send tracker counts + config readiness for the UI card.
+
+    V2.10.12. Surfaces:
+    * `available` — does a tracker DB exist for this run.
+    * `config_ready` — config is complete and authorization is on.
+    * `counts` — pending_send / sent / verdict_ready / expired plus
+      per-verdict breakdown (delivered / hard_bounce / etc).
+    """
+    from contextlib import closing
+
+    from .db.pilot_send_tracker import PILOT_TRACKER_FILENAME, open_for_run
+    from .pilot_send.config import read_pilot_config
+
+    run_dir = _resolve_run_dir(job_id)
+    tracker_path = run_dir / PILOT_TRACKER_FILENAME
+    config = read_pilot_config(run_dir)
+    payload: dict[str, Any] = {
+        "available": tracker_path.is_file(),
+        "config_ready": config.is_ready_to_send(),
+        "authorization_confirmed": config.authorization_confirmed,
+        "max_batch_size": config.max_batch_size,
+        "wait_window_hours": config.wait_window_hours,
+        "imap_configured": config.imap.is_configured(),
+        "return_path_domain": config.return_path_domain,
+        "sender_address": config.template.sender_address,
+        "subject": config.template.subject,
+    }
+    if tracker_path.is_file():
+        with closing(open_for_run(run_dir)) as tracker:
+            counts = tracker.counts()
+        payload["counts"] = counts.to_dict()
+    else:
+        payload["counts"] = {
+            "pending_send": 0,
+            "sent": 0,
+            "verdict_ready": 0,
+            "expired": 0,
+            "delivered": 0,
+            "hard_bounce": 0,
+            "soft_bounce": 0,
+            "blocked": 0,
+            "deferred": 0,
+            "complaint": 0,
+            "unknown": 0,
+            "total": 0,
+            "hard_bounce_rate": 0.0,
+        }
+    return _operator_response(payload)
+
+
+@router.put("/jobs/{job_id}/pilot-send/config")
+def operator_set_pilot_config(job_id: str, payload: dict[str, Any]) -> Any:
+    """Persist the operator-supplied pilot send config.
+
+    V2.10.12. Body is a JSON dict matching :class:`PilotSendConfig`.
+    Saved as ``pilot_send_config.json`` next to the tracker. The
+    ``authorization_confirmed`` flag is required at launch time
+    but is allowed to be False here so the operator can save a
+    draft.
+    """
+    from .pilot_send.config import (
+        IMAPCredentials,
+        PilotMessageTemplate,
+        PilotSendConfig,
+        write_pilot_config,
+    )
+
+    run_dir = _resolve_run_dir(job_id)
+    template_raw = payload.get("template") or {}
+    imap_raw = payload.get("imap") or {}
+    cfg = PilotSendConfig(
+        template=PilotMessageTemplate(
+            subject=str(template_raw.get("subject") or ""),
+            body_text=str(template_raw.get("body_text") or ""),
+            body_html=str(template_raw.get("body_html") or ""),
+            sender_address=str(template_raw.get("sender_address") or ""),
+            sender_name=str(template_raw.get("sender_name") or "TrashPanda"),
+            reply_to=str(template_raw.get("reply_to") or ""),
+        ),
+        imap=IMAPCredentials(
+            host=str(imap_raw.get("host") or ""),
+            port=int(imap_raw.get("port") or 993),
+            use_ssl=bool(imap_raw.get("use_ssl", True)),
+            username=str(imap_raw.get("username") or ""),
+            password_env=str(
+                imap_raw.get("password_env")
+                or "TRASHPANDA_BOUNCE_IMAP_PASSWORD"
+            ),
+            folder=str(imap_raw.get("folder") or "INBOX"),
+        ),
+        return_path_domain=str(payload.get("return_path_domain") or ""),
+        wait_window_hours=int(payload.get("wait_window_hours") or 48),
+        expiry_hours=int(payload.get("expiry_hours") or 168),
+        max_batch_size=int(payload.get("max_batch_size") or 100),
+        authorization_confirmed=bool(
+            payload.get("authorization_confirmed", False)
+        ),
+        authorization_note=str(payload.get("authorization_note") or ""),
+    )
+    write_pilot_config(run_dir, cfg)
+    return _operator_response(
+        {
+            "saved": True,
+            "config_ready": cfg.is_ready_to_send(),
+        }
+    )
+
+
+@router.post("/jobs/{job_id}/pilot-send/preview")
+def operator_preview_pilot_candidates(
+    job_id: str,
+    batch_size: int = 50,
+) -> Any:
+    """Preview the rows that would be selected for a pilot batch.
+
+    V2.10.12. Calls the same selector :func:`launch_pilot` would
+    use, without writing anything to the tracker. Lets the operator
+    sanity-check the cohort before sending.
+    """
+    from .pilot_send.selector import select_candidates
+
+    run_dir = _resolve_run_dir(job_id)
+    candidates = select_candidates(run_dir, batch_size=int(batch_size))
+    return _operator_response(
+        {
+            "batch_size_requested": int(batch_size),
+            "candidates_found": len(candidates),
+            "candidates": [
+                {
+                    "email": c.email,
+                    "domain": c.domain,
+                    "provider_family": c.provider_family,
+                    "action": c.action,
+                    "deliverability_probability": c.deliverability_probability,
+                }
+                for c in candidates
+            ],
+        }
+    )
+
+
+@router.post("/jobs/{job_id}/pilot-send/launch")
+def operator_launch_pilot(job_id: str, batch_size: int = 50) -> Any:
+    """Send a real pilot batch.
+
+    V2.10.12. Synchronous. Returns the launch result with the
+    batch_id and per-row outcome counts. Validation failures
+    (authorization not confirmed, template incomplete, return-path
+    missing) become HTTP 400 with reason codes.
+    """
+    from .pilot_send.launch import launch_pilot
+
+    run_dir = _resolve_run_dir(job_id)
+    result = launch_pilot(
+        run_dir,
+        job_id=job_id,
+        batch_size=int(batch_size),
+    )
+    if result.error and result.error in {
+        "authorization_required",
+        "template_incomplete",
+        "return_path_domain_missing",
+        "batch_size_must_be_positive",
+        "batch_size_exceeds_max",
+        "no_candidates_found",
+    }:
+        _raise_http_error(
+            400,
+            result.error,
+            f"Pilot launch rejected: {result.error}",
+            {"job_id": job_id, "batch_size": int(batch_size)},
+        )
+    return _operator_response(
+        {
+            "batch_id": result.batch_id,
+            "candidates_selected": result.candidates_selected,
+            "candidates_added": result.candidates_added,
+            "sent": result.sent,
+            "failed": result.failed,
+            "counts": result.counts.to_dict(),
+        }
+    )
+
+
+@router.post("/jobs/{job_id}/pilot-send/poll-bounces")
+def operator_poll_pilot_bounces(job_id: str) -> Any:
+    """Run one IMAP bounce-poll pass on demand.
+
+    V2.10.12. The operator clicks "Check bounces" in the UI;
+    TrashPanda connects to the configured bounce mailbox, parses
+    every UNSEEN message, and applies verdicts to the tracker.
+    """
+    from .pilot_send.bounce_poller import poll_bounces
+
+    run_dir = _resolve_run_dir(job_id)
+    result = poll_bounces(run_dir)
+    return _operator_response(
+        {
+            "fetched": result.fetched,
+            "parsed": result.parsed,
+            "matched": result.matched,
+            "unmatched_tokens": result.unmatched_tokens,
+            "parse_errors": result.parse_errors,
+            "verdict_breakdown": result.verdict_breakdown,
+        }
+    )
+
+
+@router.post("/jobs/{job_id}/pilot-send/finalize")
+def operator_finalize_pilot(job_id: str) -> Any:
+    """Apply wait-window verdicts and emit the V2.10.12 XLSX files.
+
+    V2.10.12. Always operator-triggered. Generates
+    ``delivery_verified.xlsx`` / ``pilot_hard_bounces.xlsx`` /
+    ``updated_do_not_send.xlsx`` / etc., and feeds the results into
+    the V2.7 ``bounce_ingestion`` per-domain aggregate.
+    """
+    from .pilot_send.finalize import finalize_pilot
+
+    run_dir = _resolve_run_dir(job_id)
+    result = finalize_pilot(run_dir)
+    return _operator_response(
+        {
+            "files_written": {
+                key: str(path) for key, path in result.files_written.items()
+            },
+            "counts": result.counts.to_dict(),
+            "bounce_ingestion_csv": (
+                str(result.bounce_ingestion_csv)
+                if result.bounce_ingestion_csv
+                else None
+            ),
+        }
+    )
+
+
 @router.get("/jobs/{job_id}/client-bundle/summary")
 def operator_get_client_bundle_summary(job_id: str) -> Any:
     """Summary used by the UI's "Send to client" panel.

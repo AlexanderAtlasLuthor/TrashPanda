@@ -23,6 +23,7 @@ import { JobHelperBanner } from "@/components/JobHelperBanner";
 import { ExecutiveSummary } from "@/components/ExecutiveSummary";
 import { ClassificationBreakdown } from "@/components/ClassificationBreakdown";
 import { RetryQueueCard } from "@/components/RetryQueueCard";
+import { PilotSendCard } from "@/components/PilotSendCard";
 import { TypoCorrectionsPanel } from "@/components/TypoCorrectionsPanel";
 import { ErrorState } from "@/components/ErrorState";
 import { AINarrativePanel } from "@/components/AINarrativePanel";
@@ -315,6 +316,9 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
                   .catch(() => {});
               }}
             />
+          </div>
+          <div className="fade-up">
+            <PilotSendCard jobId={jobId} visible />
           </div>
           {(job.summary?.total_review ?? 0) > 0 && (
             <div className="fade-up">

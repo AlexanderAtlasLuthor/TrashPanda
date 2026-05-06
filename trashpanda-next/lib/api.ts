@@ -718,3 +718,184 @@ export async function getFeedbackPreview(
   });
   return handleResponse<FeedbackPreviewResult>(res);
 }
+
+// V2.10.12 — Pilot send (controlled in-house bounce-proven verification).
+//
+// The card surfaces:
+//   * `available`: tracker file exists.
+//   * `config_ready`: template+return_path complete and authorization
+//     checked.
+//   * counts per-state (pending_send / sent / verdict_ready / expired)
+//     plus per-verdict (delivered / hard_bounce / etc) and the derived
+//     `hard_bounce_rate`.
+//
+// Endpoints:
+//   GET    /pilot-send/status
+//   PUT    /pilot-send/config
+//   POST   /pilot-send/preview?batch_size=N
+//   POST   /pilot-send/launch?batch_size=N
+//   POST   /pilot-send/poll-bounces
+//   POST   /pilot-send/finalize
+
+export interface PilotSendCounts {
+  pending_send: number;
+  sent: number;
+  verdict_ready: number;
+  expired: number;
+  delivered: number;
+  hard_bounce: number;
+  soft_bounce: number;
+  blocked: number;
+  deferred: number;
+  complaint: number;
+  unknown: number;
+  total: number;
+  hard_bounce_rate: number;
+}
+
+export interface PilotSendStatus {
+  available: boolean;
+  config_ready: boolean;
+  authorization_confirmed: boolean;
+  max_batch_size: number;
+  wait_window_hours: number;
+  imap_configured: boolean;
+  return_path_domain: string;
+  sender_address: string;
+  subject: string;
+  counts: PilotSendCounts;
+}
+
+export interface PilotMessageTemplateInput {
+  subject?: string;
+  body_text?: string;
+  body_html?: string;
+  sender_address?: string;
+  sender_name?: string;
+  reply_to?: string;
+}
+
+export interface IMAPCredentialsInput {
+  host?: string;
+  port?: number;
+  use_ssl?: boolean;
+  username?: string;
+  password_env?: string;
+  folder?: string;
+}
+
+export interface PilotSendConfigInput {
+  template?: PilotMessageTemplateInput;
+  imap?: IMAPCredentialsInput;
+  return_path_domain?: string;
+  wait_window_hours?: number;
+  expiry_hours?: number;
+  max_batch_size?: number;
+  authorization_confirmed?: boolean;
+  authorization_note?: string;
+}
+
+export interface PilotPreviewCandidate {
+  email: string;
+  domain: string;
+  provider_family: string;
+  action: string;
+  deliverability_probability: number;
+}
+
+export interface PilotPreviewResult {
+  batch_size_requested: number;
+  candidates_found: number;
+  candidates: PilotPreviewCandidate[];
+}
+
+export interface PilotLaunchResult {
+  batch_id: string;
+  candidates_selected: number;
+  candidates_added: number;
+  sent: number;
+  failed: number;
+  counts: PilotSendCounts;
+}
+
+export interface PilotPollBouncesResult {
+  fetched: number;
+  parsed: number;
+  matched: number;
+  unmatched_tokens: number;
+  parse_errors: number;
+  verdict_breakdown: Record<string, number>;
+}
+
+export interface PilotFinalizeResult {
+  files_written: Record<string, string>;
+  counts: PilotSendCounts;
+  bounce_ingestion_csv: string | null;
+}
+
+export async function getPilotSendStatus(
+  jobId: string,
+): Promise<PilotSendStatus> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/status`,
+    { cache: "no-store" },
+  );
+  return handleResponse<PilotSendStatus>(res);
+}
+
+export async function setPilotSendConfig(
+  jobId: string,
+  config: PilotSendConfigInput,
+): Promise<{ saved: boolean; config_ready: boolean }> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/config`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(config),
+    },
+  );
+  return handleResponse<{ saved: boolean; config_ready: boolean }>(res);
+}
+
+export async function previewPilotCandidates(
+  jobId: string,
+  batchSize: number,
+): Promise<PilotPreviewResult> {
+  const url =
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/preview` +
+    `?batch_size=${encodeURIComponent(String(batchSize))}`;
+  const res = await fetch(url, { method: "POST", cache: "no-store" });
+  return handleResponse<PilotPreviewResult>(res);
+}
+
+export async function launchPilot(
+  jobId: string,
+  batchSize: number,
+): Promise<PilotLaunchResult> {
+  const url =
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/launch` +
+    `?batch_size=${encodeURIComponent(String(batchSize))}`;
+  const res = await fetch(url, { method: "POST", cache: "no-store" });
+  return handleResponse<PilotLaunchResult>(res);
+}
+
+export async function pollPilotBounces(
+  jobId: string,
+): Promise<PilotPollBouncesResult> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/poll-bounces`,
+    { method: "POST", cache: "no-store" },
+  );
+  return handleResponse<PilotPollBouncesResult>(res);
+}
+
+export async function finalizePilot(
+  jobId: string,
+): Promise<PilotFinalizeResult> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/finalize`,
+    { method: "POST", cache: "no-store" },
+  );
+  return handleResponse<PilotFinalizeResult>(res);
+}

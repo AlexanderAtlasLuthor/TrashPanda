@@ -90,6 +90,18 @@ _AUDIENCE_BY_KEY: dict[str, str] = {
     "review_high_risk": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     "do_not_send": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     "second_pass_candidates": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    # V2.10.12 — pilot send / bounce-proven verification.
+    # ``delivery_verified`` is the headline new tier: rows TrashPanda
+    # actually sent a real message to and observed no bounce.
+    # ``updated_do_not_send`` is the customer-canonical "do not send"
+    # list after the pilot batch results are merged in.
+    "delivery_verified": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "pilot_send_candidates": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "pilot_hard_bounces": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "pilot_soft_bounces": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "pilot_blocked_or_deferred": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "pilot_summary_report": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "updated_do_not_send": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     # V2.10.8.2 — safe-only partial delivery anchor file.
     "safe_only_delivery_note": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     # Always-on README that names the PRIMARY artifact for the customer.

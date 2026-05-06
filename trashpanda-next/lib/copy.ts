@@ -183,3 +183,54 @@ export type ReviewSubdivisionKey =
 
 export type ReviewActionKey =
   keyof typeof RESULTS_COPY.reviewActions;
+
+
+/**
+ * V2.10.12 — Pilot send card copy.
+ *
+ * The card sends real emails. Copy is deliberately careful — every
+ * label that nudges the operator toward the launch button is paired
+ * with an explanation of what's actually about to happen, and the
+ * authorization checkbox uses customer-permission language, not
+ * operator-convenience language.
+ */
+export const PILOT_SEND_COPY = {
+  title: "Pilot send · bounce-proven verification",
+  description:
+    "Send a small real-email batch from the rescatable cohort " +
+    "(ready_probable / low_risk / timeout_retry / catch_all_consumer). " +
+    "Capture bounces via IMAP. Rows that don't bounce within the " +
+    "wait window become delivery_verified.xlsx; hard bounces and " +
+    "blocks merge into updated_do_not_send.xlsx.",
+  authConfirm:
+    "I confirm I have permission to send to these recipients. " +
+    "TrashPanda will dispatch real email from my configured sender " +
+    "address; bounces will affect my IP reputation.",
+  launchWarning:
+    "Launching will compose and send real emails from the configured " +
+    "sender to the selected recipients. This is irreversible. " +
+    "Continue?",
+  finalizeWarning:
+    "Re-clean will regenerate delivery_verified.xlsx, " +
+    "pilot_hard_bounces.xlsx, and updated_do_not_send.xlsx using " +
+    "the current tracker state. Customers who already downloaded " +
+    "the bundle will see different files on next download. Continue?",
+  cta: {
+    saveConfig: "Save pilot config",
+    preview: "Preview candidates",
+    launch: "Launch pilot batch",
+    pollBounces: "Check bounces (IMAP)",
+    finalize: "Re-clean with pilot results",
+  },
+  state: {
+    notConfigured: "Pilot send not configured. Fill the config above to enable.",
+    notAuthorized:
+      "Authorization checkbox required before launch. Tick the box in " +
+      "the config above.",
+    portWarning:
+      "TrashPanda speaks SMTP directly to recipient MX hosts on port 25. " +
+      "If your VPS blocks outbound port 25 (RackNerd and most cloud " +
+      "providers do), every send will fail. Verify with " +
+      "`telnet smtp.gmail.com 25` from the host.",
+  },
+} as const;

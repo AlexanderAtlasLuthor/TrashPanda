@@ -1,0 +1,33 @@
+[Unit]
+Description=TrashPanda — pilot send bounce-mailbox poll (V2.10.12)
+After=network-online.target trashpanda-backend.service
+Requires=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/trashpanda
+ExecStart=/root/trashpanda/.venv/bin/python -m app.pilot_send.bounce_poller --once --runtime-root /root/trashpanda/runtime/jobs
+
+# IMAP poll timeouts can stack on slow mailboxes; cap the unit so
+# stuck connections don't pile up.
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal
+
+# Hardened sandbox — the poller only needs to read the runtime tree
+# and dial out to the operator's IMAP server. No new files outside
+# the runtime tree.
+ProtectSystem=strict
+ReadWritePaths=/root/trashpanda/runtime
+PrivateTmp=true
+NoNewPrivileges=true
+
+# IMAP password is supplied via env var named in
+# pilot_send_config.json (default TRASHPANDA_BOUNCE_IMAP_PASSWORD).
+# Operator sets this on the unit via systemctl edit, e.g.:
+#   [Service]
+#   Environment=TRASHPANDA_BOUNCE_IMAP_PASSWORD=...
+
+[Install]
+WantedBy=multi-user.target
