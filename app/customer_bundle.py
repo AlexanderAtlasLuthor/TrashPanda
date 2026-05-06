@@ -145,22 +145,35 @@ and what they mean matter.
 
 ## What we promise
 
-We removed obvious-bad rows (syntax errors, dead domains, disposable
-addresses, role-based risky, known spam patterns) and separated
-risk so the deliverable list is **defensibly cleaner** than the
-input. Where we ran a controlled SMTP pilot, we used the result
-**only when the response was about the recipient**. When the
-response was about our sending infrastructure, we did NOT treat
-it as evidence about the recipient.
+We removed the obviously-bad rows — invalid syntax, dead domains
+(no MX), disposable addresses, risky role accounts, known spam
+patterns, domains with bad reputation history. Everything left in
+`clean_deliverable.csv` passed every one of our defensive layers
+and is not contradicted by any negative signal we have. Where we
+ran a controlled SMTP pilot, we used the result **only when the
+response was about the recipient**. When the response was about
+our sending infrastructure (e.g. provider rejecting our IP), we
+did NOT treat it as evidence about the recipient.
 
 ## What we do NOT promise
 
-We did not, and cannot at this price point, individually verify
-the existence of every mailbox in your list. Mailbox existence
-checking at scale requires either commercial APIs (cost-prohibitive
-for lists this size) or a controlled multi-IP SMTP fleet over
-weeks. What we did instead is run multi-layer validation +
-controlled-pilot sampling to defensibly reduce risk.
+We did not individually verify every mailbox via SMTP. Services
+that do that (ZeroBounce, NeverBounce, MillionVerifier) charge
+$0.005-0.01 per email — economically unviable at large list
+volumes. Companies that offer real per-mailbox SMTP verification
+charge thousands to tens of thousands of dollars for lists of this
+size.
+
+What we delivered instead: multi-layer defensive cleanup that
+removes obvious bad rows and separates risk, plus per-row audit
+evidence (`smtp_evidence_report.csv`) for any row where we did
+attempt SMTP verification. If your prior batch returned a
+~15% real-world bounce rate after being told "97% clean", that
+gap (~15 points) is now budgeted explicitly into
+`high_risk_removed.csv` — we put the problematic cohorts in the
+removed bucket on purpose. The expected real-world bounce of
+`clean_deliverable.csv` should be substantially lower than 15%
+because those rows are no longer in it.
 
 ## Files in this bundle
 
