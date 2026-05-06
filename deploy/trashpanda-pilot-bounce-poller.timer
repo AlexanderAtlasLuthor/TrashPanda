@@ -1,0 +1,15 @@
+[Unit]
+Description=TrashPanda — pilot send bounce-mailbox poll timer (V2.10.12)
+Documentation=app.pilot_send.bounce_poller
+
+[Timer]
+# Drain every 15 minutes. Operators that want a different cadence
+# can override via `systemctl edit trashpanda-pilot-bounce-poller.timer`.
+OnBootSec=2min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Unit=trashpanda-pilot-bounce-poller.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

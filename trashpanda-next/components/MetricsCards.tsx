@@ -1,3 +1,4 @@
+import { RESULTS_COPY } from "@/lib/copy";
 import type { JobSummary } from "@/lib/types";
 import type { Severity } from "@/lib/mockup-theme";
 import styles from "./MetricsCards.module.css";
@@ -125,13 +126,18 @@ export function MetricsCards({ summary }: MetricsCardsProps) {
   const review = summary?.total_review;
   const invalid = summary?.total_invalid_or_bounce_risk;
 
+  // V2.10.10 — clarify the headline tile copy. "Ready to send" used
+  // to imply the entire list was usable; the tile actually counts the
+  // confirmed-safe-only cohort. Make the tooltip and delta string
+  // reflect that without rewriting the metric value.
   const validPct =
     total && valid !== null && valid !== undefined
-      ? ((valid / total) * 100).toFixed(1) + "% of your list is ready to send"
+      ? ((valid / total) * 100).toFixed(1) +
+        "% confirmed safe-only"
       : undefined;
   const reviewPct =
     total && review !== null && review !== undefined && review > 0
-      ? ((review / total) * 100).toFixed(1) + "% of your list"
+      ? ((review / total) * 100).toFixed(1) + "% require review"
       : undefined;
   const invalidPct =
     total && invalid !== null && invalid !== undefined && invalid > 0
@@ -141,34 +147,42 @@ export function MetricsCards({ summary }: MetricsCardsProps) {
   return (
     <div className={styles.metrics}>
       <Metric
-        label="Ready to send"
+        label={RESULTS_COPY.readyTile.label}
         value={valid}
         severity="ok"
         hero
         delta={validPct}
-        tooltip="Emails that passed every strict validation rule — safe to send."
+        tooltip={
+          "Strict safe-only — SMTP-confirmed valid mailbox or trusted " +
+          "consumer provider with high deliverability probability and " +
+          "no catch-all / cold-start cap."
+        }
         emptyHint="Waiting for job to finish."
       />
       <Metric
-        label="Emails scanned"
+        label={RESULTS_COPY.scannedTile.label}
         value={total}
         emptyHint="No rows processed yet."
       />
       <Metric
-        label="Needs attention"
+        label={RESULTS_COPY.reviewTile.label}
         value={review}
         severity="warn"
         delta={reviewPct}
-        tooltip="May require manual review before sending."
+        tooltip={
+          "Unconfirmed — mostly B2B / cold-start domains and catch-all " +
+          "consumer providers. See the breakdown below for which " +
+          "subset is rescatable with a second-pass."
+        }
         emptyHint="Waiting for job to finish."
         zeroNote="Nothing to review — all records classified automatically."
       />
       <Metric
-        label="Do not use"
+        label={RESULTS_COPY.removedTile.label}
         value={invalid}
         severity="bad"
         delta={invalidPct}
-        tooltip="High risk of bounce or invalid address."
+        tooltip="Hard syntax / MX failures, duplicates, disposable domains."
         emptyHint="Waiting for job to finish."
         zeroNote="No high-risk addresses detected."
       />

@@ -53,7 +53,9 @@ import pandas as pd
 
 from ...validation_v2.services.domain_intelligence import (
     COMMON_PROVIDERS,
+    PROVIDER_FAMILY_CORPORATE_UNKNOWN,
     SimpleDomainIntelligenceService,
+    provider_family_for,
 )
 from ..context import PipelineContext
 from ..payload import ChunkPayload
@@ -122,6 +124,13 @@ DOMAIN_INTELLIGENCE_OUTPUT_COLUMNS: tuple[str, ...] = (
     "domain_observation_count",
     "domain_cold_start",
     "domain_intel_reason",
+    # V2.10.11 — coarse provider family ("yahoo_family",
+    # "google_family", "microsoft_family", "apple_family",
+    # "proton_family", "corporate_unknown"). Read by the review
+    # classifier and the decision/UI layer to route AOL / Verizon /
+    # AT&T-Yahoo backbone consistently. Always populated; defaults
+    # to ``corporate_unknown`` for any domain not in the table.
+    "provider_family",
 )
 
 
@@ -177,6 +186,7 @@ class DomainIntelligenceClassification:
         "observation_count",
         "cold_start",
         "reason",
+        "provider_family",
     )
 
     def __init__(
@@ -189,6 +199,7 @@ class DomainIntelligenceClassification:
         observation_count: int,
         cold_start: bool,
         reason: str,
+        provider_family: str = PROVIDER_FAMILY_CORPORATE_UNKNOWN,
     ) -> None:
         self.status = status
         # Clamp to [0, 1] so a buggy upstream cannot push the score
@@ -199,6 +210,7 @@ class DomainIntelligenceClassification:
         self.observation_count = max(0, int(observation_count))
         self.cold_start = bool(cold_start)
         self.reason = reason
+        self.provider_family = provider_family
 
     @classmethod
     def not_applicable(cls, reason: str = "not_a_candidate") -> "DomainIntelligenceClassification":
@@ -213,6 +225,7 @@ class DomainIntelligenceClassification:
             observation_count=0,
             cold_start=False,
             reason=reason,
+            provider_family=PROVIDER_FAMILY_CORPORATE_UNKNOWN,
         )
 
     @classmethod
@@ -225,6 +238,7 @@ class DomainIntelligenceClassification:
             observation_count=0,
             cold_start=True,
             reason=reason,
+            provider_family=PROVIDER_FAMILY_CORPORATE_UNKNOWN,
         )
 
 
@@ -279,6 +293,8 @@ def classify_domain_heuristic(
     if not normalized:
         return DomainIntelligenceClassification.not_applicable("empty_domain")
 
+    family = provider_family_for(normalized)
+
     # Rule 2 — disposable.
     if normalized in disposable_domains:
         return DomainIntelligenceClassification(
@@ -289,6 +305,7 @@ def classify_domain_heuristic(
             observation_count=0,
             cold_start=False,
             reason="disposable_domain",
+            provider_family=family,
         )
 
     # Rule 3 — common consumer provider.
@@ -301,6 +318,7 @@ def classify_domain_heuristic(
             observation_count=0,
             cold_start=False,
             reason="common_consumer_provider",
+            provider_family=family,
         )
 
     # Rule 4 — suspicious-shape (use the existing intel service).
@@ -320,6 +338,7 @@ def classify_domain_heuristic(
             observation_count=0,
             cold_start=False,
             reason=reason_token,
+            provider_family=family,
         )
 
     # Rule 5 — cold start.
@@ -331,6 +350,7 @@ def classify_domain_heuristic(
         observation_count=0,
         cold_start=True,
         reason="no_history_or_known_signal",
+        provider_family=family,
     )
 
 
@@ -515,6 +535,7 @@ def _emit(
     out["domain_observation_count"].append(c.observation_count)
     out["domain_cold_start"].append(c.cold_start)
     out["domain_intel_reason"].append(c.reason)
+    out["provider_family"].append(c.provider_family)
 
 
 def _write_unavailable_all(frame: pd.DataFrame) -> pd.DataFrame:
@@ -534,6 +555,7 @@ def _write_unavailable_all(frame: pd.DataFrame) -> pd.DataFrame:
     out["domain_observation_count"] = [0] * n
     out["domain_cold_start"] = [True] * n
     out["domain_intel_reason"] = ["disabled_by_config"] * n
+    out["provider_family"] = [PROVIDER_FAMILY_CORPORATE_UNKNOWN] * n
     return out
 
 

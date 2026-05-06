@@ -8,6 +8,7 @@ import {
   getClientBundleSummary,
   type ClientBundleSummary,
 } from "@/lib/api";
+import { RESULTS_COPY } from "@/lib/copy";
 import styles from "./SendToClientButton.module.css";
 
 interface SendToClientButtonProps {
@@ -162,8 +163,9 @@ export function SendToClientButton({
         <div className={styles.partialBanner}>
           ⚠ Partial delivery — the operator review gate flagged warnings.
           The bundle includes only the {summary.safe_count} confirmed safe
-          rows. {summary.review_count} need review and {summary.rejected_count}{" "}
-          were removed.
+          rows. {summary.review_count} require review (mostly unconfirmed
+          B2B / catch-all consumer providers — see breakdown below) and{" "}
+          {summary.rejected_count} were removed.
         </div>
       )}
 
@@ -190,21 +192,21 @@ export function SendToClientButton({
 
       <div className={styles.tally}>
         <span className={styles.tallyOk}>
-          {summary.safe_count.toLocaleString()} ready
+          {summary.safe_count.toLocaleString()} confirmed safe
         </span>
         <span className={styles.tallyDot}>·</span>
         <span className={styles.tallyWarn}>
-          {summary.review_count.toLocaleString()} review
+          {summary.review_count.toLocaleString()} require review
         </span>
         <span className={styles.tallyDot}>·</span>
         <span className={styles.tallyBad}>
-          {summary.rejected_count.toLocaleString()} removed
+          {summary.rejected_count.toLocaleString()} do not use
         </span>
         {total > 0 && (
           <>
             <span className={styles.tallyDot}>·</span>
             <span className={styles.tallyMuted}>
-              {safePct}% of upload safe to send
+              {safePct}% confirmed safe-only
             </span>
           </>
         )}
@@ -225,10 +227,10 @@ export function SendToClientButton({
           <span className={styles.secondaryIcon} aria-hidden>⤓</span>
           <span>
             <span className={styles.secondaryHeadline}>
-              Extra-strict re-clean
+              {RESULTS_COPY.extraStrict.title}
             </span>
             <span className={styles.secondarySubline}>
-              For when the customer reported bounces — drops Yahoo/AOL too
+              {RESULTS_COPY.extraStrict.description}
             </span>
           </span>
         </a>

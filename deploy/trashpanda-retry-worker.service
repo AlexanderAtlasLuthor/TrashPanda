@@ -1,0 +1,28 @@
+[Unit]
+Description=TrashPanda — SMTP retry queue drain pass (V2.10.11)
+After=network-online.target trashpanda-backend.service
+Requires=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/trashpanda
+ExecStart=/root/trashpanda/.venv/bin/python -m app.smtp_retry_worker --once --runtime-root /root/trashpanda/runtime/jobs
+
+# Limit egress runaway. The worker probes one row at a time per job
+# and respects the same rate_limit / max_candidates as the original
+# job; these limits are operator-side guardrails for the worker
+# process itself.
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal
+
+# Hardened sandbox — the worker only needs to read the runtime tree
+# and dial out to MX servers. No new files outside the runtime tree.
+ProtectSystem=strict
+ReadWritePaths=/root/trashpanda/runtime
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -363,6 +363,140 @@ class TestSMTPVerificationStage:
 
 
 # ---------------------------------------------------------------------------
+# V2.10.11 — in-process retry of operationally transient outcomes
+# ---------------------------------------------------------------------------
+
+
+class _FakeSmtpProbeConfig:
+    """Stand-in for ``app.config.SMTPProbeConfig`` — only the fields
+    the SMTP stage reads. Lets tests pin retry behaviour without
+    constructing a full AppConfig."""
+
+    def __init__(
+        self,
+        *,
+        retry_temp_failures: bool = True,
+        max_retries: int = 2,
+        rate_limit_per_second: float = 0.0,
+        max_candidates_per_run: int | None = None,
+        timeout_seconds: float = 4.0,
+        sender_address: str = "trashpanda-probe@localhost",
+        enabled: bool = True,
+        dry_run: bool = True,
+    ) -> None:
+        self.retry_temp_failures = retry_temp_failures
+        self.max_retries = max_retries
+        self.rate_limit_per_second = rate_limit_per_second
+        self.max_candidates_per_run = max_candidates_per_run
+        self.timeout_seconds = timeout_seconds
+        self.sender_address = sender_address
+        self.enabled = enabled
+        self.dry_run = dry_run
+
+
+class _FakeAppConfig:
+    """Minimal AppConfig stand-in carrying only ``smtp_probe``."""
+
+    def __init__(self, smtp_probe: _FakeSmtpProbeConfig) -> None:
+        self.smtp_probe = smtp_probe
+
+
+def _make_sequence_probe(*results: SMTPResult):
+    """Probe that returns ``results[i]`` on the i-th call, then sticks
+    on the last value."""
+    calls: list[str] = []
+
+    def _probe(email: str, **_kwargs: object) -> SMTPResult:
+        idx = min(len(calls), len(results) - 1)
+        calls.append(email)
+        return results[idx]
+
+    _probe.calls = calls  # type: ignore[attr-defined]
+    return _probe
+
+
+class TestSMTPVerificationRetry:
+    """V2.10.11 — `retry_temp_failures` / `max_retries` are no longer
+    dead config; the stage retries 4xx temp_fail / timeout / blocked
+    in-process up to ``max_retries`` and records the retries on the
+    runtime summary."""
+
+    def _ctx(self, **kwargs):
+        cfg = _FakeAppConfig(_FakeSmtpProbeConfig(**kwargs))
+        ctx = PipelineContext(extras={})
+        ctx.config = cfg  # type: ignore[attr-defined]
+        return ctx
+
+    def test_retry_after_temp_fail_eventually_valid(self):
+        """First probe returns 421, second returns 250 → final
+        verdict is valid and 1 retry was recorded."""
+        probe = _make_sequence_probe(_result_temp_fail(), _result_valid())
+        ctx = self._ctx(retry_temp_failures=True, max_retries=2)
+        slept: list[float] = []
+        out = SMTPVerificationStage(
+            probe_fn=probe, sleep_fn=slept.append, clock_fn=lambda: 0.0,
+        ).run(ChunkPayload(frame=_candidate_frame()), ctx).frame
+        row = out.iloc[0]
+        assert row["smtp_status"] == SMTP_STATUS_VALID
+        assert len(probe.calls) == 2
+        # Runtime summary tracks the retry.
+        from app.smtp_runtime import (
+            get_or_create_smtp_runtime_summary,
+            SMTP_RUNTIME_SUMMARY_EXTRAS_KEY,
+        )
+        summary = ctx.extras[SMTP_RUNTIME_SUMMARY_EXTRAS_KEY]
+        assert summary.smtp_retries_executed == 1
+        # Backoff was honoured at least once.
+        assert any(s > 0 for s in slept)
+
+    def test_retry_disabled_surfaces_first_result(self):
+        probe = _make_sequence_probe(_result_temp_fail(), _result_valid())
+        ctx = self._ctx(retry_temp_failures=False, max_retries=5)
+        out = SMTPVerificationStage(probe_fn=probe).run(
+            ChunkPayload(frame=_candidate_frame()), ctx,
+        ).frame
+        row = out.iloc[0]
+        assert row["smtp_status"] == SMTP_STATUS_TEMP_FAIL
+        assert len(probe.calls) == 1
+
+    def test_retry_exhausts_max_retries(self):
+        """All probes return temp_fail → final verdict is temp_fail
+        and total calls == 1 + max_retries."""
+        probe = _make_sequence_probe(
+            _result_temp_fail(), _result_temp_fail(), _result_temp_fail(),
+        )
+        ctx = self._ctx(retry_temp_failures=True, max_retries=2)
+        out = SMTPVerificationStage(
+            probe_fn=probe, sleep_fn=lambda _s: None, clock_fn=lambda: 0.0,
+        ).run(ChunkPayload(frame=_candidate_frame()), ctx).frame
+        row = out.iloc[0]
+        assert row["smtp_status"] == SMTP_STATUS_TEMP_FAIL
+        # 1 initial + 2 retries.
+        assert len(probe.calls) == 3
+
+    def test_max_retries_clamped_to_three(self):
+        """``max_retries=10`` is silently clamped to ``_MAX_IN_PROCESS_RETRIES``."""
+        probe = _make_sequence_probe(*[_result_temp_fail()] * 10)
+        ctx = self._ctx(retry_temp_failures=True, max_retries=10)
+        SMTPVerificationStage(
+            probe_fn=probe, sleep_fn=lambda _s: None, clock_fn=lambda: 0.0,
+        ).run(ChunkPayload(frame=_candidate_frame()), ctx)
+        # 1 initial + 3 retries (capped).
+        assert len(probe.calls) == 4
+
+    def test_invalid_5xx_is_not_retried(self):
+        """A 5xx hard rejection terminates immediately."""
+        probe = _make_sequence_probe(_result_invalid(), _result_valid())
+        ctx = self._ctx(retry_temp_failures=True, max_retries=3)
+        out = SMTPVerificationStage(probe_fn=probe).run(
+            ChunkPayload(frame=_candidate_frame()), ctx,
+        ).frame
+        row = out.iloc[0]
+        assert row["smtp_status"] == SMTP_STATUS_INVALID
+        assert len(probe.calls) == 1
+
+
+# ---------------------------------------------------------------------------
 # Layer 4 — DecisionStage SMTP-aware behavior
 # ---------------------------------------------------------------------------
 
