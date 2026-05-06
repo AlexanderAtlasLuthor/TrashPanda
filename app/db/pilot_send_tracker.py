@@ -25,16 +25,29 @@ State machine
 Verdicts
 --------
 
-* ``delivered``    — wait window elapsed without a bounce. The
-                     conservative-but-actionable signal we use for
-                     the ``delivery_verified`` cohort.
-* ``hard_bounce``  — DSN with ``Action: failed`` and a 5xx
-                     ``Status:`` code (5.x.x SMTP enhanced status).
-* ``soft_bounce``  — DSN with ``Action: failed`` and a 4xx code.
-* ``blocked``      — DSN diagnostic mentions blocked/policy/spam.
-* ``deferred``     — DSN with ``Action: delayed``.
-* ``complaint``    — ARF-style abuse report.
-* ``unknown``      — DSN couldn't be parsed.
+* ``delivered``              — wait window elapsed without a bounce.
+                               The conservative-but-actionable signal we
+                               use for the ``delivery_verified`` cohort.
+* ``hard_bounce``            — DSN with ``Action: failed`` and a 5xx
+                               ``Status:`` code (5.x.x SMTP enhanced
+                               status). Recipient-level rejection.
+* ``soft_bounce``            — DSN with ``Action: failed`` and a 4xx
+                               code.
+* ``blocked``                — DSN diagnostic mentions content/policy
+                               rejection (DMARC, spam, content policy).
+* ``infrastructure_blocked`` — Recipient provider rejected our sender
+                               IP / network (e.g. Microsoft S3150
+                               "block list" replies citing the sender
+                               IP, Spamhaus listing). Says nothing
+                               about the recipient — re-test from a
+                               clean IP.
+* ``provider_deferred``      — Recipient provider deferred mail due to
+                               sender volume / reputation (e.g. Yahoo
+                               TSS04). Transient and sender-side; not
+                               an indictment of the recipient.
+* ``deferred``               — DSN with ``Action: delayed``.
+* ``complaint``              — ARF-style abuse report.
+* ``unknown``                — DSN couldn't be parsed.
 """
 
 from __future__ import annotations
@@ -74,6 +87,12 @@ VERDICT_BLOCKED: str = "blocked"
 VERDICT_DEFERRED: str = "deferred"
 VERDICT_COMPLAINT: str = "complaint"
 VERDICT_UNKNOWN: str = "unknown"
+# Sender-side outcomes — the recipient provider rejected/deferred
+# us based on our IP/network/reputation, not the recipient address.
+# These are NOT do_not_send candidates; they need a re-test from a
+# clean sender before any verdict on the recipient is possible.
+VERDICT_INFRA_BLOCKED: str = "infrastructure_blocked"
+VERDICT_PROVIDER_DEFERRED: str = "provider_deferred"
 
 ALL_VERDICTS: tuple[str, ...] = (
     VERDICT_DELIVERED,
@@ -83,6 +102,8 @@ ALL_VERDICTS: tuple[str, ...] = (
     VERDICT_DEFERRED,
     VERDICT_COMPLAINT,
     VERDICT_UNKNOWN,
+    VERDICT_INFRA_BLOCKED,
+    VERDICT_PROVIDER_DEFERRED,
 )
 
 
@@ -91,6 +112,8 @@ ALL_VERDICTS: tuple[str, ...] = (
 # ``soft_bounce`` and ``deferred`` stay neutral — they're transient
 # and surfaced separately in ``pilot_soft_bounces.xlsx`` /
 # ``pilot_blocked_or_deferred.xlsx`` for operator review.
+# ``infrastructure_blocked`` and ``provider_deferred`` are deliberately
+# excluded: they describe the sender, not the recipient.
 DO_NOT_SEND_VERDICTS: frozenset[str] = frozenset({
     VERDICT_HARD_BOUNCE,
     VERDICT_BLOCKED,
@@ -99,6 +122,14 @@ DO_NOT_SEND_VERDICTS: frozenset[str] = frozenset({
 
 DELIVERY_VERIFIED_VERDICTS: frozenset[str] = frozenset({
     VERDICT_DELIVERED,
+})
+
+# Verdicts that mean "we couldn't get a recipient-level signal because
+# our sender was rejected or throttled". Operator should re-run from a
+# different IP/route before treating the recipient as bad.
+INFRA_RETEST_VERDICTS: frozenset[str] = frozenset({
+    VERDICT_INFRA_BLOCKED,
+    VERDICT_PROVIDER_DEFERRED,
 })
 
 
@@ -177,6 +208,8 @@ class PilotCounts:
     deferred: int = 0
     complaint: int = 0
     unknown: int = 0
+    infrastructure_blocked: int = 0
+    provider_deferred: int = 0
 
     @property
     def total(self) -> int:
@@ -200,6 +233,8 @@ class PilotCounts:
             "deferred": self.deferred,
             "complaint": self.complaint,
             "unknown": self.unknown,
+            "infrastructure_blocked": self.infrastructure_blocked,
+            "provider_deferred": self.provider_deferred,
             "total": self.total,
             "hard_bounce_rate": round(self.hard_bounce_rate, 4),
         }
@@ -575,6 +610,8 @@ class PilotSendTracker:
             deferred=verdict_bucket[VERDICT_DEFERRED],
             complaint=verdict_bucket[VERDICT_COMPLAINT],
             unknown=verdict_bucket[VERDICT_UNKNOWN],
+            infrastructure_blocked=verdict_bucket[VERDICT_INFRA_BLOCKED],
+            provider_deferred=verdict_bucket[VERDICT_PROVIDER_DEFERRED],
         )
 
 
@@ -589,6 +626,7 @@ __all__ = [
     "DEFAULT_WAIT_WINDOW_HOURS",
     "DELIVERY_VERIFIED_VERDICTS",
     "DO_NOT_SEND_VERDICTS",
+    "INFRA_RETEST_VERDICTS",
     "PILOT_CONFIG_FILENAME",
     "PILOT_TRACKER_FILENAME",
     "PilotCounts",
@@ -603,6 +641,8 @@ __all__ = [
     "VERDICT_DEFERRED",
     "VERDICT_DELIVERED",
     "VERDICT_HARD_BOUNCE",
+    "VERDICT_INFRA_BLOCKED",
+    "VERDICT_PROVIDER_DEFERRED",
     "VERDICT_SOFT_BOUNCE",
     "VERDICT_UNKNOWN",
     "open_for_run",

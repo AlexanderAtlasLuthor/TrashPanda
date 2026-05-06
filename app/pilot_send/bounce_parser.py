@@ -71,6 +71,69 @@ _SOFT_KEYWORDS: tuple[str, ...] = (
 )
 
 
+# Infrastructure-level rejections: the recipient provider rejected
+# our sender IP / network / route. Says nothing about whether the
+# recipient address exists. We surface these separately so they
+# don't pollute the customer's do_not_send list when the real cause
+# is sender reputation.
+_INFRA_BLOCK_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Microsoft Outlook/Hotmail/Live S3150 family.
+    re.compile(r"\bS3150\b", re.IGNORECASE),
+    # "messages from [1.2.3.4] weren't sent" / "were not sent".
+    re.compile(
+        r"messages from \[?[\d.]+\]?\s+(?:weren'?t sent|were not sent)",
+        re.IGNORECASE,
+    ),
+    # "part of their network is on our block list".
+    re.compile(
+        r"part of (?:their|your) network is on (?:our|the) block\s?list",
+        re.IGNORECASE,
+    ),
+    # Public RBL listings (Spamhaus / Barracuda / SORBS / UCEPROTECT).
+    re.compile(
+        r"\b(?:spamhaus|barracuda|sorbs|uceprotect)\b.*"
+        r"\b(?:listed|listing|blocklist|black\s?list)\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    # 5.7.1 + explicit sender-IP / blocklist context.
+    re.compile(
+        r"\b5\.7\.1\b.*(?:block\s?list|sender reputation|your ip)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+)
+
+
+# Provider-deferred patterns: throttled / volume / reputation
+# limits, not a recipient signal. Yahoo's TSS04 is the canonical
+# example. Always transient.
+_PROVIDER_DEFER_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Yahoo / AOL "TSSnn" reputation throttling tags.
+    re.compile(r"\b\[?TSS?\d{2,3}\]?\b", re.IGNORECASE),
+    re.compile(
+        r"temporarily deferred due to "
+        r"(?:unexpected volume|user complaints|reputation)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b421\b.*(?:throttl|too many connections|rate limit"
+        r"|unexpected volume)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+)
+
+
+def _is_infra_block(diagnostic: str) -> bool:
+    if not diagnostic:
+        return False
+    return any(p.search(diagnostic) for p in _INFRA_BLOCK_PATTERNS)
+
+
+def _is_provider_deferred(diagnostic: str) -> bool:
+    if not diagnostic:
+        return False
+    return any(p.search(diagnostic) for p in _PROVIDER_DEFER_PATTERNS)
+
+
 def _from_text(text: str) -> tuple[str | None, str | None]:
     """Extract (smtp_code, normalized_text) from a free-form blob."""
     if not text:
@@ -90,8 +153,22 @@ def _verdict_from_status_action(
     diagnostic: str,
 ) -> str:
     """Apply the canonical mapping. Status code is the primary
-    signal; action and diagnostic disambiguate."""
-    diag_lower = (diagnostic or "").lower()
+    signal; action and diagnostic disambiguate.
+
+    Sender-side rejections (recipient provider rejected our IP /
+    network / route) are detected first — they would otherwise be
+    mis-classified as ``hard_bounce`` and pollute the customer's
+    do_not_send list with addresses that may be perfectly valid.
+    """
+    diag = diagnostic or ""
+    diag_lower = diag.lower()
+
+    # Sender-side first: independent of action / status, because the
+    # SMTP code reflects the sender being rejected, not the recipient.
+    if _is_infra_block(diag):
+        return "infrastructure_blocked"
+    if _is_provider_deferred(diag):
+        return "provider_deferred"
 
     # Action: failed → terminal. Use the enhanced status to split
     # hard vs soft.

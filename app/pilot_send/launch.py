@@ -45,9 +45,12 @@ from ..db.pilot_send_tracker import (
     PilotCounts,
     VERDICT_HARD_BOUNCE,
     VERDICT_BLOCKED,
+    VERDICT_INFRA_BLOCKED,
+    VERDICT_PROVIDER_DEFERRED,
     VERDICT_SOFT_BOUNCE,
     VERDICT_UNKNOWN,
 )
+from .bounce_parser import _is_infra_block, _is_provider_deferred
 from .config import PilotSendConfig, read_pilot_config
 from .selector import PilotCandidate, select_candidates
 from .sender import PilotSendOutcome, SMTPSender, SMTPTransport
@@ -110,9 +113,16 @@ def _send_failure_verdict(outcome: PilotSendOutcome) -> str:
     is ``unknown`` — the operator can re-launch later.
     """
     code = outcome.smtp_response_code
+    raw = outcome.smtp_response_message or ""
+    # Sender-side rejections first: a 5xx that names our IP / network
+    # is not a recipient-level signal.
+    if _is_infra_block(raw):
+        return VERDICT_INFRA_BLOCKED
+    if _is_provider_deferred(raw):
+        return VERDICT_PROVIDER_DEFERRED
     if isinstance(code, int):
         if 500 <= code < 600:
-            msg = (outcome.smtp_response_message or "").lower()
+            msg = raw.lower()
             if any(
                 k in msg
                 for k in (

@@ -118,6 +118,112 @@ class TestStandardBounces:
         assert result.status == "delivered"
 
 
+class TestSenderSideRejections:
+    """Real-world DSN strings observed in the production pilot. These
+    must NOT be classified as ``hard_bounce`` / ``blocked`` because
+    they describe the sender, not the recipient."""
+
+    def test_microsoft_block_list_is_infrastructure(self):
+        # Verbatim from the May 2026 pilot: Outlook/Hotmail/Live
+        # rejecting our IP. Pre-fix this landed in hard_bounce and
+        # poisoned the do_not_send list.
+        raw = _multipart_dsn(
+            action="failed",
+            status="5.7.1",
+            diagnostic=(
+                "smtp; 550 5.7.1 Unfortunately, messages from "
+                "[192.3.105.145] weren't sent. Please contact your "
+                "Internet service provider since part of their "
+                "network is on our block list (S3150)"
+            ),
+            original_recipient="rfc822; bounce+msfttok@bounces.acme.com",
+        )
+        result = parse_dsn_message(raw)
+        assert result.status == "infrastructure_blocked"
+        assert result.verp_token == "msfttok"
+
+    def test_microsoft_block_list_without_s3150_is_infrastructure(self):
+        raw = _multipart_dsn(
+            action="failed",
+            status="5.7.1",
+            diagnostic=(
+                "smtp; 550 5.7.1 messages from [10.0.0.1] weren't "
+                "sent. part of their network is on our block list."
+            ),
+            original_recipient="rfc822; bounce+nos3tok@bounces.acme.com",
+        )
+        assert parse_dsn_message(raw).status == "infrastructure_blocked"
+
+    def test_spamhaus_listing_is_infrastructure(self):
+        raw = _multipart_dsn(
+            action="failed",
+            status="5.7.1",
+            diagnostic=(
+                "smtp; 550 5.7.1 Service unavailable; client host "
+                "blocked using Spamhaus; see "
+                "https://www.spamhaus.org/sbl/listed"
+            ),
+            original_recipient="rfc822; bounce+sbltok@bounces.acme.com",
+        )
+        assert parse_dsn_message(raw).status == "infrastructure_blocked"
+
+    def test_yahoo_tss04_is_provider_deferred(self):
+        # Verbatim from the May 2026 pilot: Yahoo/AOL throttling on
+        # sender reputation. Pre-fix this could land in soft_bounce
+        # but lost the "this is reputation, not the email" signal.
+        raw = _multipart_dsn(
+            action="delayed",
+            status="4.7.0",
+            diagnostic=(
+                "smtp; 421 [TSS04] Messages from 192.3.105.145 "
+                "temporarily deferred due to unexpected volume or "
+                "user complaints"
+            ),
+            original_recipient="rfc822; bounce+tss04tok@bounces.acme.com",
+        )
+        result = parse_dsn_message(raw)
+        assert result.status == "provider_deferred"
+        assert result.verp_token == "tss04tok"
+
+    def test_yahoo_tss04_with_failed_action_still_provider_deferred(self):
+        # Even if the upstream MTA mistakenly tagged this as
+        # Action: failed, the body wins.
+        raw = _multipart_dsn(
+            action="failed",
+            status="4.7.0",
+            diagnostic=(
+                "smtp; 421 [TSS04] temporarily deferred due to "
+                "unexpected volume"
+            ),
+            original_recipient="rfc822; bounce+tssfailtok@bounces.acme.com",
+        )
+        assert parse_dsn_message(raw).status == "provider_deferred"
+
+    def test_genuine_user_unknown_still_hard_bounce(self):
+        # Control: a real recipient-level rejection must not be
+        # mis-classified as infrastructure.
+        raw = _multipart_dsn(
+            action="failed",
+            status="5.1.1",
+            diagnostic="smtp; 550 5.1.1 user unknown",
+            original_recipient="rfc822; bounce+realhardtok@bounces.acme.com",
+        )
+        assert parse_dsn_message(raw).status == "hard_bounce"
+
+    def test_genuine_content_policy_still_blocked(self):
+        # Control: content/policy block (not IP) keeps the existing
+        # ``blocked`` verdict.
+        raw = _multipart_dsn(
+            action="failed",
+            status="5.7.1",
+            diagnostic=(
+                "smtp; 550 Message blocked due to content policy (DMARC)"
+            ),
+            original_recipient="rfc822; bounce+contentblktok@bounces.acme.com",
+        )
+        assert parse_dsn_message(raw).status == "blocked"
+
+
 class TestComplaints:
     def test_arf_abuse_is_complaint(self):
         raw = _multipart_dsn(

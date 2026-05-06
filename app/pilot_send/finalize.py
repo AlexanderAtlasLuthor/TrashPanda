@@ -52,6 +52,7 @@ import pandas as pd
 from ..db.pilot_send_tracker import (
     DELIVERY_VERIFIED_VERDICTS,
     DO_NOT_SEND_VERDICTS,
+    INFRA_RETEST_VERDICTS,
     PILOT_TRACKER_FILENAME,
     PilotRow,
     VERDICT_BLOCKED,
@@ -59,6 +60,8 @@ from ..db.pilot_send_tracker import (
     VERDICT_DEFERRED,
     VERDICT_DELIVERED,
     VERDICT_HARD_BOUNCE,
+    VERDICT_INFRA_BLOCKED,
+    VERDICT_PROVIDER_DEFERRED,
     VERDICT_SOFT_BOUNCE,
     VERDICT_UNKNOWN,
     open_for_run,
@@ -74,6 +77,7 @@ DELIVERY_VERIFIED_XLSX: str = "delivery_verified.xlsx"
 PILOT_HARD_BOUNCES_XLSX: str = "pilot_hard_bounces.xlsx"
 PILOT_SOFT_BOUNCES_XLSX: str = "pilot_soft_bounces.xlsx"
 PILOT_BLOCKED_OR_DEFERRED_XLSX: str = "pilot_blocked_or_deferred.xlsx"
+PILOT_INFRA_RETEST_XLSX: str = "pilot_infrastructure_blocked.xlsx"
 PILOT_SUMMARY_REPORT_XLSX: str = "pilot_summary_report.xlsx"
 UPDATED_DO_NOT_SEND_XLSX: str = "updated_do_not_send.xlsx"
 
@@ -88,6 +92,10 @@ _PILOT_REVIEW_VERDICTS: frozenset[str] = frozenset({
     VERDICT_SOFT_BOUNCE,
     VERDICT_DEFERRED,
     VERDICT_UNKNOWN,
+    # Sender-side rejections leave the recipient verdict undetermined,
+    # so they belong in operator review rather than removed_invalid.
+    VERDICT_INFRA_BLOCKED,
+    VERDICT_PROVIDER_DEFERRED,
 })
 
 
@@ -170,6 +178,11 @@ def _write_summary(
         {"metric": "deferred", "value": counts.deferred},
         {"metric": "complaint", "value": counts.complaint},
         {"metric": "unknown", "value": counts.unknown},
+        {
+            "metric": "infrastructure_blocked",
+            "value": counts.infrastructure_blocked,
+        },
+        {"metric": "provider_deferred", "value": counts.provider_deferred},
         {
             "metric": "hard_bounce_rate",
             "value": round(counts.hard_bounce_rate, 4),
@@ -340,9 +353,37 @@ def _apply_pilot_verdict_columns(
         })
     else:
         reason = f"pilot_{verdict}"
-        smtp_status = "temp_fail" if verdict == VERDICT_SOFT_BOUNCE else "deferred"
-        if verdict == VERDICT_UNKNOWN:
+        if verdict == VERDICT_SOFT_BOUNCE:
+            smtp_status = "temp_fail"
+            client_reason = (
+                "Pilot send returned a transient bounce. Keep in review "
+                "before retrying."
+            )
+        elif verdict == VERDICT_UNKNOWN:
             smtp_status = "unknown"
+            client_reason = (
+                "Pilot send returned an inconclusive bounce. Keep in "
+                "review before retrying."
+            )
+        elif verdict == VERDICT_INFRA_BLOCKED:
+            smtp_status = "infrastructure_blocked"
+            client_reason = (
+                "Recipient provider rejected our sending IP/network, not "
+                "the recipient. Re-test from a different sender before "
+                "deciding."
+            )
+        elif verdict == VERDICT_PROVIDER_DEFERRED:
+            smtp_status = "provider_deferred"
+            client_reason = (
+                "Recipient provider deferred mail due to sender volume "
+                "or reputation. Re-test from a clean sender later."
+            )
+        else:
+            smtp_status = "deferred"
+            client_reason = (
+                "Pilot send returned a transient or inconclusive bounce. "
+                "Keep in review before retrying."
+            )
         out.update({
             "final_action": "manual_review",
             "decision_reason": reason,
@@ -350,10 +391,7 @@ def _apply_pilot_verdict_columns(
             "smtp_status": smtp_status,
             "smtp_confirmed_valid": "false",
             "smtp_response_type": verdict,
-            "client_reason": (
-                "Pilot send returned a transient or inconclusive bounce. "
-                "Keep in review before retrying."
-            ),
+            "client_reason": client_reason,
             "final_output_reason": reason,
         })
     return out
@@ -536,6 +574,9 @@ def finalize_pilot(
             r for r in all_rows
             if r.dsn_status in {VERDICT_BLOCKED, VERDICT_DEFERRED}
         ]
+        infra_retest = [
+            r for r in all_rows if r.dsn_status in INFRA_RETEST_VERDICTS
+        ]
         do_not_send_additions = [
             r for r in all_rows if r.dsn_status in DO_NOT_SEND_VERDICTS
         ]
@@ -562,6 +603,10 @@ def finalize_pilot(
             p = run_dir_path / PILOT_BLOCKED_OR_DEFERRED_XLSX
             _write_xlsx(blocked_or_deferred, p, "pilot_blocked_or_deferred")
             files_written["pilot_blocked_or_deferred"] = p
+        if infra_retest:
+            p = run_dir_path / PILOT_INFRA_RETEST_XLSX
+            _write_xlsx(infra_retest, p, "pilot_infrastructure_blocked")
+            files_written["pilot_infrastructure_blocked"] = p
 
         # Always-emit summary.
         summary_path = run_dir_path / PILOT_SUMMARY_REPORT_XLSX
@@ -622,6 +667,7 @@ __all__ = [
     "FinalizeResult",
     "PILOT_BLOCKED_OR_DEFERRED_XLSX",
     "PILOT_HARD_BOUNCES_XLSX",
+    "PILOT_INFRA_RETEST_XLSX",
     "PILOT_SEND_CANDIDATES_XLSX",
     "PILOT_SOFT_BOUNCES_XLSX",
     "PILOT_SUMMARY_REPORT_XLSX",
