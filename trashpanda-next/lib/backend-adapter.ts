@@ -29,6 +29,12 @@ import type {
   RunPreflightInput,
   IngestFeedbackInput,
   FeedbackPreviewInput,
+  PilotFinalizeResult,
+  PilotLaunchResult,
+  PilotPollBouncesResult,
+  PilotPreviewResult,
+  PilotSendConfigInput,
+  PilotSendStatus,
 } from "./api";
 import {
   createMockJob,
@@ -797,6 +803,65 @@ export async function adapterGetOperatorReviewSummary(
 ): Promise<OperatorReviewSummary> {
   return operatorJson<OperatorReviewSummary>(
     `/api/operator/jobs/${encodeURIComponent(jobId)}/operator-review`,
+  );
+}
+
+export async function adapterGetOperatorPilotSendStatus(
+  jobId: string,
+): Promise<PilotSendStatus> {
+  return operatorJson<PilotSendStatus>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/status`,
+  );
+}
+
+export async function adapterSetOperatorPilotSendConfig(
+  jobId: string,
+  input: PilotSendConfigInput,
+): Promise<{ saved: boolean; config_ready: boolean }> {
+  return operatorJson<{ saved: boolean; config_ready: boolean }>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/config`,
+    {
+      method: "PUT",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function adapterPreviewOperatorPilotCandidates(
+  jobId: string,
+  batchSize: number,
+): Promise<PilotPreviewResult> {
+  return operatorJson<PilotPreviewResult>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/preview?batch_size=${encodeURIComponent(String(batchSize))}`,
+    { method: "POST" },
+  );
+}
+
+export async function adapterLaunchOperatorPilot(
+  jobId: string,
+  batchSize: number,
+): Promise<PilotLaunchResult> {
+  return operatorJson<PilotLaunchResult>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/launch?batch_size=${encodeURIComponent(String(batchSize))}`,
+    { method: "POST" },
+  );
+}
+
+export async function adapterPollOperatorPilotBounces(
+  jobId: string,
+): Promise<PilotPollBouncesResult> {
+  return operatorJson<PilotPollBouncesResult>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/poll-bounces`,
+    { method: "POST" },
+  );
+}
+
+export async function adapterFinalizeOperatorPilot(
+  jobId: string,
+): Promise<PilotFinalizeResult> {
+  return operatorJson<PilotFinalizeResult>(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/finalize`,
+    { method: "POST" },
   );
 }
 
