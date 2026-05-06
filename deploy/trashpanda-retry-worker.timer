@@ -1,0 +1,15 @@
+[Unit]
+Description=TrashPanda — SMTP retry queue drain timer (V2.10.11)
+Documentation=app.smtp_retry_worker
+
+[Timer]
+# Drain every 15 minutes. Operators that want a different cadence can
+# override this with `systemctl edit trashpanda-retry-worker.timer`.
+OnBootSec=2min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Unit=trashpanda-retry-worker.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

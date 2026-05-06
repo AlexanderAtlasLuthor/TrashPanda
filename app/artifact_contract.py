@@ -70,6 +70,38 @@ _AUDIENCE_BY_KEY: dict[str, str] = {
     "approved_original_format": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     "duplicate_emails": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     "hard_fail_emails": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    # V2.10.10 — review-bucket subdivisions. Each is a strict subset of
+    # ``review_emails`` carved by ``decision_reason`` so the operator
+    # can act on each cohort independently. Parent ``review_emails``
+    # remains intact and is the legacy-compatible deliverable.
+    "review_cold_start_b2b": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "review_smtp_inconclusive": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "review_catch_all": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "review_medium_probability": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "review_domain_high_risk": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    # V2.10.10.b — action-oriented review classification (the operator
+    # view: "what should I do with this row"). Same source rows as the
+    # decision_reason subdivisions above — a different lens, not new
+    # data. ``second_pass_candidates`` is the rolled-up rescue list.
+    "review_ready_probable": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "review_low_risk": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "review_timeout_retry": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "review_catch_all_consumer": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "review_high_risk": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "do_not_send": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "second_pass_candidates": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    # V2.10.12 — pilot send / bounce-proven verification.
+    # ``delivery_verified`` is the headline new tier: rows TrashPanda
+    # actually sent a real message to and observed no bounce.
+    # ``updated_do_not_send`` is the customer-canonical "do not send"
+    # list after the pilot batch results are merged in.
+    "delivery_verified": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "pilot_send_candidates": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "pilot_hard_bounces": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "pilot_soft_bounces": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "pilot_blocked_or_deferred": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "pilot_summary_report": ARTIFACT_AUDIENCE_CLIENT_SAFE,
+    "updated_do_not_send": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     # V2.10.8.2 — safe-only partial delivery anchor file.
     "safe_only_delivery_note": ARTIFACT_AUDIENCE_CLIENT_SAFE,
     # Always-on README that names the PRIMARY artifact for the customer.

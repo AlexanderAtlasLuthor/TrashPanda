@@ -7,6 +7,14 @@
   margin-bottom: 28px;
 }
 
+.smtpCaption {
+  margin-top: 14px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  font-family: var(--font-mono, monospace);
+}
+
 /* colored left accent bar */
 .panel::before {
   content: "";

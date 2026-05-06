@@ -61,6 +61,94 @@ _PROVIDER_HINTS: dict[str, str] = {
 }
 
 
+# V2.10.11 — provider family is a coarser classification than
+# ``provider_hint`` and is the canonical label downstream consumers
+# (review classifier, decision policy, UI breakdown) read. AOL,
+# Verizon, AT&T / SBCGlobal / Bellsouth / Pacbell / Prodigy / Swbell
+# all run on the Yahoo Mail backend, so a row delivered to any of
+# them is subject to the same opaque-handshake / silent-accept
+# behaviour Yahoo is known for. Mapping them all to ``yahoo_family``
+# lets the action classifier route them to ``catch_all_consumer``
+# without re-deriving the relationship at every site.
+PROVIDER_FAMILY_YAHOO: str = "yahoo_family"
+PROVIDER_FAMILY_GOOGLE: str = "google_family"
+PROVIDER_FAMILY_MICROSOFT: str = "microsoft_family"
+PROVIDER_FAMILY_APPLE: str = "apple_family"
+PROVIDER_FAMILY_PROTON: str = "proton_family"
+PROVIDER_FAMILY_CORPORATE_UNKNOWN: str = "corporate_unknown"
+
+PROVIDER_FAMILIES: tuple[str, ...] = (
+    PROVIDER_FAMILY_YAHOO,
+    PROVIDER_FAMILY_GOOGLE,
+    PROVIDER_FAMILY_MICROSOFT,
+    PROVIDER_FAMILY_APPLE,
+    PROVIDER_FAMILY_PROTON,
+    PROVIDER_FAMILY_CORPORATE_UNKNOWN,
+)
+
+
+_PROVIDER_FAMILY_BY_DOMAIN: dict[str, str] = {
+    # Yahoo backbone — every domain Yahoo Mail accepts mail for at the
+    # MX layer. The list is conservative; adding a domain here is a
+    # one-line change but each entry should reflect documented
+    # backbone routing, not casual association.
+    "yahoo.com": PROVIDER_FAMILY_YAHOO,
+    "yahoo.co.uk": PROVIDER_FAMILY_YAHOO,
+    "yahoo.co.in": PROVIDER_FAMILY_YAHOO,
+    "yahoo.fr": PROVIDER_FAMILY_YAHOO,
+    "yahoo.de": PROVIDER_FAMILY_YAHOO,
+    "yahoo.es": PROVIDER_FAMILY_YAHOO,
+    "yahoo.it": PROVIDER_FAMILY_YAHOO,
+    "yahoo.ca": PROVIDER_FAMILY_YAHOO,
+    "yahoo.com.br": PROVIDER_FAMILY_YAHOO,
+    "yahoo.com.mx": PROVIDER_FAMILY_YAHOO,
+    "ymail.com": PROVIDER_FAMILY_YAHOO,
+    "rocketmail.com": PROVIDER_FAMILY_YAHOO,
+    "aol.com": PROVIDER_FAMILY_YAHOO,
+    "aol.co.uk": PROVIDER_FAMILY_YAHOO,
+    "aim.com": PROVIDER_FAMILY_YAHOO,
+    "verizon.net": PROVIDER_FAMILY_YAHOO,
+    "att.net": PROVIDER_FAMILY_YAHOO,
+    "sbcglobal.net": PROVIDER_FAMILY_YAHOO,
+    "bellsouth.net": PROVIDER_FAMILY_YAHOO,
+    "swbell.net": PROVIDER_FAMILY_YAHOO,
+    "pacbell.net": PROVIDER_FAMILY_YAHOO,
+    "prodigy.net": PROVIDER_FAMILY_YAHOO,
+    # Google.
+    "gmail.com": PROVIDER_FAMILY_GOOGLE,
+    "googlemail.com": PROVIDER_FAMILY_GOOGLE,
+    # Microsoft.
+    "outlook.com": PROVIDER_FAMILY_MICROSOFT,
+    "hotmail.com": PROVIDER_FAMILY_MICROSOFT,
+    "live.com": PROVIDER_FAMILY_MICROSOFT,
+    "msn.com": PROVIDER_FAMILY_MICROSOFT,
+    # Apple.
+    "icloud.com": PROVIDER_FAMILY_APPLE,
+    "me.com": PROVIDER_FAMILY_APPLE,
+    "mac.com": PROVIDER_FAMILY_APPLE,
+    # Proton.
+    "proton.me": PROVIDER_FAMILY_PROTON,
+    "protonmail.com": PROVIDER_FAMILY_PROTON,
+}
+
+
+def provider_family_for(domain: str) -> str:
+    """Return the canonical provider family for ``domain``.
+
+    Defaults to :data:`PROVIDER_FAMILY_CORPORATE_UNKNOWN` for any
+    domain not explicitly mapped — the signal is "we have no special
+    knowledge about this provider", which is the correct default for
+    every B2B / regional / govt / typo'd domain. The function never
+    raises and treats empty / None inputs as ``corporate_unknown``.
+    """
+    if not domain:
+        return PROVIDER_FAMILY_CORPORATE_UNKNOWN
+    return _PROVIDER_FAMILY_BY_DOMAIN.get(
+        domain.strip().lower(),
+        PROVIDER_FAMILY_CORPORATE_UNKNOWN,
+    )
+
+
 # Suspicious-shape thresholds. Deliberately conservative: the
 # current subphase uses "suspicious" only as a signal stored in
 # metadata, not as a hard-reject gate. Making the thresholds
@@ -177,9 +265,17 @@ def _detect_suspicious_reasons(domain: str) -> list[str]:
 
 
 __all__ = [
-    "SimpleDomainIntelligenceService",
     "COMMON_PROVIDERS",
-    "SUSPICIOUS_LENGTH_THRESHOLD",
-    "SUSPICIOUS_HYPHEN_THRESHOLD",
+    "PROVIDER_FAMILIES",
+    "PROVIDER_FAMILY_APPLE",
+    "PROVIDER_FAMILY_CORPORATE_UNKNOWN",
+    "PROVIDER_FAMILY_GOOGLE",
+    "PROVIDER_FAMILY_MICROSOFT",
+    "PROVIDER_FAMILY_PROTON",
+    "PROVIDER_FAMILY_YAHOO",
     "SUSPICIOUS_DIGIT_RATIO_THRESHOLD",
+    "SUSPICIOUS_HYPHEN_THRESHOLD",
+    "SUSPICIOUS_LENGTH_THRESHOLD",
+    "SimpleDomainIntelligenceService",
+    "provider_family_for",
 ]

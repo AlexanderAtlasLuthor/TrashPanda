@@ -675,6 +675,117 @@ def load_config(
     return config
 
 
+# --------------------------------------------------------------------------- #
+# V2.10.10 — delivery-posture overrides
+#
+# A small fixed table of operator-tunable overrides on the V2 decision +
+# domain-intelligence safety caps. The intent is to expose three
+# pre-vetted postures via a single string at job-submission time
+# (``strict`` / ``balanced`` / ``permissive``) instead of asking the
+# operator to author a full YAML override.
+#
+# ``balanced`` is the default and matches ``configs/default.yaml`` —
+# selecting it is a no-op. ``permissive`` is the only posture that
+# disables a cap (rule 5e — cold-start without SMTP valid); rule 5d
+# (high-risk domain) and the SMTP-invalid terminal stay armed in every
+# posture. Disposable / suspicious-shape domains remain capped because
+# of probability scoring + V1 hard-fail upstream of this layer.
+#
+# Adding a posture is a one-entry change here plus a UI dropdown
+# entry. Each value is the *delta* layered on top of the loaded
+# AppConfig (decision sub-config + domain_intelligence sub-config) —
+# any field not mentioned inherits the loaded YAML value.
+# --------------------------------------------------------------------------- #
+
+
+DELIVERY_POSTURE_BALANCED: str = "balanced"
+DELIVERY_POSTURE_STRICT: str = "strict"
+DELIVERY_POSTURE_PERMISSIVE: str = "permissive"
+
+DELIVERY_POSTURES: tuple[str, ...] = (
+    DELIVERY_POSTURE_BALANCED,
+    DELIVERY_POSTURE_STRICT,
+    DELIVERY_POSTURE_PERMISSIVE,
+)
+
+_POSTURE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
+    DELIVERY_POSTURE_BALANCED: {
+        # Default — no overrides. Documented explicitly so a UI showing
+        # all postures has a value to render.
+        "decision": {},
+        "domain_intelligence": {},
+    },
+    DELIVERY_POSTURE_STRICT: {
+        "decision": {
+            "approve_threshold": 0.85,
+            "review_threshold": 0.55,
+        },
+        "domain_intelligence": {
+            "high_risk_blocks_auto_approve": True,
+            "cold_start_requires_smtp_valid": True,
+        },
+    },
+    DELIVERY_POSTURE_PERMISSIVE: {
+        "decision": {
+            "approve_threshold": 0.75,
+            "review_threshold": 0.45,
+        },
+        "domain_intelligence": {
+            # Rule 5d still fires — disposable / suspicious-shape
+            # domains never auto-approve regardless of posture.
+            "high_risk_blocks_auto_approve": True,
+            # Rule 5e off — cold-start B2B / unknown domains can
+            # auto-approve when probability >= 0.75 and no other cap
+            # fires. This is the headline knob the V2.10.10 audit
+            # identified as the root cause of WY_small's 8.3% ready.
+            "cold_start_requires_smtp_valid": False,
+        },
+    },
+}
+
+
+def apply_posture_overrides(config: AppConfig, posture: str | None) -> AppConfig:
+    """Return a new :class:`AppConfig` with the named posture applied.
+
+    Returns the unchanged ``config`` when ``posture`` is ``None`` or
+    matches the balanced default. Raises ``ValueError`` for an unknown
+    posture so the server can convert it into a 400 response without
+    silently ignoring a typo.
+
+    The function only mutates the V2 decision + domain-intelligence
+    sub-configs — every other field of the loaded YAML (SMTP probe
+    settings, history config, paths, etc.) flows through unchanged.
+    Re-runs ``validate_config`` so out-of-range overrides surface
+    immediately.
+    """
+    import dataclasses
+
+    if posture is None or posture == DELIVERY_POSTURE_BALANCED:
+        return config
+
+    overrides = _POSTURE_OVERRIDES.get(posture)
+    if overrides is None:
+        raise ValueError(
+            f"unknown delivery posture: {posture!r}; "
+            f"expected one of {DELIVERY_POSTURES}"
+        )
+
+    decision_override = overrides.get("decision") or {}
+    intel_override = overrides.get("domain_intelligence") or {}
+
+    new_decision = dataclasses.replace(config.decision, **decision_override)
+    new_intel = dataclasses.replace(
+        config.domain_intelligence, **intel_override
+    )
+    new_config = dataclasses.replace(
+        config,
+        decision=new_decision,
+        domain_intelligence=new_intel,
+    )
+    validate_config(new_config)
+    return new_config
+
+
 def validate_config(config: AppConfig) -> None:
     """Validate the minimal set of configuration constraints needed in Subphase 1."""
 

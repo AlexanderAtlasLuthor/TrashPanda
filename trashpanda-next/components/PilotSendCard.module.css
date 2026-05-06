@@ -1,0 +1,239 @@
+.card {
+  position: relative;
+  padding: 18px 22px;
+  border: 1px solid var(--stroke-steel);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  margin-bottom: 18px;
+  font-family: var(--font-mono, monospace);
+}
+
+.heading {
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.description {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-default, rgba(255, 255, 255, 0.85));
+  margin-bottom: 14px;
+}
+
+.subheading {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  text-transform: uppercase;
+  margin: 14px 0 8px;
+}
+
+.muted {
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  font-size: 12px;
+}
+
+.counts {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  font-size: 14px;
+}
+
+.dot {
+  color: var(--text-muted, rgba(255, 255, 255, 0.35));
+}
+
+.statPending {
+  color: var(--warn, #ffb83a);
+}
+
+.statSent {
+  color: var(--text-default, rgba(255, 255, 255, 0.85));
+}
+
+.statSuccess {
+  color: var(--neon, #8eff3a);
+}
+
+.statBad {
+  color: var(--danger, rgba(255, 58, 92, 0.85));
+}
+
+.statWarn {
+  color: var(--warn, #ffb83a);
+}
+
+.warning {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 184, 58, 0.35);
+  background: rgba(255, 184, 58, 0.06);
+  font-size: 12px;
+  color: var(--warn, #ffb83a);
+}
+
+.portWarning {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+}
+
+.configForm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px dashed var(--stroke-steel);
+  border-radius: 3px;
+  margin: 12px 0;
+}
+
+.field {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-default, rgba(255, 255, 255, 0.85));
+}
+
+.field input,
+.field textarea {
+  padding: 6px 8px;
+  background: var(--bg-shell, rgba(0, 0, 0, 0.35));
+  border: 1px solid var(--stroke-steel);
+  border-radius: 3px;
+  color: var(--text-default, rgba(255, 255, 255, 0.9));
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.field textarea {
+  resize: vertical;
+}
+
+.authRow {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-default, rgba(255, 255, 255, 0.85));
+  margin-top: 8px;
+  cursor: pointer;
+}
+
+.authRow input[type="checkbox"] {
+  margin-top: 3px;
+  cursor: pointer;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 12px;
+}
+
+.batchInput {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+}
+
+.batchInput input {
+  width: 70px;
+  padding: 6px 8px;
+  background: var(--bg-shell, rgba(0, 0, 0, 0.35));
+  border: 1px solid var(--stroke-steel);
+  border-radius: 3px;
+  color: var(--text-default);
+  font-family: inherit;
+}
+
+.btnPrimary,
+.btnSecondary,
+.btnDanger {
+  padding: 8px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  border-radius: 3px;
+  cursor: pointer;
+  border: 1px solid var(--stroke-steel);
+  background: transparent;
+  color: var(--text-default, rgba(255, 255, 255, 0.85));
+}
+
+.btnPrimary {
+  border-color: rgba(142, 255, 58, 0.35);
+  color: var(--neon, #8eff3a);
+}
+
+.btnPrimary:hover:not(:disabled) {
+  background: rgba(142, 255, 58, 0.08);
+}
+
+.btnSecondary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.btnDanger {
+  border-color: rgba(255, 58, 92, 0.45);
+  color: var(--danger, rgba(255, 58, 92, 0.95));
+}
+
+.btnDanger:hover:not(:disabled) {
+  background: rgba(255, 58, 92, 0.06);
+}
+
+.btnPrimary:disabled,
+.btnSecondary:disabled,
+.btnDanger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.previewBlock {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: 3px;
+  border: 1px solid var(--stroke-steel);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.previewList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.error {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 58, 92, 0.35);
+  background: rgba(255, 58, 92, 0.06);
+  color: var(--danger, rgba(255, 58, 92, 0.95));
+  font-size: 12px;
+}

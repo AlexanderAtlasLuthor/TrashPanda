@@ -461,6 +461,48 @@ export async function downloadClientPackage(
 // Wire-shape returned by GET /api/operator/jobs/{id}/client-bundle/summary.
 // Used by the SendToClientButton to render counts + state before the
 // operator clicks the giant download button.
+//
+// V2.10.10 — `review_breakdown` carries the per-decision_reason
+// counts emitted by the package builder so the UI can show *why*
+// each review row was held back instead of presenting a single
+// "X need review" lump. Missing keys are treated as "no rows of
+// this kind" (the operator may genuinely have zero catch-all rows,
+// for example).
+//
+// `smtp_runtime` is the customer-safe subset of the SMTP runtime
+// summary (coverage + valid/inconclusive split). Absent when SMTP
+// did not run or the file is unreadable.
+export interface ReviewBreakdown {
+  review_cold_start_b2b?: number | null;
+  review_smtp_inconclusive?: number | null;
+  review_catch_all?: number | null;
+  review_medium_probability?: number | null;
+  review_domain_high_risk?: number | null;
+}
+
+// V2.10.10.b — action-oriented breakdown (the operator-facing
+// "what should I do with this row" view). ``second_pass_candidates``
+// is a rolled-up union of ``review_low_risk`` + ``review_timeout_retry``
+// — not a sixth disjoint cohort.
+export interface ReviewActionBreakdown {
+  review_ready_probable?: number | null;
+  review_low_risk?: number | null;
+  review_timeout_retry?: number | null;
+  review_catch_all_consumer?: number | null;
+  review_high_risk?: number | null;
+  do_not_send?: number | null;
+  second_pass_candidates?: number | null;
+}
+
+export interface SmtpRuntimePublic {
+  smtp_enabled?: boolean;
+  smtp_dry_run?: boolean;
+  smtp_candidates_seen?: number;
+  smtp_candidates_attempted?: number;
+  smtp_valid_count?: number;
+  smtp_inconclusive_count?: number;
+}
+
 export interface ClientBundleSummary {
   available: boolean;
   ready_for_client: boolean;
@@ -486,6 +528,9 @@ export interface ClientBundleSummary {
   high_risk_count?: number;
   blocking_reason?: string | null;
   operator_message?: string;
+  review_breakdown?: ReviewBreakdown;
+  review_action_breakdown?: ReviewActionBreakdown;
+  smtp_runtime?: SmtpRuntimePublic | null;
   issues: Array<{ severity: string; code: string; message: string }>;
 }
 
@@ -502,6 +547,93 @@ export async function getClientBundleSummary(
 /** URL the giant "Send to client" download button targets. */
 export function clientBundleDownloadUrl(jobId: string): string {
   return `/api/operator/jobs/${encodeURIComponent(jobId)}/client-bundle/download`;
+}
+
+// V2.10.11 — SMTP retry queue surface. The deferred retry worker
+// drains operationally-transient SMTP outcomes (4xx temp_fail /
+// timeout / blocked) on a 15-min cadence (systemd timer), but only
+// for jobs whose operator opted in via ``auto_retry_enabled``. The
+// UI surfaces both the per-job flag and an on-demand drain button.
+
+export interface RetryQueueCounts {
+  pending: number;
+  running: number;
+  succeeded: number;
+  exhausted: number;
+  expired: number;
+  total: number;
+}
+
+export interface RetryQueueStatus {
+  available: boolean;
+  auto_retry_enabled: boolean;
+  counts: RetryQueueCounts;
+}
+
+export interface RetryQueueDrainResult {
+  queue_path: string;
+  auto_retry_enabled: boolean;
+  expired: number;
+  probed: number;
+  succeeded: number;
+  rescheduled: number;
+  exhausted: number;
+}
+
+export interface RetryQueueFinalizeResult {
+  package_dir: string;
+  manifest_path: string;
+  safe_count: number | null;
+  review_count: number | null;
+  rejected_count: number | null;
+  review_action_breakdown: Record<string, number | null>;
+  files_regenerated: string[];
+}
+
+export async function getRetryQueueStatus(
+  jobId: string,
+): Promise<RetryQueueStatus> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/retry-queue/status`,
+    { cache: "no-store" },
+  );
+  return handleResponse<RetryQueueStatus>(res);
+}
+
+export async function runRetryQueueDrain(
+  jobId: string,
+): Promise<RetryQueueDrainResult> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/retry-queue/run`,
+    { method: "POST", cache: "no-store" },
+  );
+  return handleResponse<RetryQueueDrainResult>(res);
+}
+
+export async function setRetryQueueAutoRetry(
+  jobId: string,
+  enabled: boolean,
+): Promise<{ auto_retry_enabled: boolean }> {
+  const url = new URL(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/retry-queue/auto-retry`,
+    window.location.origin,
+  );
+  url.searchParams.set("enabled", String(enabled));
+  const res = await fetch(url.toString().replace(window.location.origin, ""), {
+    method: "PATCH",
+    cache: "no-store",
+  });
+  return handleResponse<{ auto_retry_enabled: boolean }>(res);
+}
+
+export async function finalizeRetryQueue(
+  jobId: string,
+): Promise<RetryQueueFinalizeResult> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/retry-queue/finalize`,
+    { method: "POST", cache: "no-store" },
+  );
+  return handleResponse<RetryQueueFinalizeResult>(res);
 }
 
 /**
@@ -601,4 +733,185 @@ export async function getFeedbackPreview(
     body: JSON.stringify(input),
   });
   return handleResponse<FeedbackPreviewResult>(res);
+}
+
+// V2.10.12 — Pilot send (controlled in-house bounce-proven verification).
+//
+// The card surfaces:
+//   * `available`: tracker file exists.
+//   * `config_ready`: template+return_path complete and authorization
+//     checked.
+//   * counts per-state (pending_send / sent / verdict_ready / expired)
+//     plus per-verdict (delivered / hard_bounce / etc) and the derived
+//     `hard_bounce_rate`.
+//
+// Endpoints:
+//   GET    /pilot-send/status
+//   PUT    /pilot-send/config
+//   POST   /pilot-send/preview?batch_size=N
+//   POST   /pilot-send/launch?batch_size=N
+//   POST   /pilot-send/poll-bounces
+//   POST   /pilot-send/finalize
+
+export interface PilotSendCounts {
+  pending_send: number;
+  sent: number;
+  verdict_ready: number;
+  expired: number;
+  delivered: number;
+  hard_bounce: number;
+  soft_bounce: number;
+  blocked: number;
+  deferred: number;
+  complaint: number;
+  unknown: number;
+  total: number;
+  hard_bounce_rate: number;
+}
+
+export interface PilotSendStatus {
+  available: boolean;
+  config_ready: boolean;
+  authorization_confirmed: boolean;
+  max_batch_size: number;
+  wait_window_hours: number;
+  imap_configured: boolean;
+  return_path_domain: string;
+  sender_address: string;
+  subject: string;
+  counts: PilotSendCounts;
+}
+
+export interface PilotMessageTemplateInput {
+  subject?: string;
+  body_text?: string;
+  body_html?: string;
+  sender_address?: string;
+  sender_name?: string;
+  reply_to?: string;
+}
+
+export interface IMAPCredentialsInput {
+  host?: string;
+  port?: number;
+  use_ssl?: boolean;
+  username?: string;
+  password_env?: string;
+  folder?: string;
+}
+
+export interface PilotSendConfigInput {
+  template?: PilotMessageTemplateInput;
+  imap?: IMAPCredentialsInput;
+  return_path_domain?: string;
+  wait_window_hours?: number;
+  expiry_hours?: number;
+  max_batch_size?: number;
+  authorization_confirmed?: boolean;
+  authorization_note?: string;
+}
+
+export interface PilotPreviewCandidate {
+  email: string;
+  domain: string;
+  provider_family: string;
+  action: string;
+  deliverability_probability: number;
+}
+
+export interface PilotPreviewResult {
+  batch_size_requested: number;
+  candidates_found: number;
+  candidates: PilotPreviewCandidate[];
+}
+
+export interface PilotLaunchResult {
+  batch_id: string;
+  candidates_selected: number;
+  candidates_added: number;
+  sent: number;
+  failed: number;
+  counts: PilotSendCounts;
+}
+
+export interface PilotPollBouncesResult {
+  fetched: number;
+  parsed: number;
+  matched: number;
+  unmatched_tokens: number;
+  parse_errors: number;
+  verdict_breakdown: Record<string, number>;
+}
+
+export interface PilotFinalizeResult {
+  files_written: Record<string, string>;
+  counts: PilotSendCounts;
+  bounce_ingestion_csv: string | null;
+}
+
+export async function getPilotSendStatus(
+  jobId: string,
+): Promise<PilotSendStatus> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/status`,
+    { cache: "no-store" },
+  );
+  return handleResponse<PilotSendStatus>(res);
+}
+
+export async function setPilotSendConfig(
+  jobId: string,
+  config: PilotSendConfigInput,
+): Promise<{ saved: boolean; config_ready: boolean }> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/config`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(config),
+    },
+  );
+  return handleResponse<{ saved: boolean; config_ready: boolean }>(res);
+}
+
+export async function previewPilotCandidates(
+  jobId: string,
+  batchSize: number,
+): Promise<PilotPreviewResult> {
+  const url =
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/preview` +
+    `?batch_size=${encodeURIComponent(String(batchSize))}`;
+  const res = await fetch(url, { method: "POST", cache: "no-store" });
+  return handleResponse<PilotPreviewResult>(res);
+}
+
+export async function launchPilot(
+  jobId: string,
+  batchSize: number,
+): Promise<PilotLaunchResult> {
+  const url =
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/launch` +
+    `?batch_size=${encodeURIComponent(String(batchSize))}`;
+  const res = await fetch(url, { method: "POST", cache: "no-store" });
+  return handleResponse<PilotLaunchResult>(res);
+}
+
+export async function pollPilotBounces(
+  jobId: string,
+): Promise<PilotPollBouncesResult> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/poll-bounces`,
+    { method: "POST", cache: "no-store" },
+  );
+  return handleResponse<PilotPollBouncesResult>(res);
+}
+
+export async function finalizePilot(
+  jobId: string,
+): Promise<PilotFinalizeResult> {
+  const res = await fetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/pilot-send/finalize`,
+    { method: "POST", cache: "no-store" },
+  );
+  return handleResponse<PilotFinalizeResult>(res);
 }

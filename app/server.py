@@ -639,6 +639,8 @@ def _run_job(
     input_path: Path,
     output_root: Path,
     config_path: str | None,
+    posture: str | None = None,
+    auto_retry: bool = False,
 ) -> None:
     JOB_STORE.mark_running(job_id)
     persist_job_started(job_id)
@@ -649,7 +651,24 @@ def _run_job(
             output_root=output_root,
             config_path=config_path,
             job_id=job_id,
+            posture=posture,
         )
+        # V2.10.11 — persist the per-job auto_retry flag so the
+        # background worker (deploy/trashpanda-retry-worker.timer) can
+        # decide whether to drain this job's SMTP retry queue. Always
+        # written, even when False, so the operator can flip the flag
+        # later via the PATCH endpoint without first triggering a
+        # retry-queue file creation.
+        try:
+            from .smtp_retry_worker import write_retry_config
+
+            run_dir = result.run_dir if result.run_dir else None
+            if run_dir is not None:
+                write_retry_config(run_dir, auto_retry_enabled=bool(auto_retry))
+        except Exception as exc:  # pragma: no cover - defensive
+            LOGGER.warning(
+                "failed to persist retry config for %s: %s", job_id, exc,
+            )
     except Exception as exc:  # pragma: no cover - defensive guard
         if watchdog is not None:
             watchdog.cancel()
@@ -796,6 +815,17 @@ async def create_job(
     background_tasks: BackgroundTasks,
     file: UploadFile | None = File(default=None),
     config_path: str | None = Form(default=None),
+    # V2.10.10 — operator-selectable delivery posture. ``None`` and
+    # ``balanced`` are equivalent (the default config). ``strict`` and
+    # ``permissive`` layer overrides on top of the loaded YAML — see
+    # :data:`app.config._POSTURE_OVERRIDES`.
+    posture: str | None = Form(default=None),
+    # V2.10.11 — opt-in per-job flag for the deferred SMTP retry
+    # worker. When True, the background worker drains this job's
+    # ``smtp_retry_queue.sqlite`` on its 15-min cadence. When False
+    # (default), the queue is filled but only drained when the
+    # operator clicks "Run retry pass now" in the UI.
+    auto_retry: bool = Form(default=False),
 ) -> dict[str, Any]:
     if file is None:
         _raise_http_error(
@@ -804,6 +834,20 @@ async def create_job(
             "Multipart form field 'file' is required.",
             {"field": "file"},
         )
+
+    if posture is not None:
+        from .config import DELIVERY_POSTURES
+
+        if posture not in DELIVERY_POSTURES:
+            _raise_http_error(
+                400,
+                "invalid_posture",
+                (
+                    "Unknown delivery posture. Expected one of "
+                    f"{', '.join(DELIVERY_POSTURES)}."
+                ),
+                {"field": "posture", "value": posture},
+            )
 
     filename = _safe_upload_filename(file.filename)
     _validate_extension(filename)
@@ -829,6 +873,8 @@ async def create_job(
         input_path,
         output_root,
         _effective_config_path(config_path),
+        posture,
+        bool(auto_retry),
     )
 
     return job_result_to_dict(result)
@@ -849,13 +895,21 @@ async def upload_file(
     background_tasks: BackgroundTasks,
     file: UploadFile | None = File(default=None),
     config_path: str | None = Form(default=None),
+    posture: str | None = Form(default=None),
+    auto_retry: bool = Form(default=False),
 ) -> dict[str, Any]:
     """Accept a CSV/XLSX, queue processing, return ``{job_id, status}``.
 
     Alias of :func:`create_job` with a smaller response payload tailored
     for simple integrations.
     """
-    full = await create_job(background_tasks, file=file, config_path=config_path)
+    full = await create_job(
+        background_tasks,
+        file=file,
+        config_path=config_path,
+        posture=posture,
+        auto_retry=auto_retry,
+    )
     return {
         "job_id": full["job_id"],
         "status": full["status"],

@@ -38,6 +38,28 @@ def test_client_safe_artifacts_classified() -> None:
         "duplicate_emails",
         "hard_fail_emails",
         "summary_report",
+        # V2.10.10 — review-bucket subdivisions by decision_reason.
+        "review_cold_start_b2b",
+        "review_smtp_inconclusive",
+        "review_catch_all",
+        "review_medium_probability",
+        "review_domain_high_risk",
+        # V2.10.10.b — action-oriented review classification.
+        "review_ready_probable",
+        "review_low_risk",
+        "review_timeout_retry",
+        "review_catch_all_consumer",
+        "review_high_risk",
+        "do_not_send",
+        "second_pass_candidates",
+        # V2.10.12 — pilot send / bounce-proven verification.
+        "delivery_verified",
+        "pilot_send_candidates",
+        "pilot_hard_bounces",
+        "pilot_soft_bounces",
+        "pilot_blocked_or_deferred",
+        "pilot_summary_report",
+        "updated_do_not_send",
     )
     for key in expected_client_safe:
         assert get_artifact_audience(key) == ARTIFACT_AUDIENCE_CLIENT_SAFE, (
