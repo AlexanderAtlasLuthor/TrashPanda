@@ -39,7 +39,7 @@ class TestEmptyInputs:
 
     def test_zero_batch_size_returns_empty(self, tmp_path: Path):
         _write_xlsx(
-            tmp_path / "review_ready_probable.xlsx",
+            tmp_path / "review_low_risk.xlsx",
             [_row("a@x.com")],
         )
         assert select_candidates(tmp_path, batch_size=0) == []
@@ -51,41 +51,36 @@ class TestEmptyInputs:
 
 
 class TestPriorityOrder:
-    def test_ready_probable_before_low_risk(self, tmp_path: Path):
+    def test_low_risk_before_timeout_retry(self, tmp_path: Path):
         _write_xlsx(
-            tmp_path / "review_ready_probable.xlsx",
+            tmp_path / "review_low_risk.xlsx",
             [_row("a@x.com")],
         )
         _write_xlsx(
-            tmp_path / "review_low_risk.xlsx",
+            tmp_path / "review_timeout_retry.xlsx",
             [_row("b@x.com")],
         )
         candidates = select_candidates(tmp_path, batch_size=10)
         assert [c.email for c in candidates] == ["a@x.com", "b@x.com"]
-        assert candidates[0].action == "ready_probable"
-        assert candidates[1].action == "low_risk"
+        assert candidates[0].action == "low_risk"
+        assert candidates[1].action == "timeout_retry"
 
     def test_full_priority_chain(self, tmp_path: Path):
         _write_xlsx(
-            tmp_path / "review_ready_probable.xlsx",
+            tmp_path / "review_low_risk.xlsx",
             [_row("a@x.com")],
         )
         _write_xlsx(
-            tmp_path / "review_low_risk.xlsx",
+            tmp_path / "review_timeout_retry.xlsx",
             [_row("b@x.com")],
         )
         _write_xlsx(
-            tmp_path / "review_timeout_retry.xlsx",
-            [_row("c@x.com")],
-        )
-        _write_xlsx(
             tmp_path / "review_catch_all_consumer.xlsx",
-            [_row("d@x.com")],
+            [_row("c@x.com")],
         )
         candidates = select_candidates(tmp_path, batch_size=10)
         actions = [c.action for c in candidates]
         assert actions == [
-            "ready_probable",
             "low_risk",
             "timeout_retry",
             "catch_all_consumer",
@@ -95,17 +90,17 @@ class TestPriorityOrder:
 class TestDedupe:
     def test_dedupes_email_across_files(self, tmp_path: Path):
         _write_xlsx(
-            tmp_path / "review_ready_probable.xlsx",
+            tmp_path / "review_low_risk.xlsx",
             [_row("dup@x.com")],
         )
         _write_xlsx(
-            tmp_path / "review_low_risk.xlsx",
+            tmp_path / "review_timeout_retry.xlsx",
             [_row("dup@x.com")],
         )
         candidates = select_candidates(tmp_path, batch_size=10)
         assert len(candidates) == 1
-        # Higher-priority (ready_probable) wins.
-        assert candidates[0].action == "ready_probable"
+        # Higher-priority (low_risk) wins.
+        assert candidates[0].action == "low_risk"
 
     def test_dedupes_within_a_file(self, tmp_path: Path):
         _write_xlsx(
@@ -132,7 +127,7 @@ class TestDedupe:
 class TestBatchCap:
     def test_caps_at_batch_size(self, tmp_path: Path):
         _write_xlsx(
-            tmp_path / "review_ready_probable.xlsx",
+            tmp_path / "review_low_risk.xlsx",
             [_row(f"a{i}@x.com") for i in range(20)],
         )
         candidates = select_candidates(tmp_path, batch_size=5)
@@ -145,6 +140,14 @@ class TestBatchCap:
 
 
 class TestForbiddenSources:
+    def test_never_picks_from_ready_probable(self, tmp_path: Path):
+        _write_xlsx(
+            tmp_path / "review_ready_probable.xlsx",
+            [_row("a@x.com")],
+        )
+        candidates = select_candidates(tmp_path, batch_size=10)
+        assert candidates == []
+
     def test_never_picks_from_high_risk(self, tmp_path: Path):
         _write_xlsx(
             tmp_path / "review_high_risk.xlsx",

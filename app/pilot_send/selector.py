@@ -1,21 +1,20 @@
-"""V2.10.12 — Pilot batch candidate selector.
+"""V2.10.12 - Pilot batch candidate selector.
 
 Reads the action-oriented review XLSX files emitted by
-:mod:`app.client_output` (V2.10.10.b / V2.10.11) and picks rows
-that are appropriate to send a real message to. The selector is
-intentionally narrow:
+:mod:`app.client_output` (V2.10.10.b / V2.10.11) and picks unresolved
+manual-review rows that are appropriate to prove with a real message.
+The selector is intentionally narrow:
 
-* ``ready_probable`` — Tier 2, just below auto_approve. Top
+* ``review_low_risk`` - high-probability cold-start B2B. Strong
   candidate.
-* ``review_low_risk`` — high-probability cold-start B2B. Strong
-  candidate.
-* ``review_timeout_retry`` — operationally inconclusive. The pilot
+* ``review_timeout_retry`` - operationally inconclusive. The pilot
   send is essentially a "real" retry from a different egress.
-* ``review_catch_all_consumer`` — Yahoo / AOL / Verizon-class.
+* ``review_catch_all_consumer`` - Yahoo / AOL / Verizon-class.
   Pilot send is the only way to know.
 
-Rows in ``review_high_risk`` and ``do_not_send`` are NEVER
-selected — there's already evidence not to send to them.
+Confirmed-safe rows and ``ready_probable`` / almost-ready rows are not
+re-sent by this flow. Rows in ``review_high_risk`` and ``do_not_send``
+are never selected because there's already evidence not to send to them.
 
 The selector is pure: takes a run directory, returns a list of
 candidates without touching the tracker. The launch endpoint
@@ -32,18 +31,18 @@ import pandas as pd
 
 
 # Action keys that are eligible for a pilot send. Order is by
-# rescatability descending — the selector fills the batch from the
+# rescatability descending: the selector fills the batch from the
 # top of the priority list before falling through.
 _ELIGIBLE_ACTIONS: tuple[str, ...] = (
-    "ready_probable",
     "low_risk",
     "timeout_retry",
     "catch_all_consumer",
 )
 
-# Filename per action, mirroring ``app.client_output.REVIEW_ACTION_FILES``.
+# Filename per pilot-eligible action, mirroring the review-action files
+# emitted by ``app.client_output``. ``ready_probable`` is deliberately
+# absent: pilot send is for unresolved review rows.
 _ACTION_FILES: dict[str, str] = {
-    "ready_probable": "review_ready_probable.xlsx",
     "low_risk": "review_low_risk.xlsx",
     "timeout_retry": "review_timeout_retry.xlsx",
     "catch_all_consumer": "review_catch_all_consumer.xlsx",

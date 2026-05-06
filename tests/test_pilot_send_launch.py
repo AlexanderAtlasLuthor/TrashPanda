@@ -51,7 +51,7 @@ def _candidate_row(email: str, source_row: int = 1) -> dict:
 @pytest.fixture
 def run_dir(tmp_path: Path):
     _write_xlsx(
-        tmp_path / "review_ready_probable.xlsx",
+        tmp_path / "review_low_risk.xlsx",
         [_candidate_row(f"u{i}@example.com", source_row=i) for i in range(5)],
     )
     return tmp_path

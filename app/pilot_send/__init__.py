@@ -1,7 +1,7 @@
 """V2.10.12 — Controlled in-house pilot send + bounce-proven verification.
 
-Take a small batch of rescatable rows (V2.10.11's
-``ready_probable``, ``review_low_risk``, ``review_catch_all_consumer``,
+Take a small batch of technically unresolved manual-review rows
+(``review_low_risk``, ``review_catch_all_consumer``,
 ``review_timeout_retry``), send them a real campaign-shaped message
 via direct-to-MX SMTP with a VERP envelope-from, then poll a bounce
 mailbox via IMAP and parse the resulting DSN messages to assign a

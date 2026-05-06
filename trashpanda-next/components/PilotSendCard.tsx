@@ -25,8 +25,8 @@ interface Props {
  * V2.10.12 — Controlled in-house pilot send + bounce-proven verification.
  *
  * Sends real email from the operator's configured sender to a small
- * batch of rescatable rows. Captures bounces via IMAP and feeds the
- * results into the existing bounce_ingestion store + new XLSX
+ * batch of unresolved manual-review rows. Captures bounces via IMAP and
+ * feeds the results into the existing bounce_ingestion store + new XLSX
  * deliverables (delivery_verified.xlsx, pilot_hard_bounces.xlsx,
  * updated_do_not_send.xlsx).
  *

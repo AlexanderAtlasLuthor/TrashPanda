@@ -197,8 +197,8 @@ export type ReviewActionKey =
 export const PILOT_SEND_COPY = {
   title: "Pilot send · bounce-proven verification",
   description:
-    "Send a small real-email batch from the rescatable cohort " +
-    "(ready_probable / low_risk / timeout_retry / catch_all_consumer). " +
+    "Send a small real-email batch from the unresolved manual-review " +
+    "cohort (low_risk / timeout_retry / catch_all_consumer). " +
     "Capture bounces via IMAP. Rows that don't bounce within the " +
     "wait window become delivery_verified.xlsx; hard bounces and " +
     "blocks merge into updated_do_not_send.xlsx.",

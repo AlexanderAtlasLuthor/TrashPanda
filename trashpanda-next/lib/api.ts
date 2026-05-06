@@ -752,6 +752,11 @@ export async function getFeedbackPreview(
 //   POST   /pilot-send/launch?batch_size=N
 //   POST   /pilot-send/poll-bounces
 //   POST   /pilot-send/finalize
+//
+// Candidate source is intentionally limited to unresolved manual-review
+// cohorts: low_risk / timeout_retry / catch_all_consumer. Confirmed-safe
+// rows and high-risk/do-not-send rows do not enter the real-email pilot
+// flow.
 
 export interface PilotSendCounts {
   pending_send: number;

@@ -204,7 +204,7 @@ class TestPreview:
     ):
         run_dir = _make_run_dir(tmp_path, "job_prev")
         _register_job(run_dir, "job_prev")
-        _write_action_xlsx(run_dir, "review_ready_probable.xlsx", n_rows=3)
+        _write_action_xlsx(run_dir, "review_low_risk.xlsx", n_rows=3)
         res = client.post(
             "/api/operator/jobs/job_prev/pilot-send/preview?batch_size=10",
         )
@@ -251,7 +251,7 @@ class TestLaunch:
         cfg = _ready_config()
         cfg.authorization_confirmed = False
         write_pilot_config(run_dir, cfg)
-        _write_action_xlsx(run_dir, "review_ready_probable.xlsx", n_rows=1)
+        _write_action_xlsx(run_dir, "review_low_risk.xlsx", n_rows=1)
         res = client.post(
             "/api/operator/jobs/job_l1/pilot-send/launch?batch_size=1",
         )
@@ -280,7 +280,7 @@ class TestLaunch:
         run_dir = _make_run_dir(tmp_path, "job_l3")
         _register_job(run_dir, "job_l3")
         write_pilot_config(run_dir, _ready_config())
-        _write_action_xlsx(run_dir, "review_ready_probable.xlsx", n_rows=2)
+        _write_action_xlsx(run_dir, "review_low_risk.xlsx", n_rows=2)
 
         # Mock MX resolution + the SMTP factory the SMTPSender uses
         # so no real socket is opened.
