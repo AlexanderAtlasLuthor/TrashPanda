@@ -1,5 +1,12 @@
 # TrashPanda Operational Workflow
 
+> **Bitácora de despliegue real:** ver
+> [`PRODUCTION_BOOTSTRAP_LOG.md`](PRODUCTION_BOOTSTRAP_LOG.md) para
+> el registro paso a paso del primer arranque productivo contra
+> `fuenmayorindustries.com` (DNS records SPF/DKIM/DMARC, App
+> Password de Google Workspace, override systemd con la IMAP password,
+> verificación de port 25 outbound).
+
 ## 1. Setup inicial del VPS (una sola vez):
 
 ```bash
