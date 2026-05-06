@@ -46,29 +46,46 @@ systemctl --user enable --now trashpanda-tunnel
 
 ## 3. One-click en Windows (recomendado):
 
-Si prefieres no tener que correr el túnel a mano, hay un launcher de
-un solo click que (a) levanta el túnel SSH supervisado, (b) arranca
-Next.js apuntando a `http://localhost:8001`, (c) abre el browser:
+### Setup automático (una sola vez)
+
+Si nunca configuraste esta laptop, corre el bootstrap que hace los
+4 pasos de prerequisitos en orden — instala OpenSSH si falta,
+intercambia la llave SSH con el VPS, escribe `trashpanda-next/.env.local`
+con el token correcto, y crea el ícono de escritorio:
 
 ```powershell
-.\scripts\create_shortcut_vps.ps1   # una sola vez — crea el ícono
+.\deploy\setup_windows.ps1
+# o, si tu IP del VPS no es la default:
+.\deploy\setup_windows.ps1 -VpsHost root@TU.IP.DEL.VPS
 ```
 
-Luego doble-click al ícono **"TrashPanda (VPS)"** del escritorio. Se
-abrirán dos ventanas:
+Te pedirá la contraseña del VPS **una sola vez** (durante el paso de
+SSH). El resto es automático. Es idempotente — re-correrlo en una
+laptop que ya está lista no duplica nada.
+
+### Uso diario
+
+Doble-click al ícono **"TrashPanda (VPS)"** del escritorio. Se abren
+dos ventanas:
 
 - *TrashPanda - Tunnel* — supervisor SSH (auto-reconecta si cae).
 - *TrashPanda - Frontend* — Next.js dev server.
 
+Cuando 3000 responde, se abre `http://localhost:3000` en el browser.
 Para parar todo: `stop_vps.bat` o cierra ambas ventanas.
 
 > **Nota:** el ícono `TrashPanda` (sin sufijo) sigue arrancando el modo
 > dev local (FastAPI + Next.js en tu laptop). El nuevo `TrashPanda
 > (VPS)` apunta al backend del servidor remoto vía túnel SSH.
 
-Pre-requisitos para el ícono VPS:
+Si prefieres hacer los 4 pasos manualmente (en vez de
+`setup_windows.ps1`), aquí está el detalle:
 
 - `ssh.exe` en PATH (Windows Settings → Apps → Optional Features → OpenSSH Client).
-- Llave SSH ya autorizada en el VPS (ver `deploy/setup_ssh_key.ps1`).
-- `trashpanda-next/.env.local` con `TRASHPANDA_OPERATOR_TOKEN` (el launcher
-  fuerza `TRASHPANDA_BACKEND_URL=http://localhost:8001` para esta sesión).
+- Llave SSH al VPS: `.\deploy\setup_ssh_key.ps1`.
+- Token en `trashpanda-next\.env.local`:
+  ```
+  TRASHPANDA_OPERATOR_TOKEN=<el que imprimió install_vps.sh>
+  TRASHPANDA_BACKEND_URL=http://localhost:8001
+  ```
+- Ícono de escritorio: `.\scripts\create_shortcut_vps.ps1`.
