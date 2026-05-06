@@ -159,15 +159,20 @@ def _send_failure_verdict(outcome: PilotSendOutcome) -> str:
     """
     code = outcome.smtp_response_code
     raw = outcome.smtp_response_message or ""
-    # Sender-side rejections first: a 5xx that names our IP / network
-    # is not a recipient-level signal.
-    if _is_infra_block(raw):
+    # Belt-and-suspenders: also scan ``outcome.error`` (the formatted
+    # exception repr from sender.py) so the classifier survives any
+    # upstream format change that puts the body text only in ``error``
+    # and not in ``smtp_response_message``. Both fields carry the
+    # same body for SMTPSenderRefused; we OR the two checks so
+    # whichever one has the diagnostic text wins.
+    error_str = outcome.error or ""
+    if _is_infra_block(raw) or _is_infra_block(error_str):
         return VERDICT_INFRA_BLOCKED
-    if _is_provider_deferred(raw):
+    if _is_provider_deferred(raw) or _is_provider_deferred(error_str):
         return VERDICT_PROVIDER_DEFERRED
     if isinstance(code, int):
         if 500 <= code < 600:
-            msg = raw.lower()
+            msg = (raw + " " + error_str).lower()
             if any(
                 k in msg
                 for k in (
