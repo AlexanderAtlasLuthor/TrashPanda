@@ -1260,13 +1260,44 @@ def _read_smtp_runtime_for_run(run_dir: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _decision_tally(job_id: str) -> tuple[int, int]:
+    """Return ``(approved, removed)`` from the persisted manual review
+    decisions for ``job_id``. Empty/missing → ``(0, 0)``.
+
+    The decisions live in ``review_decisions.json`` (per
+    ``server._decisions_path``) and/or the DB via
+    ``server._load_decisions``. We reuse the server helper so the two
+    code paths can never disagree on the source of truth.
+    """
+    try:
+        from . import server
+
+        decisions = server._load_decisions(job_id) or {}
+    except Exception:
+        return (0, 0)
+    approved = sum(1 for v in decisions.values() if v == "approved")
+    removed = sum(1 for v in decisions.values() if v == "removed")
+    return approved, removed
+
+
 def _job_summary_counts(job_id: str) -> dict[str, int]:
-    """Best-effort counts from the latest summary artifacts.
+    """Best-effort counts from the latest summary artifacts, adjusted
+    for manual operator review decisions.
 
     Operator re-clean actions regenerate ``summary_report.xlsx`` after
     the original job has already completed. Prefer that fresh artifact
     over the stored JobResult snapshot so bundle gates and dashboard
     refreshes see the updated safe / review / rejected counts.
+
+    On top of that, fold in the manual review queue decisions:
+
+    * ``approved`` rows promote from review → safe.
+    * ``removed``  rows demote from review → rejected.
+
+    Without this adjustment, the operator UI shows the same
+    safe/review/rejected counts no matter how many rows the operator
+    has approved or rejected — which is the bug ticket
+    "manual review aprobado no cambia los counts".
     """
 
     from . import server
@@ -1278,12 +1309,25 @@ def _job_summary_counts(job_id: str) -> dict[str, int]:
         summary = load_job_summary(_resolve_run_dir(job_id)) or summary
     except Exception:
         pass
+    base_safe = _coerce_count(getattr(summary, "total_valid", 0))
+    base_review = _coerce_count(getattr(summary, "total_review", 0))
+    base_rejected = _coerce_count(
+        getattr(summary, "total_invalid_or_bounce_risk", 0)
+    )
+
+    approved, removed = _decision_tally(job_id)
+    # Cap the deduction at base_review so we never underflow if the
+    # decisions file ever holds stale IDs that no longer point at
+    # review rows.
+    deductible = min(base_review, approved + removed)
+    review_count = base_review - deductible
+    # Promotions never exceed the deductible from review.
+    approved_applied = min(approved, deductible)
+    removed_applied = deductible - approved_applied
     return {
-        "safe_count": _coerce_count(getattr(summary, "total_valid", 0)),
-        "review_count": _coerce_count(getattr(summary, "total_review", 0)),
-        "rejected_count": _coerce_count(
-            getattr(summary, "total_invalid_or_bounce_risk", 0)
-        ),
+        "safe_count": base_safe + approved_applied,
+        "review_count": review_count,
+        "rejected_count": base_rejected + removed_applied,
     }
 
 
