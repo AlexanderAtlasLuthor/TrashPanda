@@ -67,7 +67,7 @@ function pickCopy(props: JobHelperBannerProps): BannerCopy {
         tone: "ok",
         icon: "✓",
         message:
-          "Done. Click the big green Send to client button below — that's the only file your customer needs.",
+          "Done. Use the Send to client delivery package below — that's the only file your customer needs.",
       };
     case "failed": {
       const errorMsg = result.error?.message;

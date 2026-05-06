@@ -13,27 +13,70 @@ import styles from "./SendToClientButton.module.css";
 
 interface SendToClientButtonProps {
   jobId: string;
-  /**
-   * Hide while the job is still running. The button reveals itself
-   * once the job completes — no point in clicking it earlier because
-   * the client package isn't built yet.
-   */
   visible?: boolean;
 }
 
+function totalRows(summary: ClientBundleSummary): number {
+  return summary.safe_count + summary.review_count + summary.rejected_count;
+}
+
+function safePercent(summary: ClientBundleSummary): number {
+  const total = totalRows(summary);
+  return total > 0 ? Math.round((summary.safe_count * 100) / total) : 0;
+}
+
+function DeliveryMetrics({ summary }: { summary: ClientBundleSummary }) {
+  const total = totalRows(summary);
+  const safePct = safePercent(summary);
+
+  return (
+    <>
+      <div className={styles.metricsGrid}>
+        <div className={[styles.metric, styles.metricOk].join(" ")}>
+          <span className={styles.metricLabel}>Confirmed safe</span>
+          <strong className={styles.metricValue}>
+            {summary.safe_count.toLocaleString()}
+          </strong>
+          <span className={styles.metricNote}>Included in ZIP</span>
+        </div>
+        <div className={[styles.metric, styles.metricWarn].join(" ")}>
+          <span className={styles.metricLabel}>Require review</span>
+          <strong className={styles.metricValue}>
+            {summary.review_count.toLocaleString()}
+          </strong>
+          <span className={styles.metricNote}>Held back</span>
+        </div>
+        <div className={[styles.metric, styles.metricBad].join(" ")}>
+          <span className={styles.metricLabel}>Do not use</span>
+          <strong className={styles.metricValue}>
+            {summary.rejected_count.toLocaleString()}
+          </strong>
+          <span className={styles.metricNote}>Removed</span>
+        </div>
+        <div className={[styles.metric, styles.metricMuted].join(" ")}>
+          <span className={styles.metricLabel}>Safe-only rate</span>
+          <strong className={styles.metricValue}>{safePct}%</strong>
+          <span className={styles.metricNote}>
+            {total.toLocaleString()} rows processed
+          </span>
+        </div>
+      </div>
+
+      <div className={styles.deliveryMeter} aria-hidden>
+        <span
+          className={styles.deliveryMeterFill}
+          style={{ width: `${safePct}%` }}
+        />
+      </div>
+    </>
+  );
+}
+
 /**
- * The single primary action on a finished job. Replaces the legacy
- * "operator review gate → build package → download" three-click flow
- * with one giant button that auto-runs the gate, builds the package,
- * and ships a curated ZIP (PRIMARY artifact + README + summary).
- *
- * Loading states:
- *   - "loading"   while we fetch the bundle summary
- *   - "ready"     gate pass + safe rows present → green button
- *   - "partial"   gate WARN/BLOCK but safe rows exist → yellow button
- *                 with a "partial delivery" note above
- *   - "blocked"   no safe rows at all → red banner explaining why
- *   - "error"     summary endpoint failed → terse retry message
+ * Primary delivery action for a completed job. The visual treatment is
+ * intentionally calmer than the old giant warning-style button: the
+ * package is the hero, the download affordance is clear, and the
+ * partial-delivery warning stays separate from the click target.
  */
 export function SendToClientButton({
   jobId,
@@ -70,7 +113,7 @@ export function SendToClientButton({
   if (loading) {
     return (
       <div className={styles.loading}>
-        Preparing the send-to-client bundle…
+        Preparing the send-to-client bundle...
       </div>
     );
   }
@@ -108,9 +151,7 @@ export function SendToClientButton({
     if (summary.delivery_state === "cleaning_completed") {
       return (
         <div className={styles.pendingCard}>
-          <div className={styles.pendingTitle}>
-            Cleaning completed
-          </div>
+          <div className={styles.pendingTitle}>Cleaning completed</div>
           <div className={styles.pendingMessage}>
             {summary.operator_message ??
               "Delivery readiness still needs verification."}
@@ -119,10 +160,6 @@ export function SendToClientButton({
       );
     }
 
-    // CRITICAL UX: when the V2 default policy produces 0 safe rows
-    // (typical for SMTP-off runs on cold-start domains), surface the
-    // Extra-Strict re-clean as the *primary* fallback so the operator
-    // is never stuck staring at a blocked card.
     return (
       <div className={styles.wrap}>
         <div className={styles.blockedCard}>
@@ -132,9 +169,7 @@ export function SendToClientButton({
           <div className={styles.blockedMessage}>
             {summary.operator_message ??
               summary.issues[0]?.message ??
-              "Without live SMTP confirmation the V2 decision engine sends most rows to manual review. " +
-                "Use the Extra-Strict re-clean below — it applies a different policy (probability ≥ 0.75 + " +
-                "domain risk + provider class) and typically rescues several hundred rows."}
+              "Without live SMTP confirmation, the V2 decision engine holds most rows for manual review. Use Extra-Strict re-clean to produce a conservative fallback export."}
           </div>
         </div>
 
@@ -144,36 +179,22 @@ export function SendToClientButton({
           download
           aria-label="Run extra-strict re-clean"
         >
-          <span className={styles.buttonStar} aria-hidden>
-            ⤓
+          <span className={styles.packageIcon} aria-hidden>
+            XLS
           </span>
           <span className={styles.buttonMain}>
+            <span className={styles.buttonKicker}>Fallback export</span>
             <span className={styles.buttonHeadline}>
               Run extra-strict re-clean
             </span>
             <span className={styles.buttonSubline}>
-              Different policy · drops Yahoo/AOL · keeps high-probability rows
+              Different policy - drops Yahoo/AOL - keeps high-probability rows
             </span>
           </span>
-          <span className={styles.buttonArrow} aria-hidden>
-            ↓
-          </span>
+          <span className={styles.downloadCta}>Download</span>
         </a>
 
-        <div className={styles.tally}>
-          <span className={styles.tallyMuted}>
-            {summary.safe_count + summary.review_count + summary.rejected_count}{" "}
-            rows scanned
-          </span>
-          <span className={styles.tallyDot}>·</span>
-          <span className={styles.tallyWarn}>
-            {summary.review_count} in review
-          </span>
-          <span className={styles.tallyDot}>·</span>
-          <span className={styles.tallyBad}>
-            {summary.rejected_count} rejected
-          </span>
-        </div>
+        <DeliveryMetrics summary={summary} />
       </div>
     );
   }
@@ -184,20 +205,16 @@ export function SendToClientButton({
     isPartial ? styles.buttonPartial : styles.buttonReady,
   ].join(" ");
 
-  const total =
-    summary.safe_count + summary.review_count + summary.rejected_count;
-  const safePct =
-    total > 0 ? Math.round((summary.safe_count * 100) / total) : 0;
-
   return (
     <div className={styles.wrap}>
       {isPartial && (
         <div className={styles.partialBanner}>
-          ⚠ Partial delivery — the operator review gate flagged warnings.
-          The bundle includes only the {summary.safe_count} confirmed safe
-          rows. {summary.review_count} require review (mostly unconfirmed
-          B2B / catch-all consumer providers — see breakdown below) and{" "}
-          {summary.rejected_count} were removed.
+          <span className={styles.partialLabel}>Partial delivery</span>
+          <span className={styles.partialText}>
+            Includes {summary.safe_count.toLocaleString()} confirmed safe rows.
+            {` ${summary.review_count.toLocaleString()} require review and `}
+            {summary.rejected_count.toLocaleString()} were removed.
+          </span>
         </div>
       )}
 
@@ -207,42 +224,27 @@ export function SendToClientButton({
         download={summary.download_filename ?? undefined}
         aria-label="Send to client"
       >
-        <span className={styles.buttonStar} aria-hidden>
-          ★
+        <span className={styles.packageIcon} aria-hidden>
+          ZIP
         </span>
         <span className={styles.buttonMain}>
+          <span className={styles.buttonKicker}>
+            {isPartial ? "Safe-only delivery package" : "Client delivery package"}
+          </span>
           <span className={styles.buttonHeadline}>Send to client</span>
           <span className={styles.buttonSubline}>
-            {summary.safe_count.toLocaleString()} ready · ZIP includes
-            primary list + README + summary
+            Customer-safe ZIP with primary list, README, and summary report
           </span>
+          {summary.primary_filename && (
+            <span className={styles.deliveryMeta}>
+              Primary file: {summary.primary_filename}
+            </span>
+          )}
         </span>
-        <span className={styles.buttonArrow} aria-hidden>
-          ↓
-        </span>
+        <span className={styles.downloadCta}>Download ZIP</span>
       </a>
 
-      <div className={styles.tally}>
-        <span className={styles.tallyOk}>
-          {summary.safe_count.toLocaleString()} confirmed safe
-        </span>
-        <span className={styles.tallyDot}>·</span>
-        <span className={styles.tallyWarn}>
-          {summary.review_count.toLocaleString()} require review
-        </span>
-        <span className={styles.tallyDot}>·</span>
-        <span className={styles.tallyBad}>
-          {summary.rejected_count.toLocaleString()} do not use
-        </span>
-        {total > 0 && (
-          <>
-            <span className={styles.tallyDot}>·</span>
-            <span className={styles.tallyMuted}>
-              {safePct}% confirmed safe-only
-            </span>
-          </>
-        )}
-      </div>
+      <DeliveryMetrics summary={summary} />
 
       <div className={styles.secondary}>
         <a
@@ -256,7 +258,9 @@ export function SendToClientButton({
             "bounces on a previous send."
           }
         >
-          <span className={styles.secondaryIcon} aria-hidden>⤓</span>
+          <span className={styles.secondaryIcon} aria-hidden>
+            XLS
+          </span>
           <span>
             <span className={styles.secondaryHeadline}>
               {RESULTS_COPY.extraStrict.title}
