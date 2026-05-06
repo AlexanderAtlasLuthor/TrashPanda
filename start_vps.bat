@@ -98,8 +98,14 @@ echo [Tunnel]   ready on localhost:8001
 :: Force the backend URL to the tunnel for this Next.js process so
 :: the launcher works even if .env.local is misconfigured. The child
 :: cmd shell inherits this env var via SET.
+::
+:: IMPORTANT: use ``set "VAR=value"`` (Microsoft-recommended form).
+:: Without the inner quotes, cmd captures the trailing space before
+:: ``&&`` as part of the value — Next.js then builds URLs like
+:: ``http://localhost:8001 /jobs`` (note the space) and every
+:: /api/jobs request returns 500 with a URL parse error.
 echo [Frontend] Starting Next.js on http://localhost:3000 ...
-start "TrashPanda - Frontend" /d "!ROOT!\trashpanda-next" cmd /k "set TRASHPANDA_BACKEND_URL=http://localhost:8001 && npm run dev"
+start "TrashPanda - Frontend" /d "!ROOT!\trashpanda-next" cmd /k "set ""TRASHPANDA_BACKEND_URL=http://localhost:8001"" && npm run dev"
 
 :: --- Poll until frontend responds (max ~60 s, 2 s intervals) ---
 echo.
