@@ -30,17 +30,29 @@ Design constraints
     pattern: lazy connection, threading.RLock, ``isolation_level=None``,
     transactional writes.
   * Identifier is ``email_normalized`` (lowercased, trimmed) — same key
-    the per-run cache uses, so the two layers agree on identity.
+    the per-run cache uses, so the two layers agree on identity. We
+    deliberately *do not* compose the key with the sender domain or
+    "test type": the SMTP probe contract is single-tenant per pipeline
+    (one ``sender_address``, one probe vocabulary) and the operator's
+    explicit goal is "if I already touched this address, don't touch
+    it again", which the simpler key satisfies. If the contract ever
+    grows multi-tenant the schema can carry a ``probe_kind`` discriminator
+    without breaking existing rows.
   * The store is opt-in (``email_send_history.enabled`` config) and
     only writes for **live** probes — dry-run results are never
     persisted because no email actually went on the wire.
   * Records expose a small monotonic surface (``send_count``,
-    ``first_sent_at``, ``last_sent_at``) so audits can see how many
-    times a row would have been re-probed without dedup.
+    ``first_sent_at``, ``last_sent_at``) plus the most recent
+    ``last_run_id`` so audits can see how many times a row would have
+    been re-probed without dedup, and which job last touched it.
+  * :meth:`EmailSendHistoryStore.export_csv` writes the full store to
+    a flat audit CSV (header + one row per email). Use it from a
+    script, an operator UI, or directly from a Python REPL.
 """
 
 from __future__ import annotations
 
+import csv
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -68,13 +80,21 @@ CREATE TABLE IF NOT EXISTS email_send_history (
     last_response_message  TEXT    NOT NULL DEFAULT '',
     last_was_success       INTEGER NOT NULL DEFAULT 0,
     last_is_catch_all      INTEGER NOT NULL DEFAULT 0,
-    last_inconclusive      INTEGER NOT NULL DEFAULT 0
+    last_inconclusive      INTEGER NOT NULL DEFAULT 0,
+    last_run_id            TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_email_send_history_last_sent
     ON email_send_history (last_sent_at);
 CREATE INDEX IF NOT EXISTS idx_email_send_history_domain
     ON email_send_history (domain);
 """
+
+
+# Forward-compatible migration: callers that opened the DB on a previous
+# build (without ``last_run_id``) get the column added in place.
+_MIGRATIONS_SQL: tuple[str, ...] = (
+    "ALTER TABLE email_send_history ADD COLUMN last_run_id TEXT NOT NULL DEFAULT ''",
+)
 
 
 _COLUMNS: tuple[str, ...] = (
@@ -90,6 +110,7 @@ _COLUMNS: tuple[str, ...] = (
     "last_was_success",
     "last_is_catch_all",
     "last_inconclusive",
+    "last_run_id",
 )
 
 
@@ -118,6 +139,7 @@ class EmailSendRecord:
     last_was_success: bool
     last_is_catch_all: bool
     last_inconclusive: bool
+    last_run_id: str = ""
 
     def is_fresh(self, ttl_days: int | None, now: datetime | None = None) -> bool:
         """Return True iff this record was written within the TTL window.
@@ -132,6 +154,12 @@ class EmailSendRecord:
 
 
 def _row_to_record(row: sqlite3.Row) -> EmailSendRecord:
+    # ``last_run_id`` is a post-v1 column; rows written before the
+    # migration ran return None for it via sqlite3.Row.
+    try:
+        last_run_id = row["last_run_id"] or ""
+    except (IndexError, KeyError):
+        last_run_id = ""
     return EmailSendRecord(
         email_normalized=row["email_normalized"],
         domain=row["domain"],
@@ -149,6 +177,7 @@ def _row_to_record(row: sqlite3.Row) -> EmailSendRecord:
         last_was_success=bool(row["last_was_success"]),
         last_is_catch_all=bool(row["last_is_catch_all"]),
         last_inconclusive=bool(row["last_inconclusive"]),
+        last_run_id=last_run_id,
     )
 
 
@@ -201,6 +230,14 @@ class EmailSendHistoryStore:
         )
         conn.row_factory = sqlite3.Row
         conn.executescript(_SCHEMA_SQL)
+        # Apply additive migrations idempotently. SQLite's
+        # ``ALTER TABLE ADD COLUMN`` raises if the column already
+        # exists; that's the only "already-applied" signal we need.
+        for stmt in _MIGRATIONS_SQL:
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
         self._conn = conn
         return conn
 
@@ -289,6 +326,7 @@ class EmailSendHistoryStore:
         was_success: bool,
         is_catch_all: bool,
         inconclusive: bool,
+        run_id: str = "",
         now: datetime | None = None,
     ) -> EmailSendRecord:
         """Upsert a probe outcome for ``email_normalized``.
@@ -296,6 +334,8 @@ class EmailSendHistoryStore:
         On insert: ``send_count=1`` and ``first_sent_at == last_sent_at``.
         On update: ``send_count`` is incremented monotonically;
         ``first_sent_at`` is preserved and ``last_*`` is overwritten.
+        ``run_id`` is the operator-visible identifier of the run that
+        produced this outcome (empty string when unknown / synthetic).
         """
         key = _normalize_key(email_normalized)
         if not key:
@@ -304,6 +344,7 @@ class EmailSendHistoryStore:
         when = now or datetime.now()
         when_iso = when.isoformat()
         message = (response_message or "")[:500]
+        run_tag = (run_id or "").strip()
 
         with self._transaction() as conn:
             cur = conn.execute(
@@ -331,6 +372,7 @@ class EmailSendHistoryStore:
                         int(bool(was_success)),
                         int(bool(is_catch_all)),
                         int(bool(inconclusive)),
+                        run_tag,
                     ),
                 )
                 record = EmailSendRecord(
@@ -346,6 +388,7 @@ class EmailSendHistoryStore:
                     last_was_success=bool(was_success),
                     last_is_catch_all=bool(is_catch_all),
                     last_inconclusive=bool(inconclusive),
+                    last_run_id=run_tag,
                 )
             else:
                 new_count = int(existing["send_count"]) + 1
@@ -361,7 +404,8 @@ class EmailSendHistoryStore:
                         last_response_message = ?,
                         last_was_success      = ?,
                         last_is_catch_all     = ?,
-                        last_inconclusive     = ?
+                        last_inconclusive     = ?,
+                        last_run_id           = ?
                     WHERE email_normalized = ?
                     """,
                     (
@@ -375,6 +419,7 @@ class EmailSendHistoryStore:
                         int(bool(was_success)),
                         int(bool(is_catch_all)),
                         int(bool(inconclusive)),
+                        run_tag,
                         key,
                     ),
                 )
@@ -391,6 +436,7 @@ class EmailSendHistoryStore:
                     last_was_success=bool(was_success),
                     last_is_catch_all=bool(is_catch_all),
                     last_inconclusive=bool(inconclusive),
+                    last_run_id=run_tag,
                 )
         self.records_written += 1
         return record
@@ -405,6 +451,58 @@ class EmailSendHistoryStore:
                 (key,),
             )
             return cur.rowcount > 0
+
+    def export_csv(self, out_path: str | Path) -> int:
+        """Dump every record to ``out_path`` as a flat audit CSV.
+
+        Header is the canonical column order (``email_normalized`` first,
+        then ``domain``, the two timestamps, ``send_count``, the canonical
+        SMTP outcome fields, and ``last_run_id``). Returns the number
+        of rows written. Pass ``out_path="-"`` to write to stdout.
+
+        The CSV is the operator-facing audit surface: it answers
+        "what addresses have we already touched, when, with what
+        result, and on which run?" without anyone needing to open
+        sqlite3.
+        """
+        rows_written = 0
+        target_path = Path(out_path) if str(out_path) != "-" else None
+        if target_path is not None:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _emit(writer: csv.writer) -> int:
+            count = 0
+            writer.writerow(_COLUMNS)
+            for rec in self.iter_all():
+                writer.writerow(
+                    (
+                        rec.email_normalized,
+                        rec.domain,
+                        rec.first_sent_at.isoformat(),
+                        rec.last_sent_at.isoformat(),
+                        rec.send_count,
+                        rec.last_status,
+                        rec.last_smtp_result,
+                        "" if rec.last_response_code is None
+                        else rec.last_response_code,
+                        rec.last_response_message,
+                        int(rec.last_was_success),
+                        int(rec.last_is_catch_all),
+                        int(rec.last_inconclusive),
+                        rec.last_run_id,
+                    )
+                )
+                count += 1
+            return count
+
+        if target_path is None:
+            import sys
+
+            rows_written = _emit(csv.writer(sys.stdout))
+        else:
+            with target_path.open("w", newline="", encoding="utf-8") as fh:
+                rows_written = _emit(csv.writer(fh))
+        return rows_written
 
     def purge_expired(
         self,

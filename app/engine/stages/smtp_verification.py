@@ -130,6 +130,14 @@ SMTP_VERIFICATION_OUTPUT_COLUMNS: tuple[str, ...] = (
     # 4xx greylisting / 5xx policy rejections needs the full message
     # regardless of status. Empty string for non-probed rows.
     "smtp_response_message",
+    # Cross-run dedup audit columns. ``smtp_from_history=True``
+    # marks "ya verificada en una corrida anterior" — the SMTP
+    # status / verdict came from EmailSendHistoryStore, not from a
+    # network probe. ``smtp_history_send_count`` is the running
+    # total of times this address has been recorded (1 on the very
+    # first probe of a fresh run, ≥2 once the dedup layer kicks in).
+    "smtp_from_history",
+    "smtp_history_send_count",
 )
 
 
@@ -749,7 +757,13 @@ class SMTPVerificationStage(Stage):
                     cache.set(email_normalized, replay)
                     history_store.history_hits += 1
                     runtime_summary.record_status(normalize_smtp_status(replay))
-                    _emit_from_result(out, replay, was_candidate=True)
+                    _emit_from_result(
+                        out,
+                        replay,
+                        was_candidate=True,
+                        from_history=True,
+                        history_send_count=record.send_count,
+                    )
                     continue
 
             # Run-level safety net: stop probing past the configured
@@ -846,6 +860,7 @@ class SMTPVerificationStage(Stage):
                         was_success=bool(result.success),
                         is_catch_all=bool(result.is_catch_all_like),
                         inconclusive=bool(result.inconclusive),
+                        run_id=run_id,
                     )
                 except Exception as exc:  # pragma: no cover - defensive
                     _LOGGER.debug(
@@ -935,6 +950,8 @@ def _emit_not_tested(
     out["smtp_suspicious"].append(False)
     out["smtp_error"].append(None)
     out["smtp_response_message"].append("")
+    out["smtp_from_history"].append(False)
+    out["smtp_history_send_count"].append(0)
 
 
 def _emit_from_result(
@@ -942,6 +959,8 @@ def _emit_from_result(
     result: SMTPResult,
     *,
     was_candidate: bool,
+    from_history: bool = False,
+    history_send_count: int = 0,
 ) -> None:
     status = normalize_smtp_status(result)
     out["smtp_tested"].append(True)
@@ -972,6 +991,8 @@ def _emit_from_result(
     # detection are auditable downstream without re-walking
     # ``smtp_error`` (which is None for valid / catch_all_possible).
     out["smtp_response_message"].append(result.response_message or "")
+    out["smtp_from_history"].append(bool(from_history))
+    out["smtp_history_send_count"].append(int(history_send_count))
 
 
 def _response_type_for(
@@ -1040,6 +1061,8 @@ def _write_not_tested(frame: pd.DataFrame) -> pd.DataFrame:
     out["smtp_suspicious"] = [False] * n
     out["smtp_error"] = [None] * n
     out["smtp_response_message"] = [""] * n
+    out["smtp_from_history"] = [False] * n
+    out["smtp_history_send_count"] = [0] * n
     return out
 
 

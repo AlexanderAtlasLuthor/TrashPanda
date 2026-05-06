@@ -168,15 +168,36 @@ class TestRecording:
         probe = _make_probe(_result_valid())
         with EmailSendHistoryStore(":memory:") as store:
             ctx = _ctx_with_store(store)
-            SMTPVerificationStage(probe_fn=probe).run(
+            out = SMTPVerificationStage(probe_fn=probe).run(
                 ChunkPayload(frame=_candidate_frame()), ctx
-            )
+            ).frame
             assert len(probe.calls) == 1
             rec = store.lookup("alice@gmail.com")
             assert rec is not None
             assert rec.last_status == SMTP_STATUS_VALID
             assert rec.last_response_code == 250
             assert rec.send_count == 1
+            # Fresh probe → row is NOT marked as coming from history.
+            assert bool(out.iloc[0]["smtp_from_history"]) is False
+            assert int(out.iloc[0]["smtp_history_send_count"]) == 0
+
+    def test_run_id_is_persisted_when_run_context_present(self) -> None:
+        """The stage forwards ``run_context.run_id`` into the record."""
+
+        class _RunCtx:
+            run_id = "operator-run-2026-05-06"
+            run_dir = None  # retry queue stays disabled
+
+        probe = _make_probe(_result_valid())
+        with EmailSendHistoryStore(":memory:") as store:
+            ctx = _ctx_with_store(store)
+            ctx.run_context = _RunCtx()  # type: ignore[attr-defined]
+            SMTPVerificationStage(probe_fn=probe).run(
+                ChunkPayload(frame=_candidate_frame()), ctx
+            )
+            rec = store.lookup("alice@gmail.com")
+            assert rec is not None
+            assert rec.last_run_id == "operator-run-2026-05-06"
 
     def test_invalid_outcome_is_recorded_with_correct_fields(self) -> None:
         probe = _make_probe(_result_invalid())
@@ -221,6 +242,7 @@ class TestReplay:
                 was_success=True,
                 is_catch_all=False,
                 inconclusive=False,
+                run_id="prior-run-1",
             )
             probe = _make_probe(_result_invalid())  # would flip the answer
             ctx = _ctx_with_store(store, ttl_days=30)
@@ -235,6 +257,10 @@ class TestReplay:
             assert int(row["smtp_response_code"]) == 250
             assert bool(row["smtp_tested"]) is True
             assert store.history_hits == 1
+            # Row is explicitly marked "ya verificada en una corrida
+            # anterior" so audits / downstream consumers can filter it.
+            assert bool(row["smtp_from_history"]) is True
+            assert int(row["smtp_history_send_count"]) == 1
 
     def test_stale_history_record_is_ignored_and_probe_runs(self) -> None:
         from datetime import datetime, timedelta

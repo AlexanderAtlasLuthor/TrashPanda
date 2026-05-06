@@ -56,7 +56,7 @@ def test_empty_store_returns_none() -> None:
 
 def test_first_record_persists_canonical_fields() -> None:
     with EmailSendHistoryStore(":memory:") as store:
-        rec = store.record(now=_now(), **_record_kwargs())
+        rec = store.record(now=_now(), run_id="job-2026-05-01-A", **_record_kwargs())
         assert isinstance(rec, EmailSendRecord)
         assert rec.email_normalized == "alice@gmail.com"
         assert rec.domain == "gmail.com"
@@ -69,7 +69,25 @@ def test_first_record_persists_canonical_fields() -> None:
         assert rec.last_was_success is True
         assert rec.last_is_catch_all is False
         assert rec.last_inconclusive is False
+        assert rec.last_run_id == "job-2026-05-01-A"
         assert store.count() == 1
+
+
+def test_run_id_is_overwritten_on_repeat_record() -> None:
+    """The most-recent run that touched the address wins ``last_run_id``."""
+    with EmailSendHistoryStore(":memory:") as store:
+        store.record(now=_now(), run_id="run-A", **_record_kwargs())
+        rec = store.record(
+            now=_now(), run_id="run-B", **_record_kwargs(),
+        )
+        assert rec.last_run_id == "run-B"
+        assert rec.send_count == 2
+
+
+def test_run_id_default_is_empty_string() -> None:
+    with EmailSendHistoryStore(":memory:") as store:
+        rec = store.record(now=_now(), **_record_kwargs())
+        assert rec.last_run_id == ""
 
 
 def test_lookup_after_record_returns_same_record() -> None:
@@ -220,6 +238,78 @@ def test_purge_with_zero_ttl_is_noop() -> None:
         store.record(now=_now(), **_record_kwargs())
         assert store.purge_expired(ttl_days=0, now=_now()) == 0
         assert store.count() == 1
+
+
+def test_export_csv_writes_header_and_one_row_per_record(tmp_path) -> None:
+    out_path = tmp_path / "audit.csv"
+    with EmailSendHistoryStore(":memory:") as store:
+        store.record(
+            now=_now(), run_id="run-1",
+            **_record_kwargs(email_normalized="alice@gmail.com"),
+        )
+        store.record(
+            now=_now(), run_id="run-1",
+            **_record_kwargs(
+                email_normalized="bob@example.com",
+                domain="example.com",
+                status="invalid",
+                smtp_result="undeliverable",
+                response_code=550,
+                was_success=False,
+            ),
+        )
+        rows_written = store.export_csv(out_path)
+    assert rows_written == 2
+    assert out_path.exists()
+
+    text = out_path.read_text(encoding="utf-8").splitlines()
+    header = text[0].split(",")
+    # Header must include the canonical audit columns.
+    for required in (
+        "email_normalized",
+        "domain",
+        "first_sent_at",
+        "last_sent_at",
+        "send_count",
+        "last_status",
+        "last_response_code",
+        "last_run_id",
+    ):
+        assert required in header, f"missing column {required} in {header}"
+
+    body = text[1:]
+    assert len(body) == 2
+    joined = "\n".join(body)
+    assert "alice@gmail.com" in joined
+    assert "bob@example.com" in joined
+    assert "run-1" in joined
+
+
+def test_export_csv_creates_parent_directory(tmp_path) -> None:
+    out_path = tmp_path / "nested" / "deep" / "audit.csv"
+    with EmailSendHistoryStore(":memory:") as store:
+        store.record(now=_now(), **_record_kwargs())
+        rows_written = store.export_csv(out_path)
+    assert rows_written == 1
+    assert out_path.exists()
+
+
+def test_export_csv_to_stdout(capsys) -> None:
+    with EmailSendHistoryStore(":memory:") as store:
+        store.record(now=_now(), **_record_kwargs())
+        rows_written = store.export_csv("-")
+    assert rows_written == 1
+    captured = capsys.readouterr()
+    assert "alice@gmail.com" in captured.out
+    assert "email_normalized" in captured.out  # header
+
+
+def test_export_csv_on_empty_store_writes_header_only(tmp_path) -> None:
+    out_path = tmp_path / "empty.csv"
+    with EmailSendHistoryStore(":memory:") as store:
+        rows_written = store.export_csv(out_path)
+    assert rows_written == 0
+    assert out_path.read_text(encoding="utf-8").strip() != ""  # header line
 
 
 def test_iter_all_yields_in_recency_order() -> None:
