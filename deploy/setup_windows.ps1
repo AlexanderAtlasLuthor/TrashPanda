@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     One-shot Windows bootstrap for the TrashPanda operator laptop.

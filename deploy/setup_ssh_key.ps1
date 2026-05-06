@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Set up passwordless SSH from this Windows laptop to the TrashPanda
     VPS so the tunnel.ps1 supervisor can run unattended.
