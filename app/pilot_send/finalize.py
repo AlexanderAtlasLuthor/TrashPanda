@@ -482,8 +482,13 @@ def _apply_pilot_results_to_technical_buckets(
 
 def _verdict_to_outcome(verdict: str | None) -> str | None:
     """Map our verdict vocabulary onto bounce_ingestion's CSV
-    ``outcome`` column. ``unknown`` and ``None`` are skipped."""
+    ``outcome`` column. ``unknown`` and sender-side verdicts are
+    skipped: they describe the sender, not the recipient domain, so
+    they would pollute the per-domain risk aggregator (counting them
+    as ``unknown`` would still drag medium/high-risk thresholds)."""
     if not verdict or verdict == "unknown":
+        return None
+    if verdict in {VERDICT_INFRA_BLOCKED, VERDICT_PROVIDER_DEFERRED}:
         return None
     return verdict
 

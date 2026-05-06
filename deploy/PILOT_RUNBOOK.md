@@ -301,7 +301,8 @@ Genera en el `run_dir` del job:
 | `delivery_verified.xlsx` | **El entregable bueno.** Rows que el pilot probó como deliverable. Pásalas al cliente. |
 | `pilot_hard_bounces.xlsx` | Rows con DSN `hard_bounce`. Mover a `do_not_send`. |
 | `pilot_soft_bounces.xlsx` | Rows con DSN `soft_bounce`. Considerar reintento en 48h. |
-| `pilot_blocked_or_deferred.xlsx` | Rows con `blocked` / `deferred`. Investigar si tu sender quedó listado. |
+| `pilot_blocked_or_deferred.xlsx` | Rows con `blocked` / `deferred` (rechazo de contenido / política, no de IP). |
+| `pilot_infrastructure_blocked.xlsx` | **NUEVO.** Rows con `infrastructure_blocked` o `provider_deferred`. El proveedor receptor rechazó/throttleó nuestra IP/red, no al recipient. **No mover a `do_not_send`** — re-test desde otra IP antes de decidir. |
 | `pilot_summary_report.xlsx` | KPI consolidado del batch — pásalo al cliente como anexo. |
 | `updated_do_not_send.xlsx` | Union del `do_not_send.xlsx` viejo + las hard_bounces / blocked / complaints nuevas. **Es el `do_not_send` que debe usar el cliente de aquí en adelante.** |
 | `pilot_send_candidates.xlsx` | Snapshot del cohort enviado (auditoría). |
@@ -373,6 +374,26 @@ ssh root@192.3.105.145 \
 - `deferred` — greylisting, normal en B2B.
 - `unknown` — ambigüedad de network. Si > 5% del batch, verifica
   `journalctl -u trashpanda-pilot-bounce-poller`.
+
+**Sender-side — no son señal del recipient:**
+- `infrastructure_blocked` — el proveedor receptor (Microsoft S3150,
+  Spamhaus listed, etc.) rechazó nuestra IP/red. No dice nada del
+  email individual. **Acción**: revisar reputación de la IP de envío;
+  delist en Microsoft SNDS / Spamhaus si aplica; re-test desde IP
+  limpia antes de marcar nada como `do_not_send`. **No** se cuenta
+  para `hard_bounce_rate`.
+- `provider_deferred` — Yahoo/AOL `TSS04` (volumen / quejas /
+  reputación) o equivalente. Transitorio. **Acción**: bajar volumen,
+  esperar, verificar postmaster del proveedor. **No** se cuenta para
+  `hard_bounce_rate`.
+
+> Regla: cuando el código SMTP (4xx/5xx) referencia explícitamente la
+> IP del sender (`messages from [...] weren't sent`, `block list`,
+> `TSS\d+`), **NO confiar** en él como señal del recipient. Ese rechazo
+> describe al sender, no al recipient. El clasificador
+> (`bounce_parser._INFRA_BLOCK_PATTERNS` /
+> `_PROVIDER_DEFER_PATTERNS`) ya lo separa, pero auditá los XLSX si
+> ves un volumen anómalo.
 
 **Ruido** (no actúes nunca):
 - Variaciones de timing en `sent_at` (el sleep entre rcpt es 1s).

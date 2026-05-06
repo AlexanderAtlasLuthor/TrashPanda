@@ -88,3 +88,29 @@ changes.
 Preview/mock features must not be used as proof of completed SaaS capability.
 
 They may remain as clearly labeled previews or be hidden during SaaS V1 work.
+
+## Pilot send verdict vocabulary
+
+The pilot send tracker (`app/db/pilot_send_tracker.py`) classifies each
+DSN into one of these verdicts:
+
+| Verdict | Meaning | Routing |
+|---|---|---|
+| `delivered` | Wait window elapsed without a bounce. | `delivery_verified` |
+| `hard_bounce` | Recipient-level 5xx (e.g. user unknown). | `do_not_send` |
+| `soft_bounce` | Recipient-level 4xx. | review (transient) |
+| `blocked` | Content / policy rejection (DMARC, spam keyword, content filter). | `do_not_send` |
+| `deferred` | DSN `Action: delayed`. | review (transient) |
+| `complaint` | ARF abuse report. | `do_not_send` |
+| `infrastructure_blocked` | **Sender-side.** Recipient provider rejected our sending IP / network (e.g. Microsoft S3150 "block list", Spamhaus listing). Says nothing about the recipient. | review — re-test from clean IP |
+| `provider_deferred` | **Sender-side.** Recipient provider throttled mail due to sender volume / reputation (e.g. Yahoo `TSS04`). Always transient. | review — re-test later |
+| `unknown` | DSN couldn't be parsed. | review |
+
+**Critical rule:** SMTP 4xx/5xx replies that reference the sender IP /
+network (`messages from [ip] weren't sent`, `block list`, `TSS\d+`)
+describe the *sender*, not the recipient. They must NEVER feed
+`do_not_send` and never count toward `hard_bounce_rate`. Detection
+patterns live in `app/pilot_send/bounce_parser.py`
+(`_INFRA_BLOCK_PATTERNS`, `_PROVIDER_DEFER_PATTERNS`).
+
+Operational details: see `deploy/PILOT_RUNBOOK.md`.
