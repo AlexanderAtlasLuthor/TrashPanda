@@ -6,6 +6,12 @@
 > `fuenmayorindustries.com` (DNS records SPF/DKIM/DMARC, App
 > Password de Google Workspace, override systemd con la IMAP password,
 > verificación de port 25 outbound).
+>
+> **Procedimiento del pilot send:** ver
+> [`PILOT_RUNBOOK.md`](PILOT_RUNBOOK.md) — pre-flight checklist,
+> endpoints exactos para config / preview / launch / poll / finalize,
+> métricas a monitorear a las 24/48/72h, criterios verde/amarillo/rojo
+> de continuación, y protocolos de pause / abort.
 
 ## 1. Setup inicial del VPS (una sola vez):
 
