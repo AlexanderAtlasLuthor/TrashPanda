@@ -49,6 +49,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from .evidence import (
+    SMTP_EVIDENCE_REPORT_FILENAME,
+    write_smtp_evidence_report,
+)
 from ..db.pilot_send_tracker import (
     DELIVERY_VERIFIED_VERDICTS,
     DO_NOT_SEND_VERDICTS,
@@ -632,6 +636,25 @@ def finalize_pilot(
         )
         for bucket, path in bucket_updates.items():
             files_written[f"{bucket}_csv"] = path
+
+        # Always emit the per-row evidence report — the audit trail
+        # for every routing decision the pilot makes.
+        evidence_path = run_dir_path / SMTP_EVIDENCE_REPORT_FILENAME
+        write_smtp_evidence_report(all_rows, path=evidence_path)
+        files_written["smtp_evidence_report"] = evidence_path
+
+        # Build the customer-language bundle (clean_deliverable /
+        # review_provider_limited / high_risk_removed + README) from
+        # whatever artifacts now exist in the run directory. Safe to
+        # run repeatedly.
+        try:
+            from ..customer_bundle import emit_customer_bundle
+
+            bundle_result = emit_customer_bundle(run_dir_path)
+            for name, path in bundle_result.files_written.items():
+                files_written[f"customer_bundle.{name}"] = path
+        except Exception as exc:  # pragma: no cover - defensive
+            _LOGGER.warning("customer bundle emit failed: %s", exc)
 
     # Bounce-ingestion bridge — feed per-domain aggregate.
     bounce_csv: Path | None = None
