@@ -26,6 +26,32 @@ from ..db.pilot_send_tracker import (
 
 
 @dataclass(slots=True)
+class RelayConfig:
+    """V2.10.13 — optional SMTP relay for outbound pilot sends.
+
+    When ``host`` is set, the sender connects to this relay instead
+    of resolving the recipient's MX. Used when port 25 outbound is
+    blocked (e.g. RackNerd, most cloud providers) or when the
+    operator wants the relay's IP reputation / DKIM signing rather
+    than direct-to-MX.
+
+    The password lives in an env var (``password_env``) named here;
+    no literal credential is ever persisted to disk. Default port is
+    587 (submission) with STARTTLS — the standard authenticated
+    submission path.
+    """
+
+    host: str = ""
+    port: int = 587
+    username: str = ""
+    password_env: str = "TRASHPANDA_SMTP_RELAY_PASSWORD"
+    use_starttls: bool = True
+
+    def is_configured(self) -> bool:
+        return bool(self.host.strip())
+
+
+@dataclass(slots=True)
 class IMAPCredentials:
     """Credentials for the bounce mailbox the IMAP poller reads.
 
@@ -74,6 +100,7 @@ class PilotSendConfig:
 
     template: PilotMessageTemplate = field(default_factory=PilotMessageTemplate)
     imap: IMAPCredentials = field(default_factory=IMAPCredentials)
+    relay: RelayConfig = field(default_factory=RelayConfig)
     return_path_domain: str = ""
     wait_window_hours: int = DEFAULT_WAIT_WINDOW_HOURS
     expiry_hours: int = DEFAULT_EXPIRY_HOURS
@@ -122,6 +149,7 @@ def read_pilot_config(run_dir: str | Path) -> PilotSendConfig:
         return PilotSendConfig()
     template_raw = raw.get("template") or {}
     imap_raw = raw.get("imap") or {}
+    relay_raw = raw.get("relay") or {}
     return PilotSendConfig(
         template=PilotMessageTemplate(
             subject=str(template_raw.get("subject") or ""),
@@ -141,6 +169,15 @@ def read_pilot_config(run_dir: str | Path) -> PilotSendConfig:
             ),
             folder=str(imap_raw.get("folder") or "INBOX"),
         ),
+        relay=RelayConfig(
+            host=str(relay_raw.get("host") or ""),
+            port=int(relay_raw.get("port") or 587),
+            username=str(relay_raw.get("username") or ""),
+            password_env=str(
+                relay_raw.get("password_env") or "TRASHPANDA_SMTP_RELAY_PASSWORD"
+            ),
+            use_starttls=bool(relay_raw.get("use_starttls", True)),
+        ),
         return_path_domain=str(raw.get("return_path_domain") or ""),
         wait_window_hours=int(
             raw.get("wait_window_hours") or DEFAULT_WAIT_WINDOW_HOURS
@@ -156,6 +193,7 @@ __all__ = [
     "IMAPCredentials",
     "PilotMessageTemplate",
     "PilotSendConfig",
+    "RelayConfig",
     "read_pilot_config",
     "write_pilot_config",
 ]
