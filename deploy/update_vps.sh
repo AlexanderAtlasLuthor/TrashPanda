@@ -13,6 +13,8 @@ set -euo pipefail
 REPO_DIR="${REPO_DIR:-/root/trashpanda}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 SERVICE_NAME="trashpanda-backend"
+RETRY_UNIT="trashpanda-retry-worker"
+POLLER_UNIT="trashpanda-pilot-bounce-poller"
 
 log() { printf '\033[1;32m[update]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[update]\033[0m %s\n' "$*" >&2; }
@@ -36,16 +38,40 @@ log "refreshing python dependencies"
 "${REPO_DIR}/.venv/bin/pip" install --upgrade pip wheel >/dev/null
 "${REPO_DIR}/.venv/bin/pip" install -r "${REPO_DIR}/requirements.txt"
 
-# Re-install systemd unit in case it changed.
-if ! diff -q \
-    "${REPO_DIR}/deploy/trashpanda-backend.service" \
-    "/etc/systemd/system/${SERVICE_NAME}.service" >/dev/null 2>&1; then
-    log "systemd unit changed — reinstalling"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/trashpanda-backend.service" \
-        "/etc/systemd/system/${SERVICE_NAME}.service"
+# Re-install systemd units (backend + both timer pairs) when any of
+# them have changed in the repo. ``daemon-reload`` only fires once
+# per update; idempotent so re-runs are cheap.
+units_changed=0
+sync_unit() {
+    local src="$1" dst="$2"
+    if ! diff -q "$src" "$dst" >/dev/null 2>&1; then
+        log "  unit changed: $(basename "$dst")"
+        install -m 0644 "$src" "$dst"
+        units_changed=1
+    fi
+}
+
+sync_unit "${REPO_DIR}/deploy/trashpanda-backend.service" \
+          "/etc/systemd/system/${SERVICE_NAME}.service"
+sync_unit "${REPO_DIR}/deploy/${RETRY_UNIT}.service" \
+          "/etc/systemd/system/${RETRY_UNIT}.service"
+sync_unit "${REPO_DIR}/deploy/${RETRY_UNIT}.timer" \
+          "/etc/systemd/system/${RETRY_UNIT}.timer"
+sync_unit "${REPO_DIR}/deploy/${POLLER_UNIT}.service" \
+          "/etc/systemd/system/${POLLER_UNIT}.service"
+sync_unit "${REPO_DIR}/deploy/${POLLER_UNIT}.timer" \
+          "/etc/systemd/system/${POLLER_UNIT}.timer"
+
+if [[ "${units_changed}" -eq 1 ]]; then
+    log "reloading systemd"
     systemctl daemon-reload
 fi
+
+# Make sure the timers are enabled even on hosts that were installed
+# before this script learned about them. ``enable --now`` is
+# idempotent: a no-op if already enabled+started.
+systemctl enable --now "${RETRY_UNIT}.timer" >/dev/null
+systemctl enable --now "${POLLER_UNIT}.timer" >/dev/null
 
 log "restarting ${SERVICE_NAME}"
 systemctl restart "${SERVICE_NAME}"

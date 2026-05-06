@@ -23,6 +23,8 @@ REPO_URL="${REPO_URL:-https://github.com/AlexanderAtlasLuthor/TrashPanda}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 REPO_DIR="${REPO_DIR:-/root/trashpanda}"
 SERVICE_NAME="trashpanda-backend"
+RETRY_UNIT="trashpanda-retry-worker"
+POLLER_UNIT="trashpanda-pilot-bounce-poller"
 ENV_DIR="/etc/trashpanda"
 ENV_FILE="${ENV_DIR}/backend.env"
 
@@ -95,14 +97,39 @@ else
     log "${ENV_FILE} already exists — leaving operator token unchanged"
 fi
 
-# ---- 6. systemd unit ---------------------------------------------------- #
-log "installing systemd unit"
+# ---- 6. systemd units --------------------------------------------------- #
+log "installing systemd units (backend + retry timer + bounce poller timer)"
 install -m 0644 \
     "${REPO_DIR}/deploy/trashpanda-backend.service" \
     "/etc/systemd/system/${SERVICE_NAME}.service"
+install -m 0644 \
+    "${REPO_DIR}/deploy/${RETRY_UNIT}.service" \
+    "/etc/systemd/system/${RETRY_UNIT}.service"
+install -m 0644 \
+    "${REPO_DIR}/deploy/${RETRY_UNIT}.timer" \
+    "/etc/systemd/system/${RETRY_UNIT}.timer"
+install -m 0644 \
+    "${REPO_DIR}/deploy/${POLLER_UNIT}.service" \
+    "/etc/systemd/system/${POLLER_UNIT}.service"
+install -m 0644 \
+    "${REPO_DIR}/deploy/${POLLER_UNIT}.timer" \
+    "/etc/systemd/system/${POLLER_UNIT}.timer"
 systemctl daemon-reload
+
+# Backend: long-running web service.
 systemctl enable "${SERVICE_NAME}"
 systemctl restart "${SERVICE_NAME}"
+
+# Timers fire the oneshot .service units; the timers are what we
+# enable, not the underlying .service. ``--now`` both enables for
+# next boot AND starts the timer immediately.
+systemctl enable --now "${RETRY_UNIT}.timer"
+systemctl enable --now "${POLLER_UNIT}.timer"
+
+log "installed timers (cadence: see *.timer files):"
+systemctl list-timers --no-pager --no-legend \
+    "${RETRY_UNIT}.timer" "${POLLER_UNIT}.timer" \
+    || true
 
 # ---- 7. Smoke check ----------------------------------------------------- #
 log "waiting for /healthz to come up"
@@ -120,5 +147,7 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
 done
 
 log "done. backend is running on 127.0.0.1:8000."
+log "retry worker timer:  active=$(systemctl is-active ${RETRY_UNIT}.timer)"
+log "bounce poller timer: active=$(systemctl is-active ${POLLER_UNIT}.timer)"
 log "open the SSH tunnel from your laptop:"
 log "  ssh -N -L 8001:127.0.0.1:8000 root@<vps_ip>"
