@@ -70,7 +70,8 @@ def _stub_run_chunk(success_per_chunk: dict[int, tuple[int, int, int]]):
     (chunk_index → (clean, removed, review))."""
     call_log: list[tuple[Path, Path]] = []
 
-    def _stub(chunk_input: Path, run_dir: Path, *, extra_env=None):
+    def _stub(chunk_input: Path, run_dir: Path, *, extra_env=None,
+              cancel_event=None, poll_interval=None):
         call_log.append((chunk_input, run_dir))
         # Find the chunk index from the file name (`*_part_<i>.csv`).
         idx = int(chunk_input.stem.split("_part_")[-1])
@@ -116,21 +117,24 @@ class TestSplitCsv:
         _write_csv(src, n_rows=100)
         out = tmp_path / "chunks"
         chunks = acc._split_csv(src, chunk_size=30, out_dir=out)
-        assert [p.name for p in chunks] == [
+        # New shape: list[(Path, row_count)].
+        assert [p.name for p, _ in chunks] == [
             "input_part_1.csv", "input_part_2.csv",
             "input_part_3.csv", "input_part_4.csv",
         ]
-        # First three chunks have 30 rows, last has 10.
-        sizes = []
-        for p in chunks:
-            with p.open("r") as fh:
-                sizes.append(sum(1 for _ in fh) - 1)  # minus header
-        assert sizes == [30, 30, 30, 10]
+        # The returned row counts match what's actually in each file.
+        assert [n for _, n in chunks] == [30, 30, 30, 10]
         # Header preserved on every chunk.
-        for p in chunks:
+        for p, _ in chunks:
             with p.open("r") as fh:
                 first = next(csv.reader(fh))
             assert first == ["email"]
+        # And on disk, each chunk has exactly its declared rows.
+        sizes = []
+        for p, _ in chunks:
+            with p.open("r") as fh:
+                sizes.append(sum(1 for _ in fh) - 1)  # minus header
+        assert sizes == [30, 30, 30, 10]
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +155,8 @@ class TestBelowThreshold:
         # the index parser would fail on that name, so we patch
         # _read_bundle_counts directly to return canned counts and
         # patch run_chunk to just create the bundle in the out_dir.
-        def _direct_run(src_path, run_dir, *, extra_env=None):
+        def _direct_run(src_path, run_dir, *, extra_env=None,
+                        cancel_event=None, poll_interval=None):
             _fake_bundle(run_dir, clean=80, removed=15, review=5)
             return 0, "ok"
 
@@ -312,6 +317,174 @@ class TestResume:
 # ---------------------------------------------------------------------------
 # State file shape (Fase 2 contract)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# --max-parallel
+# ---------------------------------------------------------------------------
+
+
+class TestMaxParallel:
+    def test_parallel_runs_all_chunks_and_merges(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        src = tmp_path / "input.csv"
+        _write_csv(src, n_rows=100)
+        out = tmp_path / "out"
+        stub = _stub_run_chunk({
+            1: (20, 4, 1), 2: (22, 2, 1), 3: (21, 3, 1), 4: (23, 1, 1),
+        })
+        monkeypatch.setattr(acc, "run_chunk", stub)
+
+        opts = acc.OrchestratorOptions(
+            input_file=src, output_dir=out,
+            chunk_size=25, threshold_rows=50,
+            max_parallel=4,
+        )
+        state = acc.run(opts)
+
+        assert state.status == acc.BATCH_COMPLETED
+        # All 4 ran.
+        assert sum(1 for c in state.chunks if c.status == acc.CHUNK_COMPLETED) == 4
+        assert state.merged_counts["clean_deliverable"] == 86
+
+    def test_parallel_strict_aborts_on_chunk_failure(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        src = tmp_path / "input.csv"
+        _write_csv(src, n_rows=100)
+        out = tmp_path / "out"
+        # Chunk 2 fails. The remaining chunks may or may not have
+        # completed by the time the failure is observed, but the
+        # batch must end FAILED.
+        import time as _time
+
+        def _slow_stub(chunk_input, run_dir, *, extra_env=None,
+                       cancel_event=None, poll_interval=None):
+            idx = int(chunk_input.stem.split("_part_")[-1])
+            if idx == 2:
+                return 1, "boom"
+            # Tiny sleep so other chunks haven't finished yet when 2 fails.
+            _time.sleep(0.05)
+            if cancel_event is not None and cancel_event.is_set():
+                return -1, "cancelled"
+            _fake_bundle(run_dir, clean=10, removed=2, review=1, chunk_index=idx)
+            return 0, "ok"
+
+        monkeypatch.setattr(acc, "run_chunk", _slow_stub)
+
+        opts = acc.OrchestratorOptions(
+            input_file=src, output_dir=out,
+            chunk_size=25, threshold_rows=50,
+            max_parallel=4, allow_partial=False,
+        )
+        state = acc.run(opts)
+
+        assert state.status == acc.BATCH_FAILED
+        # Chunk 2 is failed. Strict mode → no merge.
+        assert state.merged_counts is None
+
+
+# ---------------------------------------------------------------------------
+# Cancellation
+# ---------------------------------------------------------------------------
+
+
+class TestCancellation:
+    def test_cancel_event_skips_pending_chunks(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        import threading as _threading
+
+        src = tmp_path / "input.csv"
+        _write_csv(src, n_rows=100)
+        out = tmp_path / "out"
+        cancel = _threading.Event()
+
+        # Stub: chunk 1 completes normally; before chunk 2 starts we
+        # set the cancel event. Chunks 2-4 should be marked failed
+        # with "cancelled before start".
+        def _stub(chunk_input, run_dir, *, extra_env=None,
+                  cancel_event=None, poll_interval=None):
+            idx = int(chunk_input.stem.split("_part_")[-1])
+            if idx == 1:
+                _fake_bundle(run_dir, clean=10, removed=2, review=1,
+                             chunk_index=idx)
+                cancel.set()  # signal cancellation after chunk 1
+                return 0, "ok"
+            # Should never reach here for idx 2-4 because the orchestrator
+            # checks the cancel event before starting each chunk.
+            _fake_bundle(run_dir, clean=10, removed=2, review=1,
+                         chunk_index=idx)
+            return 0, "ok"
+
+        monkeypatch.setattr(acc, "run_chunk", _stub)
+
+        opts = acc.OrchestratorOptions(
+            input_file=src, output_dir=out,
+            chunk_size=25, threshold_rows=50,
+            max_parallel=1, allow_partial=True,
+            cancel_event=cancel,
+        )
+        state = acc.run(opts)
+
+        # Chunk 1 succeeded; 2-4 failed with "cancelled before start".
+        assert state.chunks[0].status == acc.CHUNK_COMPLETED
+        for ck in state.chunks[1:]:
+            assert ck.status == acc.CHUNK_FAILED
+            assert ck.error and "cancelled" in ck.error.lower()
+
+
+# ---------------------------------------------------------------------------
+# Stdout format (Fase 1 contract — operator sees per-chunk events)
+# ---------------------------------------------------------------------------
+
+
+class TestStdoutFormat:
+    def test_emits_per_chunk_split_and_run_lines(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ):
+        src = tmp_path / "input.csv"
+        _write_csv(src, n_rows=100)
+        out = tmp_path / "out"
+        stub = _stub_run_chunk({
+            1: (20, 4, 1), 2: (21, 3, 1), 3: (22, 2, 1), 4: (23, 1, 1),
+        })
+        monkeypatch.setattr(acc, "run_chunk", stub)
+
+        opts = acc.OrchestratorOptions(
+            input_file=src, output_dir=out,
+            chunk_size=25, threshold_rows=50,
+        )
+        acc.run(opts)
+
+        out_text = capsys.readouterr().out
+        lines = out_text.splitlines()
+
+        import re
+        # Header line.
+        assert any(
+            re.match(r"^auto_chunked_clean: input=.+ rows=\d", line)
+            for line in lines
+        )
+        # One split line per chunk.
+        split_lines = [l for l in lines if re.search(r"^\[\d+/4\] split:", l)]
+        assert len(split_lines) == 4
+        for i, line in enumerate(split_lines, start=1):
+            assert re.match(
+                rf"^\[{i}/4\] split: \S+ \(\d+ rows\)$", line,
+            ), line
+        # One start + one done per chunk.
+        assert sum(1 for l in lines if re.search(r"^\[\d+/4\] start:", l)) == 4
+        assert sum(1 for l in lines if re.search(r"^\[\d+/4\] done:", l)) == 4
+        # Merge lines.
+        assert any(re.match(r"^merge: 4 bundles?", l) for l in lines)
+        assert any(
+            re.match(r"^merge: [\d,]+ clean / [\d,]+ review / [\d,]+ removed", l)
+            for l in lines
+        )
+        # ok line at the end.
+        assert any(l.startswith("ok: status=") for l in lines)
 
 
 class TestStateFileContract:
