@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   getJob,
@@ -80,6 +81,21 @@ interface ResultsClientProps {
  *   null              -> 404 copy
  */
 export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
+  const router = useRouter();
+  const isBatch = jobId.startsWith("batch_");
+
+  // V2.10.18 — auto-chunked batches use /batches/<id> as their
+  // canonical surface. If someone lands on /results/batch_xxx
+  // (e.g. a stale link or shared URL), redirect them to the
+  // batch view so the URL matches what they're looking at.
+  // The check fires in useEffect (after mount) — placement here
+  // keeps the React hook-order rules happy when isBatch flips.
+  useEffect(() => {
+    if (isBatch) {
+      router.replace(`/batches/${encodeURIComponent(jobId)}`);
+    }
+  }, [isBatch, jobId, router]);
+
   const [job, setJob] = useState<JobResult | null>(initialJob);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [logLines, setLogLines] = useState<string[]>([]);
@@ -246,6 +262,17 @@ export function ResultsClient({ jobId, initialJob }: ResultsClientProps) {
       })
       .catch(() => {});
   };
+
+  // Batch IDs hit /batches/<id> instead of rendering the job UI.
+  // The redirect is fired in useEffect above; this conditional
+  // render covers the brief moment before the navigation lands.
+  if (isBatch) {
+    return (
+      <div style={{ padding: "2rem", color: "#a1a1aa" }}>
+        Redirecting to batch view…
+      </div>
+    );
+  }
 
   return (
     <>

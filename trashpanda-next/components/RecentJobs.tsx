@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getJobList } from "@/lib/api";
-import type { JobListItem } from "@/lib/types";
+import { getJobList, listBatches } from "@/lib/api";
+import type { BatchProgress, JobListItem } from "@/lib/types";
 import styles from "./RecentJobs.module.css";
 
 const POLL_MS = 3000;
@@ -91,6 +91,7 @@ function FileIcon({ filename }: { filename: string }) {
 
 export function RecentJobs() {
   const [jobs, setJobs] = useState<JobListItem[] | null>(null);
+  const [batches, setBatches] = useState<BatchProgress[] | null>(null);
   const jobsRef = useRef<JobListItem[] | null>(null);
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(() => new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -118,13 +119,33 @@ export function RecentJobs() {
     const poll = async () => {
       if (cancelled) return;
       try {
-        const data = await getJobList(20);
+        // Fetch jobs and batches in parallel; one failing shouldn't
+        // block the other from rendering. Each branch tolerates its
+        // own error.
+        const [jobsResult, batchesResult] = await Promise.allSettled([
+          getJobList(20),
+          listBatches(),
+        ]);
         if (cancelled) return;
-        jobsRef.current = data.jobs;
-        setJobs(data.jobs);
-        if (data.jobs.some((j) => isActive(j.status))) {
-          schedule(POLL_MS);
+        let anyActive = false;
+        if (jobsResult.status === "fulfilled") {
+          jobsRef.current = jobsResult.value.jobs;
+          setJobs(jobsResult.value.jobs);
+          if (jobsResult.value.jobs.some((j) => isActive(j.status))) {
+            anyActive = true;
+          }
         }
+        if (batchesResult.status === "fulfilled") {
+          setBatches(batchesResult.value.batches);
+          if (
+            batchesResult.value.batches.some(
+              (b) => b.status === "running" || b.status === "queued",
+            )
+          ) {
+            anyActive = true;
+          }
+        }
+        if (anyActive) schedule(POLL_MS);
       } catch {
         if (!cancelled) schedule(POLL_MS);
       }
@@ -223,7 +244,78 @@ export function RecentJobs() {
       )}
 
       {toastOpen && <ClearToast message="Job history cleared" />}
+
+      {batches && batches.length > 0 && (
+        <BatchesSection batches={batches} />
+      )}
     </section>
+  );
+}
+
+// ── Recent batches section (V2.10.18 auto-chunked jobs) ────────────────────
+
+function BatchesSection({ batches }: { batches: BatchProgress[] }) {
+  // Newest first.
+  const ordered = useMemo(
+    () => [...batches].reverse(),
+    [batches],
+  );
+
+  return (
+    <div style={{ marginTop: 24 }}>
+      <div className={styles.sectionHead}>
+        <span className={styles.sectionTitle}>Recent Batches</span>
+        <span className={styles.count}>
+          {ordered.length} batch{ordered.length !== 1 ? "es" : ""}
+        </span>
+      </div>
+      <div className={styles.list}>
+        {ordered.map((b) => (
+          <BatchRow key={b.batch_id} batch={b} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BatchRow({ batch }: { batch: BatchProgress }) {
+  const href = `/batches/${encodeURIComponent(batch.batch_id)}`;
+  const filename = batch.batch_id;
+  // Map BatchStatus → JobListItem-compatible pill labels for visual reuse.
+  const pillStatus: JobListItem["status"] =
+    batch.status === "completed"
+      ? "completed"
+      : batch.status === "failed" || batch.status === "partial_failure"
+        ? "failed"
+        : batch.status === "running"
+          ? "running"
+          : "queued";
+  return (
+    <div className={styles.row}>
+      <FileIcon filename="batch.csv" />
+      <div className={styles.info}>
+        <div className={styles.filename}>{filename}</div>
+        <div className={styles.meta}>
+          <span>{formatRelativeDate(batch.started_at ?? null)}</span>
+          <span className={styles.metaSep}>·</span>
+          <span>
+            {batch.n_completed}/{batch.n_chunks} chunks
+          </span>
+          {batch.merged_counts && (
+            <>
+              <span className={styles.metaSep}>·</span>
+              <span>
+                {batch.merged_counts.clean_deliverable.toLocaleString()} clean
+              </span>
+            </>
+          )}
+        </div>
+      </div>
+      <StatusPill status={pillStatus} />
+      <Link href={href} className={styles.viewBtn}>
+        VIEW →
+      </Link>
+    </div>
   );
 }
 

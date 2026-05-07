@@ -2,11 +2,19 @@
 
 import { useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { uploadFile, ApiError } from "@/lib/api";
+import { ApiError, uploadBatch, uploadFile } from "@/lib/api";
 import styles from "./UploadDropzone.module.css";
 
 const ACCEPTED_EXTENSIONS = [".csv", ".xlsx"] as const;
-const MAX_SIZE = 100 * 1024 * 1024;
+const MAX_SIZE = 200 * 1024 * 1024;
+
+// V2.10.18 — files this large or larger are auto-routed to the
+// /batches/upload path (auto-chunked, OOM-safe). 7 MB is a
+// conservative heuristic: ~50k rows at ~150 B/row. The backend
+// re-counts rows server-side and falls through to the single-job
+// path if the actual count is below threshold_rows, so the
+// classification is always correct.
+const BATCH_THRESHOLD_BYTES = 7 * 1024 * 1024;
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -104,6 +112,16 @@ export function UploadDropzone({
     setSubmitting(true);
     setError(null);
     try {
+      // Large files take the auto-chunked batch path. The backend
+      // re-counts rows and falls through to a single-job run when
+      // the file is actually small (e.g. wide CSV columns); the
+      // routing decision here is just the heuristic to avoid the
+      // OOM-prone single-job path for clearly-large inputs.
+      if (file.size >= BATCH_THRESHOLD_BYTES) {
+        const { batch_id } = await uploadBatch(file);
+        router.push(`/batches/${encodeURIComponent(batch_id)}`);
+        return;
+      }
       const trimmedConfig = configPath?.trim();
       const { job_id } = await (trimmedConfig
         ? uploadFile(file, { config_path: trimmedConfig })
@@ -154,7 +172,7 @@ export function UploadDropzone({
             <div className={styles.sub}>
               Drop <span className={styles.key}>.csv</span>
               <span className={styles.key}>.xlsx</span> &nbsp;·&nbsp; up to
-              100 MB
+              200 MB &nbsp;·&nbsp; large files auto-batch
             </div>
           </div>
           <button
@@ -201,8 +219,20 @@ export function UploadDropzone({
             disabled={submitting}
             type="button"
           >
-            {submitting ? "STARTING..." : (ctaLabel ?? "START CLEANING")}
+            {submitting
+              ? "STARTING..."
+              : file.size >= BATCH_THRESHOLD_BYTES
+                ? "START BATCH"
+                : (ctaLabel ?? "START CLEANING")}
           </button>
+        </div>
+      )}
+
+      {file && file.size >= BATCH_THRESHOLD_BYTES && (
+        <div className={styles.batchBanner}>
+          <strong>Large file detected ({formatBytes(file.size)}).</strong>{" "}
+          This will be auto-split into chunks and processed as a batch
+          (OOM-safe). You'll see per-chunk progress on the next page.
         </div>
       )}
 

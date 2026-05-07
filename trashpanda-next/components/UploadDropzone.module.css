@@ -232,6 +232,21 @@
   border: 0;
 }
 
+.batchBanner {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: #1e3a8a;
+  color: #bfdbfe;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.batchBanner strong {
+  color: #fff;
+  font-weight: 600;
+}
+
 @media (max-width: 720px) {
   .dropzone {
     grid-template-columns: 1fr;
