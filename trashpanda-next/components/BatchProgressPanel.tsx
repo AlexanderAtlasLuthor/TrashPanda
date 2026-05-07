@@ -15,7 +15,11 @@
 
 import { useEffect, useState } from "react";
 
-import { batchBundleDownloadUrl, getBatchStatusDoc } from "@/lib/api";
+import {
+  batchBundleDownloadUrl,
+  cancelBatch,
+  getBatchStatusDoc,
+} from "@/lib/api";
 import type {
   BatchChunkState,
   BatchStatusDoc,
@@ -68,6 +72,7 @@ export default function BatchProgressPanel({
 }: BatchProgressPanelProps) {
   const [doc, setDoc] = useState<BatchStatusDoc | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -236,6 +241,34 @@ export default function BatchProgressPanel({
         >
           Download merged bundle
         </a>
+        {!isTerminal && (
+          <button
+            type="button"
+            className={styles.actionBtn}
+            style={{ background: "#7f1d1d" }}
+            disabled={cancelling}
+            onClick={async () => {
+              if (cancelling) return;
+              const ok = window.confirm(
+                "Cancel this batch? In-flight chunks will be terminated " +
+                  "and pending chunks will be skipped.",
+              );
+              if (!ok) return;
+              setCancelling(true);
+              try {
+                await cancelBatch(batchId);
+              } catch (err) {
+                setError(
+                  err instanceof Error ? err.message : "Cancel failed.",
+                );
+              } finally {
+                setCancelling(false);
+              }
+            }}
+          >
+            {cancelling ? "Cancelling…" : "Cancel batch"}
+          </button>
+        )}
       </div>
     </div>
   );

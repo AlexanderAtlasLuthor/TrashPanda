@@ -75,7 +75,17 @@ class BatchHandle:
 
 @dataclass(frozen=True, slots=True)
 class BatchProgress:
-    """Lightweight aggregate snapshot for the polling endpoint."""
+    """Lightweight aggregate snapshot for the polling endpoint.
+
+    ``current_chunk_phase`` and ``current_chunk_progress_percent``
+    are reserved for intra-chunk telemetry. Today the orchestrator
+    runs each chunk as an opaque subprocess that only emits a final
+    JSON summary, so these fields are always ``None``. Future work
+    can populate them by parsing defensive_clean's stdout or by
+    having defensive_clean write a per-job progress file the
+    orchestrator polls. The field is kept on the schema NOW so the
+    UI can render against the stable contract.
+    """
 
     batch_id: str
     status: str
@@ -85,6 +95,8 @@ class BatchProgress:
     n_running: int
     n_pending: int
     current_chunk_index: int | None
+    current_chunk_phase: str | None
+    current_chunk_progress_percent: int | None
     merged_counts: dict | None
     started_at: str | None
     completed_at: str | None
@@ -100,6 +112,9 @@ class BatchProgress:
             "n_running": self.n_running,
             "n_pending": self.n_pending,
             "current_chunk_index": self.current_chunk_index,
+            "current_chunk_phase": self.current_chunk_phase,
+            "current_chunk_progress_percent":
+                self.current_chunk_progress_percent,
             "merged_counts": self.merged_counts,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
@@ -139,6 +154,8 @@ def _aggregate(batch_id: str, status_doc: dict | None) -> BatchProgress:
             n_chunks=0, n_completed=0, n_failed=0,
             n_running=0, n_pending=0,
             current_chunk_index=None,
+            current_chunk_phase=None,
+            current_chunk_progress_percent=None,
             merged_counts=None,
             started_at=None,
             completed_at=None,
@@ -163,6 +180,11 @@ def _aggregate(batch_id: str, status_doc: dict | None) -> BatchProgress:
         n_running=n_running,
         n_pending=n_pending,
         current_chunk_index=current_idx,
+        # Intra-chunk telemetry not available today (the orchestrator
+        # treats each chunk as an opaque subprocess). Reserved for
+        # future enhancement; UI must already accept null.
+        current_chunk_phase=None,
+        current_chunk_progress_percent=None,
         merged_counts=status_doc.get("merged_counts"),
         started_at=status_doc.get("started_at"),
         completed_at=status_doc.get("completed_at"),
@@ -182,6 +204,8 @@ def _run_orchestrator_in_thread(
     threshold_rows: int,
     allow_partial: bool,
     cleanup: bool,
+    max_parallel: int,
+    cancel_event: threading.Event,
 ) -> None:
     """Body of the worker thread. Imports ``auto_chunked_clean``
     lazily so the import cost doesn't pay on every FastAPI startup."""
@@ -198,6 +222,8 @@ def _run_orchestrator_in_thread(
             threshold_rows=threshold_rows,
             allow_partial=allow_partial,
             cleanup=cleanup,
+            max_parallel=max_parallel,
+            cancel_event=cancel_event,
         )
         run_orchestrator(opts)
     except Exception as exc:  # pragma: no cover - defensive
@@ -230,11 +256,18 @@ class BatchStore:
     Threaded launches stash their handle here so the HTTP layer can
     look them up by id. Persistence on disk is the source of truth;
     this is a cache that survives only the FastAPI process lifetime.
+
+    ``_cancel_events`` is also in-memory: a process restart loses the
+    ability to cancel batches that were running before the restart.
+    Those are reaped as ``failed`` by ``reap_orphans`` at startup, so
+    no batch is left in a state where the UI thinks it can cancel
+    something that's no longer cancellable.
     """
 
     runtime_root: Path
     _handles: dict[str, BatchHandle] = field(default_factory=dict)
     _threads: dict[str, threading.Thread] = field(default_factory=dict)
+    _cancel_events: dict[str, threading.Event] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     @property
@@ -250,6 +283,7 @@ class BatchStore:
         threshold_rows: int = 50_000,
         allow_partial: bool = False,
         cleanup: bool = False,
+        max_parallel: int = 1,
     ) -> BatchHandle:
         """Persist the upload, write a placeholder status file, and
         spawn the orchestrator thread. Returns immediately."""
@@ -292,6 +326,8 @@ class BatchStore:
             created_at=_utcnow(),
         )
 
+        cancel_event = threading.Event()
+
         thread = threading.Thread(
             target=_run_orchestrator_in_thread,
             kwargs={
@@ -300,6 +336,8 @@ class BatchStore:
                 "threshold_rows": threshold_rows,
                 "allow_partial": allow_partial,
                 "cleanup": cleanup,
+                "max_parallel": max_parallel,
+                "cancel_event": cancel_event,
             },
             name=f"batch-{batch_id}",
             daemon=True,
@@ -308,8 +346,38 @@ class BatchStore:
         with self._lock:
             self._handles[batch_id] = handle
             self._threads[batch_id] = thread
+            self._cancel_events[batch_id] = cancel_event
         thread.start()
         return handle
+
+    def cancel(self, batch_id: str) -> str:
+        """Request cancellation of a running batch.
+
+        Returns one of:
+        * ``"requested"``  — cancellation signalled; orchestrator
+          will skip pending chunks and terminate any in-flight
+          subprocess.
+        * ``"unknown"``    — batch not found.
+        * ``"terminal"``   — batch already finished (completed /
+          failed / partial_failure); nothing to cancel.
+        * ``"unmanaged"``  — batch exists on disk but its cancel
+          event is not in this process (e.g. after a restart).
+          Caller should use the orphan-reap path instead.
+        """
+        handle = self.get(batch_id)
+        if handle is None:
+            return "unknown"
+        progress = self.progress(batch_id)
+        if progress is not None and progress.status in {
+            BATCH_COMPLETED, BATCH_FAILED, BATCH_PARTIAL_FAILURE,
+        }:
+            return "terminal"
+        with self._lock:
+            event = self._cancel_events.get(batch_id)
+        if event is None:
+            return "unmanaged"
+        event.set()
+        return "requested"
 
     def get(self, batch_id: str) -> BatchHandle | None:
         with self._lock:

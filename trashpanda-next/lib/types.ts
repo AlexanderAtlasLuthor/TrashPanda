@@ -22,7 +22,14 @@ export interface BatchMergedCounts {
   high_risk_removed: number;
 }
 
-/** Lightweight aggregate the UI polls every few seconds. */
+/**
+ * Lightweight aggregate the UI polls every few seconds.
+ *
+ * ``current_chunk_phase`` / ``current_chunk_progress_percent`` are
+ * always ``null`` today (the orchestrator treats each chunk as an
+ * opaque subprocess). They are part of the contract NOW so the UI
+ * can render against the stable shape; future work hydrates them.
+ */
 export interface BatchProgress {
   batch_id: string;
   status: BatchStatus;
@@ -32,6 +39,8 @@ export interface BatchProgress {
   n_running: number;
   n_pending: number;
   current_chunk_index: number | null;
+  current_chunk_phase: string | null;
+  current_chunk_progress_percent: number | null;
   merged_counts: BatchMergedCounts | null;
   started_at: string | null;
   completed_at: string | null;

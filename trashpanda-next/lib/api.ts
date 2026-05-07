@@ -128,6 +128,22 @@ export function batchBundleDownloadUrl(batchId: string): string {
   return `/api/batches/${encodeURIComponent(batchId)}/customer-bundle`;
 }
 
+export interface BatchCancelResponse {
+  batch_id: string;
+  cancel: "requested";
+  progress: BatchProgress | null;
+}
+
+export async function cancelBatch(
+  batchId: string,
+): Promise<BatchCancelResponse> {
+  const res = await fetch(
+    `/api/batches/${encodeURIComponent(batchId)}/cancel`,
+    { method: "POST" },
+  );
+  return handleResponse<BatchCancelResponse>(res);
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,

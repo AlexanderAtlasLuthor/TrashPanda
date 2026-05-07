@@ -179,6 +179,61 @@ class TestListEndpoint:
 # ---------------------------------------------------------------------------
 
 
+class TestCancelEndpoint:
+    def test_404_when_batch_unknown(self, client: TestClient):
+        res = client.post("/batches/does_not_exist/cancel")
+        assert res.status_code == 404
+
+    def test_409_when_batch_already_terminal(self, client: TestClient):
+        res = client.post(
+            "/batches/upload",
+            files={"file": ("x.csv", b"email\nu@x.com\n", "text/csv")},
+        )
+        batch_id = res.json()["batch_id"]
+        _wait_for_status(client, batch_id, "completed")
+
+        res = client.post(f"/batches/{batch_id}/cancel")
+        assert res.status_code == 409
+
+    def test_202_signals_running_batch(
+        self, client: TestClient, monkeypatch,
+    ):
+        from scripts import auto_chunked_clean as acc
+        from app import batches as batches_mod
+
+        # Override the stub: orchestrator stays "running" until cancel.
+        def _running(opts):
+            (opts.output_dir / batches_mod.STATUS_FILENAME).write_text(
+                json.dumps({"status": "running", "chunks": []}),
+                encoding="utf-8",
+            )
+            assert opts.cancel_event is not None
+            opts.cancel_event.wait(timeout=3.0)
+            (opts.output_dir / batches_mod.STATUS_FILENAME).write_text(
+                json.dumps({
+                    "status": "failed", "chunks": [],
+                    "error": "cancelled",
+                }),
+                encoding="utf-8",
+            )
+
+        monkeypatch.setattr(acc, "run", _running)
+
+        res = client.post(
+            "/batches/upload",
+            files={"file": ("x.csv", b"email\nu@x.com\n", "text/csv")},
+        )
+        batch_id = res.json()["batch_id"]
+        # Worker has entered the wait by now.
+        time.sleep(0.05)
+
+        res = client.post(f"/batches/{batch_id}/cancel")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["batch_id"] == batch_id
+        assert body["cancel"] == "requested"
+
+
 class TestBundleDownload:
     def test_404_when_batch_unknown(self, client: TestClient):
         res = client.get("/batches/nope/customer-bundle/download")

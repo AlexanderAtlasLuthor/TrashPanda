@@ -242,6 +242,125 @@ class TestBundleDir:
 # ---------------------------------------------------------------------------
 
 
+class TestSchemaContract:
+    """Pin the BatchProgress shape so the UI's stable contract
+    survives refactors. Includes the reserved-for-future
+    ``current_chunk_phase`` / ``current_chunk_progress_percent``
+    fields."""
+
+    def test_progress_dict_has_all_expected_keys(self, store, monkeypatch):
+        from scripts import auto_chunked_clean as acc
+        monkeypatch.setattr(acc, "run", _stub_orchestrator(None))
+        handle = store.launch(
+            input_bytes=b"email\n", input_filename="a.csv",
+        )
+        _write_status(handle, {
+            "started_at": "2026-05-06T20:00:00Z",
+            "completed_at": None,
+            "input_file": str(handle.input_path),
+            "input_format": "csv",
+            "total_rows": 100,
+            "threshold_rows": 50,
+            "chunk_size": 25,
+            "status": "running",
+            "chunks": [],
+            "merged_at": None,
+            "merged_counts": None,
+            "error": None,
+        })
+        progress = store.progress(handle.batch_id)
+        assert progress is not None
+        d = progress.to_dict()
+        assert {
+            "batch_id", "status", "n_chunks",
+            "n_completed", "n_failed", "n_running", "n_pending",
+            "current_chunk_index",
+            "current_chunk_phase",
+            "current_chunk_progress_percent",
+            "merged_counts",
+            "started_at", "completed_at", "error",
+        } == set(d.keys())
+        # Today these two are always None — but they're part of the
+        # contract.
+        assert d["current_chunk_phase"] is None
+        assert d["current_chunk_progress_percent"] is None
+
+
+class TestCancel:
+    def test_cancel_unknown_batch(self, store):
+        assert store.cancel("nope") == "unknown"
+
+    def test_cancel_terminal_batch_is_noop(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        from scripts import auto_chunked_clean as acc
+
+        # Stub: orchestrator writes a "completed" status immediately.
+        def _stub(opts):
+            (opts.output_dir / batches_mod.STATUS_FILENAME).write_text(
+                json.dumps({"status": "completed", "chunks": []}),
+                encoding="utf-8",
+            )
+
+        monkeypatch.setattr(acc, "run", _stub)
+
+        store = batches_mod.BatchStore(runtime_root=tmp_path)
+        handle = store.launch(
+            input_bytes=b"email\n", input_filename="a.csv",
+        )
+        # Wait for the worker to settle.
+        for _ in range(50):
+            progress = store.progress(handle.batch_id)
+            if progress and progress.status == "completed":
+                break
+            time.sleep(0.02)
+        assert store.cancel(handle.batch_id) == "terminal"
+
+    def test_cancel_running_batch_signals_event(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        from scripts import auto_chunked_clean as acc
+
+        # Stub: orchestrator writes "running" then BLOCKS until the
+        # cancel event is set, simulating a long-running chunk.
+        def _stub(opts):
+            (opts.output_dir / batches_mod.STATUS_FILENAME).write_text(
+                json.dumps({"status": "running", "chunks": []}),
+                encoding="utf-8",
+            )
+            assert opts.cancel_event is not None
+            # Wait for the cancel; then mark cancelled.
+            opts.cancel_event.wait(timeout=2.0)
+            (opts.output_dir / batches_mod.STATUS_FILENAME).write_text(
+                json.dumps({
+                    "status": "failed",
+                    "chunks": [],
+                    "error": "cancelled",
+                }),
+                encoding="utf-8",
+            )
+
+        monkeypatch.setattr(acc, "run", _stub)
+
+        store = batches_mod.BatchStore(runtime_root=tmp_path)
+        handle = store.launch(
+            input_bytes=b"email\n", input_filename="a.csv",
+        )
+        # Give the worker a moment to enter the wait.
+        time.sleep(0.05)
+        result = store.cancel(handle.batch_id)
+        assert result == "requested"
+        # The worker should observe the event and write the "failed"
+        # status shortly after.
+        for _ in range(100):
+            doc = store.status_doc(handle.batch_id)
+            if doc and doc.get("status") == "failed":
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("worker did not observe cancel signal")
+
+
 class TestOrphanReap:
     def test_marks_running_batch_as_failed_when_no_thread(
         self, tmp_path: Path,

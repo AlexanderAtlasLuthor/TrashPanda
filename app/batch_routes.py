@@ -92,6 +92,7 @@ async def upload_batch(
     threshold_rows: int = Form(50_000),
     allow_partial: bool = Form(False),
     cleanup: bool = Form(False),
+    max_parallel: int = Form(1),
 ) -> dict:
     """Start a new batch from an uploaded CSV or XLSX file.
 
@@ -108,10 +109,13 @@ async def upload_batch(
             detail=f"unsupported file extension {suffix!r}; "
                    "expected .csv / .xlsx / .xls",
         )
-    if chunk_size <= 0 or threshold_rows <= 0:
+    if chunk_size <= 0 or threshold_rows <= 0 or max_parallel <= 0:
         raise HTTPException(
             status_code=400,
-            detail="chunk_size and threshold_rows must be positive",
+            detail=(
+                "chunk_size, threshold_rows, and max_parallel must "
+                "be positive"
+            ),
         )
 
     data = _read_upload_capped(file, max_bytes=_DEFAULT_MAX_BYTES)
@@ -123,6 +127,7 @@ async def upload_batch(
         threshold_rows=threshold_rows,
         allow_partial=allow_partial,
         cleanup=cleanup,
+        max_parallel=max_parallel,
     )
     return {
         "batch_id": handle.batch_id,
@@ -134,6 +139,7 @@ async def upload_batch(
             "threshold_rows": threshold_rows,
             "allow_partial": allow_partial,
             "cleanup": cleanup,
+            "max_parallel": max_parallel,
         },
     }
 
@@ -187,6 +193,47 @@ def get_batch_progress(batch_id: str) -> dict:
     if progress is None:
         raise HTTPException(status_code=404, detail="batch_not_found")
     return progress.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# POST /batches/{batch_id}/cancel
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{batch_id}/cancel")
+def cancel_batch(batch_id: str) -> dict:
+    """Request cancellation of a running batch.
+
+    Returns 202 with the updated progress when the cancel signal
+    was accepted; the orchestrator skips pending chunks and
+    terminates any in-flight subprocess (SIGTERM, then SIGKILL
+    after a 5s grace period).
+
+    Returns 404 if the batch is unknown, 409 if the batch already
+    reached a terminal state (no-op), and 503 if the batch exists
+    on disk but its cancel signal was lost (e.g. process restart;
+    the orphan reap will mark it failed automatically).
+    """
+    store = get_store()
+    outcome = store.cancel(batch_id)
+    if outcome == "unknown":
+        raise HTTPException(status_code=404, detail="batch_not_found")
+    if outcome == "terminal":
+        raise HTTPException(status_code=409, detail="batch_already_terminal")
+    if outcome == "unmanaged":
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "batch is unmanaged in this process (probably "
+                "orphaned by a restart)"
+            ),
+        )
+    progress = store.progress(batch_id)
+    return {
+        "batch_id": batch_id,
+        "cancel": outcome,
+        "progress": progress.to_dict() if progress is not None else None,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -339,6 +339,28 @@ export async function adapterListBatches(): Promise<
   return (await res.json()) as import("./types").BatchList;
 }
 
+export async function adapterCancelBatch(batchId: string): Promise<{
+  batch_id: string;
+  cancel: "requested";
+  progress: import("./types").BatchProgress | null;
+}> {
+  if (!useProxy) {
+    throw new Error(BATCH_BACKEND_REQUIRED);
+  }
+  const res = await fetch(
+    `${backendUrl}/batches/${encodeURIComponent(batchId)}/cancel`,
+    { method: "POST" },
+  );
+  if (!res.ok) {
+    throw new Error(`Backend error (${res.status})`);
+  }
+  return (await res.json()) as {
+    batch_id: string;
+    cancel: "requested";
+    progress: import("./types").BatchProgress | null;
+  };
+}
+
 export async function adapterDownloadBatchBundle(
   batchId: string,
 ): Promise<Response> {
